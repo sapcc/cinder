@@ -264,8 +264,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     @property
     def ds_sel(self):
         if not self._ds_sel:
+            max_objects = self.configuration.vmware_max_objects_retrieval
             self._ds_sel = hub.DatastoreSelector(self.volumeops,
-                                                 self.session)
+                                                 self.session,
+                                                 max_objects)
         return self._ds_sel
 
     def _validate_params(self):
@@ -2027,7 +2029,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # TODO(vbala) remove properties: session, volumeops and ds_sel
         max_objects = self.configuration.vmware_max_objects_retrieval
         self._volumeops = volumeops.VMwareVolumeOps(self.session, max_objects, EXTENSION_KEY, EXTENSION_TYPE)
-        self._ds_sel = hub.DatastoreSelector(self.volumeops, self.session)
+        self._ds_sel = hub.DatastoreSelector(
+            self.volumeops, self.session, max_objects)
 
         # Get clusters to be used for backing VM creation.
         cluster_names = self.configuration.vmware_cluster_name
