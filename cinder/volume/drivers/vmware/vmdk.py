@@ -127,6 +127,8 @@ vmdk_opts = [
     cfg.MultiStrOpt('vmware_cluster_name',
                     help='Name of a vCenter compute cluster where volumes '
                          'should be created.'),
+    cfg.MultiStrOpt('vmware_storage_profile',
+                    help='Name of a storge profile to be monitored'),
 ]
 
 CONF = cfg.CONF
@@ -270,7 +272,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param refresh: Whether to get refreshed information
         """
 
-        if not self._stats:
+        if not self._stats or refresh:
             backend_name = self.configuration.safe_get('volume_backend_name')
             if not backend_name:
                 backend_name = self.__class__.__name__
@@ -281,6 +283,17 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     'reserved_percentage': 0,
                     'total_capacity_gb': 'unknown',
                     'free_capacity_gb': 'unknown'}
+
+            if self._storage_policy_enabled and self.configuration.vmware_storage_profile:
+                datastores = []
+                retrieval = self.session._call_method(vim_util, 'get_objects', self.session.vim, 'Datastore')
+                with vim_util.WithRetrieval(retrieval) as objects:
+                    for object in objects:
+                        datastore = object.obj
+                        for profile in self.configuration.vmware_storage_profile:
+                            if self.ds_sel.is_datastore_compliant(datastore, profile):
+                                datastores.append(datastore)
+
             self._stats = data
         return self._stats
 
@@ -675,6 +688,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         insecure = self.configuration.vmware_insecure
         cookies = self.session.vim.client.options.transport.cookiejar
         dc_name = self.volumeops.get_entity_name(dc_ref)
+
 
         LOG.debug("Copying image: %(image_id)s to %(path)s.",
                   {'image_id': image_id,
