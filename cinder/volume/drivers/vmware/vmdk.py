@@ -323,7 +323,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         prop_spec = vim_util.build_property_spec(client_factory, 'Datastore', ['summary'])
         filter_spec = vim_util.build_property_filter_spec(client_factory, prop_spec, object_specs)
         options = client_factory.create('ns0:RetrieveOptions')
-        options.maxObjects = 8192
+        options.maxObjects = self.configuration.vmware_max_objects_retrieval
         result = self.session.vim.RetrievePropertiesEx(
                 self.session.vim.service_content.propertyCollector,
                 specSet=[filter_spec],
