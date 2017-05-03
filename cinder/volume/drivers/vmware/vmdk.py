@@ -276,7 +276,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         return self._stats
 
-
     def _get_volume_stats(self):
         backend_name = self.configuration.safe_get('volume_backend_name')
         if not backend_name:
@@ -312,7 +311,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         datastores[hub.hubId] = vim_util.get_moref(hub.hubId, "Datastore")
 
             # Build property collector object specs out of them
-            for datastore_ref in datastores.itervalues():
+            for datastore_ref in six.itervalues(datastores):
                 object_specs.append(vim_util.build_object_spec(client_factory, datastore_ref, []))
         else:
             # Build a catch-all object spec that would reach all datastores
@@ -342,8 +341,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             else:
                 break
 
-        data['total_capacity_gb'] = global_capacity / 1024.0 ** 3
-        data['free_capacity_gb'] = global_free / 1024.0 ** 3
+        data['total_capacity_gb'] = round(global_capacity / units.Gi)
+        data['free_capacity_gb'] = round(global_free / units.Gi)
 
         return data
 
