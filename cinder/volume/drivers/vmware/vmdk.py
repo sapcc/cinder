@@ -127,6 +127,8 @@ vmdk_opts = [
     cfg.MultiStrOpt('vmware_cluster_name',
                     help='Name of a vCenter compute cluster where volumes '
                          'should be created.'),
+    cfg.MultiStrOpt('vmware_storage_profile',
+                    help='Names of storage profiles to be monitored.'),
 ]
 
 CONF = cfg.CONF
@@ -269,20 +271,81 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         :param refresh: Whether to get refreshed information
         """
+        if not self._stats or refresh:
+            self._stats = self._get_volume_stats()
 
-        if not self._stats:
-            backend_name = self.configuration.safe_get('volume_backend_name')
-            if not backend_name:
-                backend_name = self.__class__.__name__
-            data = {'volume_backend_name': backend_name,
-                    'vendor_name': 'VMware',
-                    'driver_version': self.VERSION,
-                    'storage_protocol': 'vmdk',
-                    'reserved_percentage': 0,
-                    'total_capacity_gb': 'unknown',
-                    'free_capacity_gb': 'unknown'}
-            self._stats = data
         return self._stats
+
+    def _get_volume_stats(self):
+        backend_name = self.configuration.safe_get('volume_backend_name')
+        if not backend_name:
+            backend_name = self.__class__.__name__
+        data = {'volume_backend_name': backend_name,
+                'vendor_name': 'VMware',
+                'driver_version': self.VERSION,
+                'storage_protocol': 'vmdk',
+                'reserved_percentage': 0,
+                'total_capacity_gb': 'unknown',
+                'free_capacity_gb': 'unknown'}
+
+        client_factory = self.session.vim.client.factory
+        object_specs = []
+
+        if self._storage_policy_enabled and self.configuration.vmware_storage_profile:
+            # Get all available storage profiles on the vCenter and extract the IDs
+            # of those that we want to observe
+            profiles_ids = []
+            for profile in pbm.get_all_profiles(self.session):
+                if profile.name in self.configuration.vmware_storage_profile:
+                    profiles_ids.append(profile.profileId)
+
+            # Get all matching Datastores for each profile
+            datastores = {}
+            for profile_id in profiles_ids:
+                for hub in pbm.filter_hubs_by_profile(self.session, None, profile_id):
+                    if hub.hubType != "Datastore":
+                        # We are not interested in Datastore Clusters for now
+                        continue
+                    if hub.hubId not in datastores:
+                        # Reconstruct a managed object reference to that datastore
+                        datastores[hub.hubId] = vim_util.get_moref(hub.hubId, "Datastore")
+
+            # Build property collector object specs out of them
+            for datastore_ref in six.itervalues(datastores):
+                object_specs.append(vim_util.build_object_spec(client_factory, datastore_ref, []))
+        else:
+            # Build a catch-all object spec that would reach all datastores
+            object_specs.append(vim_util.build_object_spec(client_factory,
+                                    self.session.vim.service_content.rootFolder,
+                                    [vim_util.build_recursive_traversal_spec(client_factory)]))
+
+        prop_spec = vim_util.build_property_spec(client_factory, 'Datastore', ['summary'])
+        filter_spec = vim_util.build_property_filter_spec(client_factory, prop_spec, object_specs)
+        options = client_factory.create('ns0:RetrieveOptions')
+        options.maxObjects = self.configuration.vmware_max_objects_retrieval
+        result = self.session.vim.RetrievePropertiesEx(
+                self.session.vim.service_content.propertyCollector,
+                specSet=[filter_spec],
+                options=options)
+
+        global_capacity = 0
+        global_free = 0
+        while True:
+            for ds in result.objects:
+                summary = ds.propSet[0].val
+                global_capacity += summary.capacity
+                global_free += summary.freeSpace
+            if getattr(result, 'token', None):
+                result = self.session.vim.ContinueRetrievePropertiesEx(
+                        self.session.vim.service_content.propertyCollector, result.token)
+            else:
+                break
+
+        data['total_capacity_gb'] = round(global_capacity / units.Gi)
+        data['free_capacity_gb'] = round(global_free / units.Gi)
+
+        return data
+
 
     def _verify_volume_creation(self, volume):
         """Verify the volume can be created.
@@ -675,6 +738,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         insecure = self.configuration.vmware_insecure
         cookies = self.session.vim.client.options.transport.cookiejar
         dc_name = self.volumeops.get_entity_name(dc_ref)
+
 
         LOG.debug("Copying image: %(image_id)s to %(path)s.",
                   {'image_id': image_id,
