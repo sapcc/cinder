@@ -284,7 +284,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 'vendor_name': 'VMware',
                 'driver_version': self.VERSION,
                 'storage_protocol': 'vmdk',
-                'reserved_percentage': 0,
+                'reserved_percentage': self.configuration.reserved_percentage,
                 'total_capacity_gb': 'unknown',
                 'free_capacity_gb': 'unknown'}
 
