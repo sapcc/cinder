@@ -1683,3 +1683,22 @@ class VMwareVolumeOps(object):
             if (backing.__class__.__name__ == "VirtualDiskFlatVer2BackingInfo"
                     and backing.fileName == vmdk_path):
                 return disk_device
+
+    def get_vm_ref_from_vm_uuid(self, instance_uuid):
+        """Get reference to the VM.
+
+        The method will make use of FindAllByUuid to get the VM reference.
+        This method finds all VM's on the backend that match the
+        instance_uuid, more specifically all VM's on the backend that have
+        'config_spec.instanceUuid' set to 'instance_uuid' and returns the
+        first match.
+        """
+        vm_refs = self._session.invoke_api(
+            self._session.vim,
+            "FindAllByUuid",
+            self._session.vim.service_content.searchIndex,
+            uuid=instance_uuid,
+            vmSearch=True,
+            instanceUuid=True)
+        if vm_refs:
+            return vm_refs[0]
