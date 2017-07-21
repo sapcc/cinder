@@ -1253,14 +1253,16 @@ class VMwareVolumeOps(object):
         self._reconfigure_backing(backing, reconfig_spec)
         LOG.debug("Backing VM: %s reconfigured with new disk.", backing)
 
-    def _create_spec_for_disk_remove(self, disk_device):
+    def _create_spec_for_disk_remove(self, disk_device, destroy_disk=False):
         cf = self._session.vim.client.factory
         disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
         disk_spec.operation = 'remove'
         disk_spec.device = disk_device
+        if destroy_disk:
+            disk_spec.fileOperation = "destroy"
         return disk_spec
 
-    def detach_disk_from_backing(self, backing, disk_device):
+    def detach_disk_from_backing(self, backing, disk_device, destroy_disk=False):
         """Detach the given disk from backing."""
 
         LOG.debug("Reconfiguring backing VM: %(backing)s to remove disk: "
@@ -1269,7 +1271,7 @@ class VMwareVolumeOps(object):
 
         cf = self._session.vim.client.factory
         reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
-        spec = self._create_spec_for_disk_remove(disk_device)
+        spec = self._create_spec_for_disk_remove(disk_device, destroy_disk)
         reconfig_spec.deviceChange = [spec]
         self._reconfigure_backing(backing, reconfig_spec)
 
