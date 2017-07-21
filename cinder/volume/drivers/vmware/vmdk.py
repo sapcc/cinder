@@ -704,7 +704,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
             # detach the old disk from the backing vm
             LOG.debug("Detaching old disk from backing vm.")
-            self.volumeops.detach_disk_from_backing(backing_ref, backing_disks[0])
+            self.volumeops.detach_disk_from_backing(backing_ref, backing_disks[0], destroy_disk=True)
 
             # check if a storage profile needs to be associated with the backing VM
             storage_profile_id = self._get_storage_profile_id(volume)
