@@ -4254,6 +4254,9 @@ def purge_deleted_rows(context, age_in_days):
                 and hasattr(model_class, "deleted"):
             tables.append(model_class.__tablename__)
 
+    # Reorder the list so the snapshot table is second-last to avoid FK constraints
+    tables.remove("snapshots")
+    tables.append("snapshots")
     # Reorder the list so the volumes table is last to avoid FK constraints
     tables.remove("volumes")
     tables.append("volumes")
