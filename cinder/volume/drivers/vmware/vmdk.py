@@ -651,19 +651,102 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
 
         volume = snapshot['volume']
-        if volume['status'] != 'available':
+        if volume['status'] == 'available':
+            backing = self.volumeops.get_backing(snapshot['volume_name'])
+            if not backing:
+                LOG.info(_LI("There is no backing, so will not create "
+                             "snapshot: %s."), snapshot['name'])
+                return
+            self.volumeops.create_snapshot(backing, snapshot['name'],
+                                           snapshot['display_description'])
+        elif volume['status'] == 'in-use':
+            # Get a reference to the shadow VM that is backing the volume
+            backing_ref = self.volumeops.get_backing(snapshot['volume_name'])
+
+            # The volume is in use -> it is attached
+            all_attachments = volume['volume_attachment']
+
+            # Pick the first, regardless of multi-attach
+            attachment = all_attachments[0]
+
+            # Find the vm by its uuid
+            instance_uuid = attachment['instance_uuid']
+            vm_ref = self.volumeops.get_vm_ref_from_vm_uuid(instance_uuid)
+
+            # Snapshot the VM
+            snapshotName = "tempVolumeSnapshot"
+            snapshot_ref = self.volumeops.create_snapshot(vm_ref, snapshotName, None)
+
+            # Clone from snapshot (so that we use linked mode)
+            cloned_vm_ref = self.volumeops.clone_vm(vm_ref, snapshot_ref)
+
+            # Determine the disk ?
+            backing_disks = self.volumeops._get_disk_devices(backing_ref)
+            if len(backing_disks) != 1:
+                err_msg = "Unexpected number of virtual disks on backing vm."
+                LOG.error(err_msg)
+                raise Exception(err_msg)
+            backing_disk_uuid = backing_disks[0].backing.uuid
+            backing_disk_file_name = backing_disks[0].backing.fileName
+
+            cloned_disks = self.volumeops._get_disk_devices(cloned_vm_ref)
+            for disk_device in cloned_disks:
+                if disk_device.backing.uuid == backing_disk_uuid:
+                    break # disk found
+            else:
+                err_msg = "Unable to find matching disk in cloned vm."
+                LOG.error(err_msg)
+                raise Exception(err_msg)
+
+            # detach the new disk from the cloned vm
+            LOG.debug("Detaching new disk from cloned vm.")
+            self.volumeops.detach_disk_from_backing(cloned_vm_ref, disk_device)
+
+            # detach the old disk from the backing vm
+            LOG.debug("Detaching old disk from backing vm.")
+            self.volumeops.detach_disk_from_backing(backing_ref, backing_disks[0], destroy_disk=True)
+
+            # check if a storage profile needs to be associated with the backing VM
+            storage_profile_id = self._get_storage_profile_id(volume)
+
+            # determine the disk type
+            if disk_device.backing.thinProvisioned:
+                disk_type = volumeops.VirtualDiskType.THIN
+            else:
+                disk_type = volumeops.VirtualDiskType.EAGER_ZEROED_THICK
+
+            # attach the new disk to the backing vm
+            virtual_disk_spec = self.volumeops._create_virtual_disk_config_spec(
+                disk_device.capacityInBytes / 1024,
+                disk_type,
+                backing_disks[0].controllerKey, # pick the key from the old backing disk
+                storage_profile_id,
+                disk_device.backing.fileName)
+            reconfigure_spec = self.session.vim.client.factory.create(
+                    'ns0:VirtualMachineConfigSpec')
+            reconfigure_spec.deviceChange = [virtual_disk_spec]
+            LOG.debug("Attaching new disk to backing vm.")
+            self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
+
+            # snapshot the backing vm
+            self.volumeops.create_snapshot(backing_ref, snapshot['name'],
+                                           snapshot['display_description'])
+
+            # ... ?
+
+            # Remove the cloned vm
+            self.volumeops.delete_backing(cloned_vm_ref)
+
+            # Remove the snapshot
+            self.volumeops.delete_snapshot(vm_ref, snapshotName)
+        else:
             msg = _("Snapshot of volume not supported in "
                     "state: %s.") % volume['status']
             LOG.error(msg)
             raise exception.InvalidVolume(msg)
-        backing = self.volumeops.get_backing(snapshot['volume_name'])
-        if not backing:
-            LOG.info(_LI("There is no backing, so will not create "
-                         "snapshot: %s."), snapshot['name'])
-            return
-        self.volumeops.create_snapshot(backing, snapshot['name'],
-                                       snapshot['display_description'])
+
         LOG.info(_LI("Successfully created snapshot: %s."), snapshot['name'])
+
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot.
