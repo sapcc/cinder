@@ -29,6 +29,7 @@ from six.moves import urllib
 from cinder.i18n import _, _LE, _LI
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 
+from time import time
 
 LOG = logging.getLogger(__name__)
 LINKED_CLONE_TYPE = 'linked'
@@ -1252,14 +1253,16 @@ class VMwareVolumeOps(object):
         self._reconfigure_backing(backing, reconfig_spec)
         LOG.debug("Backing VM: %s reconfigured with new disk.", backing)
 
-    def _create_spec_for_disk_remove(self, disk_device):
+    def _create_spec_for_disk_remove(self, disk_device, destroy_disk=False):
         cf = self._session.vim.client.factory
         disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
         disk_spec.operation = 'remove'
         disk_spec.device = disk_device
+        if destroy_disk:
+            disk_spec.fileOperation = "destroy"
         return disk_spec
 
-    def detach_disk_from_backing(self, backing, disk_device):
+    def detach_disk_from_backing(self, backing, disk_device, destroy_disk=False):
         """Detach the given disk from backing."""
 
         LOG.debug("Reconfiguring backing VM: %(backing)s to remove disk: "
@@ -1268,7 +1271,7 @@ class VMwareVolumeOps(object):
 
         cf = self._session.vim.client.factory
         reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
-        spec = self._create_spec_for_disk_remove(disk_device)
+        spec = self._create_spec_for_disk_remove(disk_device, destroy_disk)
         reconfig_spec.deviceChange = [spec]
         self._reconfigure_backing(backing, reconfig_spec)
 
@@ -1683,3 +1686,60 @@ class VMwareVolumeOps(object):
             if (backing.__class__.__name__ == "VirtualDiskFlatVer2BackingInfo"
                     and backing.fileName == vmdk_path):
                 return disk_device
+
+    def clone_vm(self, vm_ref, snapshot=None):
+        """Clones the specified VM
+        """
+        # Use source folder as the location of the clone.
+        folder = self._get_folder(vm_ref)
+
+        # Do a linked clone
+        disk_move_type = 'createNewChildDiskBacking'
+
+        vm_name = self.get_entity_name(vm_ref)
+        new_name = vm_name + '-' + str(int(time()))
+
+        clone_spec = self._get_clone_spec(
+            datastore=None,
+            disk_move_type=disk_move_type,
+            snapshot=snapshot,
+            backing=vm_ref,
+            disk_type=None,
+            host=None,
+            resource_pool=None,
+            extra_config=None)
+
+        task = self._session.invoke_api(self._session.vim, 'CloneVM_Task',
+                                        vm_ref, folder=folder, name=new_name,
+                                        spec=clone_spec)
+
+        LOG.debug("Initiated clone of virtual machine: %s.", vm_ref)
+        task_info = self._session.wait_for_task(task)
+        cloned_vm_ref = task_info.result
+        LOG.info(_LI("Successfully created virtual machine clone: %s."), cloned_vm_ref)
+        return cloned_vm_ref
+
+    def revert_to_snapshot(self, snapshot_ref):
+        task = self._session.invoke_api(self._session.vim,
+                                        'RevertToSnapshot_Task',
+                                        snapshot_ref)
+        task_info = self._session.wait_for_task(task)
+
+    def get_vm_ref_from_vm_uuid(self, instance_uuid):
+        """Get reference to the VM.
+
+        The method will make use of FindAllByUuid to get the VM reference.
+        This method finds all VM's on the backend that match the
+        instance_uuid, more specifically all VM's on the backend that have
+        'config_spec.instanceUuid' set to 'instance_uuid' and returns the
+        first match.
+        """
+        vm_refs = self._session.invoke_api(
+            self._session.vim,
+            "FindAllByUuid",
+            self._session.vim.service_content.searchIndex,
+            uuid=instance_uuid,
+            vmSearch=True,
+            instanceUuid=True)
+        if vm_refs:
+            return vm_refs[0]
