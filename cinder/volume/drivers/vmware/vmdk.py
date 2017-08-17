@@ -330,16 +330,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         global_capacity = 0
         global_free = 0
-        while True:
-            for ds in result.objects:
+        with vim_util.WithRetrieval(self.session.vim, result) as objects:
+            for ds in objects:
                 summary = ds.propSet[0].val
                 global_capacity += summary.capacity
                 global_free += summary.freeSpace
-            if getattr(result, 'token', None):
-                result = self.session.vim.ContinueRetrievePropertiesEx(
-                        self.session.vim.service_content.propertyCollector, result.token)
-            else:
-                break
 
         data['total_capacity_gb'] = round(global_capacity / units.Gi)
         data['free_capacity_gb'] = round(global_free / units.Gi)
