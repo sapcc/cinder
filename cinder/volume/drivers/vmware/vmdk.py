@@ -676,76 +676,73 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
             # Clone from snapshot (so that we use linked mode)
             cloned_vm_ref = self.volumeops.clone_vm(vm_ref, snapshot_ref)
+            with deferred(None, self.volumeops.delete_backing, cloned_vm_ref):
 
-            # Determine the disk ?
-            backing_disks = self.volumeops._get_disk_devices(backing_ref)
-            if len(backing_disks) != 1:
-                err_msg = "Unexpected number of virtual disks on backing vm."
-                LOG.error(err_msg)
-                raise Exception(err_msg)
-            backing_disk_uuid = backing_disks[0].backing.uuid
-            backing_disk_file_name = backing_disks[0].backing.fileName
+                # Determine the disk ?
+                backing_disks = self.volumeops._get_disk_devices(backing_ref)
+                if len(backing_disks) != 1:
+                    err_msg = "Unexpected number of virtual disks on backing vm."
+                    LOG.error(err_msg)
+                    raise Exception(err_msg)
+                backing_disk_uuid = backing_disks[0].backing.uuid
+                backing_disk_file_name = backing_disks[0].backing.fileName
 
-            cloned_disks = self.volumeops._get_disk_devices(cloned_vm_ref)
-            for disk_device in cloned_disks:
-                if disk_device.backing.uuid == backing_disk_uuid:
-                    break # disk found
-            else:
-                err_msg = "Unable to find matching disk in cloned vm."
-                LOG.error(err_msg)
-                raise Exception(err_msg)
+                cloned_disks = self.volumeops._get_disk_devices(cloned_vm_ref)
+                for disk_device in cloned_disks:
+                    if disk_device.backing.uuid == backing_disk_uuid:
+                        break # disk found
+                else:
+                    err_msg = "Unable to find matching disk in cloned vm."
+                    LOG.error(err_msg)
+                    raise Exception(err_msg)
 
-            # detach the new disk from the cloned vm
-            LOG.debug("Detaching new disk from cloned vm {}.".format(cloned_vm_ref))
-            self.volumeops.detach_disk_from_backing(cloned_vm_ref, disk_device)
+                # detach the new disk from the cloned vm
+                LOG.debug("Detaching new disk from cloned vm {}.".format(cloned_vm_ref))
+                self.volumeops.detach_disk_from_backing(cloned_vm_ref, disk_device)
 
-            # check if a storage profile needs to be associated with the backing VM
-            storage_profile_id = self._get_storage_profile_id(volume)
+                # check if a storage profile needs to be associated with the backing VM
+                storage_profile_id = self._get_storage_profile_id(volume)
 
-            # determine the disk type
-            if disk_device.backing.thinProvisioned:
-                disk_type = volumeops.VirtualDiskType.THIN
-            else:
-                disk_type = volumeops.VirtualDiskType.EAGER_ZEROED_THICK
+                # determine the disk type
+                if disk_device.backing.thinProvisioned:
+                    disk_type = volumeops.VirtualDiskType.THIN
+                else:
+                    disk_type = volumeops.VirtualDiskType.EAGER_ZEROED_THICK
 
-            # replace the new disk on the backing vm
-            virtual_disk_spec = self.volumeops._create_virtual_disk_config_spec(
-                disk_device.capacityInBytes / 1024,
-                disk_type,
-                0, # will override
-                storage_profile_id,
-                disk_device.backing.fileName)
+                # replace the new disk on the backing vm
+                virtual_disk_spec = self.volumeops._create_virtual_disk_config_spec(
+                    disk_device.capacityInBytes / 1024,
+                    disk_type,
+                    0, # will override
+                    storage_profile_id,
+                    disk_device.backing.fileName)
 
-            # Match properties to replace the disk
-            virtual_disk_spec.operation = 'edit'
-            virtual_disk_spec.fileOperation = None
-            virtual_disk_spec.device.controllerKey = backing_disks[0].controllerKey
-            virtual_disk_spec.device.key = backing_disks[0].key
+                # Match properties to replace the disk
+                virtual_disk_spec.operation = 'edit'
+                virtual_disk_spec.fileOperation = None
+                virtual_disk_spec.device.controllerKey = backing_disks[0].controllerKey
+                virtual_disk_spec.device.key = backing_disks[0].key
 
-            # snapshot the backing vm before replacing the disk
-            # otherwise nova will have issues detaching the volume
-            backing_prior = self.volumeops.create_snapshot(backing_ref,
-                                                           "{}-{}".format(snapshot['name'], time()),
-                                                           snapshot['display_description'])
+                # snapshot the backing vm before replacing the disk
+                # otherwise nova will have issues detaching the volume
+                backing_prior = self.volumeops.create_snapshot(backing_ref,
+                                                               "{}-{}".format(snapshot['name'], time()),
+                                                               snapshot['display_description'])
+                with deferred(None, self.volumeops.revert_to_snapshot, backing_prior):
 
-            with deferred(None, self.volumeops.revert_to_snapshot, backing_prior):
+                    # apply the disk replacement
+                    reconfigure_spec = self.session.vim.client.factory.create(
+                            'ns0:VirtualMachineConfigSpec')
+                    reconfigure_spec.deviceChange = [virtual_disk_spec]
+                    LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
+                    self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
 
-                # apply the disk replacement
-                reconfigure_spec = self.session.vim.client.factory.create(
-                        'ns0:VirtualMachineConfigSpec')
-                reconfigure_spec.deviceChange = [virtual_disk_spec]
-                LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
-                self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
+                    # snapshot the backing vm
+                    self.volumeops.create_snapshot(backing_ref, snapshot['name'],
+                                                   snapshot['display_description'])
 
-                # snapshot the backing vm
-                self.volumeops.create_snapshot(backing_ref, snapshot['name'],
-                                               snapshot['display_description'])
-
-                # Remove the cloned vm
-                self.volumeops.delete_backing(cloned_vm_ref)
-
-                # Remove the snapshot of the existing attachment vm
-                self.volumeops.delete_snapshot(vm_ref, snapshotName)
+                    # Remove the snapshot of the existing attachment vm
+                    self.volumeops.delete_snapshot(vm_ref, snapshotName)
         else:
             msg = _("Snapshot of volume not supported in "
                     "state: %s.") % volume['status']
