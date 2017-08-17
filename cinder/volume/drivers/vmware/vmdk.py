@@ -725,28 +725,27 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # snapshot the backing vm before replacing the disk
             # otherwise nova will have issues detaching the volume
             backing_prior = self.volumeops.create_snapshot(backing_ref,
-                                                           "{}-{}".format(snapshot['name'],time()),
+                                                           "{}-{}".format(snapshot['name'], time()),
                                                            snapshot['display_description'])
 
-            # apply the disk replacement
-            reconfigure_spec = self.session.vim.client.factory.create(
-                    'ns0:VirtualMachineConfigSpec')
-            reconfigure_spec.deviceChange = [virtual_disk_spec]
-            LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
-            self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
+            with deferred(None, self.volumeops.revert_to_snapshot, backing_prior):
 
-            # snapshot the backing vm
-            self.volumeops.create_snapshot(backing_ref, snapshot['name'],
-                                           snapshot['display_description'])
+                # apply the disk replacement
+                reconfigure_spec = self.session.vim.client.factory.create(
+                        'ns0:VirtualMachineConfigSpec')
+                reconfigure_spec.deviceChange = [virtual_disk_spec]
+                LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
+                self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
 
-            # revert to the previous snapshot
-            self.volumeops.revert_to_snapshot(backing_prior)
+                # snapshot the backing vm
+                self.volumeops.create_snapshot(backing_ref, snapshot['name'],
+                                               snapshot['display_description'])
 
-            # Remove the cloned vm
-            self.volumeops.delete_backing(cloned_vm_ref)
+                # Remove the cloned vm
+                self.volumeops.delete_backing(cloned_vm_ref)
 
-            # Remove the snapshot of the existing attachment vm
-            self.volumeops.delete_snapshot(vm_ref, snapshotName)
+                # Remove the snapshot of the existing attachment vm
+                self.volumeops.delete_snapshot(vm_ref, snapshotName)
         else:
             msg = _("Snapshot of volume not supported in "
                     "state: %s.") % volume['status']
@@ -2199,3 +2198,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param src_vref: Source Volume object
         """
         self._create_cloned_volume(volume, src_vref)
+
+@contextlib.contextmanager
+def deferred(obj, *args):
+    """ Yields obj and calls the second argument with the rest on closing """
+    try:
+        yield obj
+    finally:
+        args[0](*args[1:])
