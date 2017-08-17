@@ -694,12 +694,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 raise Exception(err_msg)
 
             # detach the new disk from the cloned vm
-            LOG.debug("Detaching new disk from cloned vm.")
+            LOG.debug("Detaching new disk from cloned vm {}.".format(cloned_vm_ref))
             self.volumeops.detach_disk_from_backing(cloned_vm_ref, disk_device)
-
-            # detach the old disk from the backing vm
-            LOG.debug("Detaching old disk from backing vm.")
-            self.volumeops.detach_disk_from_backing(backing_ref, backing_disks[0], destroy_disk=True)
 
             # check if a storage profile needs to be associated with the backing VM
             storage_profile_id = self._get_storage_profile_id(volume)
@@ -710,17 +706,24 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             else:
                 disk_type = volumeops.VirtualDiskType.EAGER_ZEROED_THICK
 
-            # attach the new disk to the backing vm
+            # replace the new disk on the backing vm
             virtual_disk_spec = self.volumeops._create_virtual_disk_config_spec(
                 disk_device.capacityInBytes / 1024,
                 disk_type,
-                backing_disks[0].controllerKey, # pick the key from the old backing disk
+                0, # will override
                 storage_profile_id,
                 disk_device.backing.fileName)
+
+            # Match properties to replace the disk
+            virtual_disk_spec.operation = 'edit'
+            virtual_disk_spec.fileOperation = None
+            virtual_disk_spec.device.controllerKey = backing_disks[0].controllerKey
+            virtual_disk_spec.device.key = backing_disks[0].key
+
             reconfigure_spec = self.session.vim.client.factory.create(
                     'ns0:VirtualMachineConfigSpec')
             reconfigure_spec.deviceChange = [virtual_disk_spec]
-            LOG.debug("Attaching new disk to backing vm.")
+            LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
             self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
 
             # snapshot the backing vm
@@ -732,7 +735,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # Remove the cloned vm
             self.volumeops.delete_backing(cloned_vm_ref)
 
-            # Remove the snapshot
+            # Remove the snapshot of the existing attachment vm
             self.volumeops.delete_snapshot(vm_ref, snapshotName)
         else:
             msg = _("Snapshot of volume not supported in "
