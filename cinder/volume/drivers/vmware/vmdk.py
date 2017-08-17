@@ -49,6 +49,8 @@ from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 from cinder.volume.drivers.vmware import volumeops
 from cinder.volume import volume_types
 
+from time import time
+
 LOG = logging.getLogger(__name__)
 
 THIN_VMDK_TYPE = 'thin'
@@ -720,6 +722,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             virtual_disk_spec.device.controllerKey = backing_disks[0].controllerKey
             virtual_disk_spec.device.key = backing_disks[0].key
 
+            # snapshot the backing vm before replacing the disk
+            # otherwise nova will have issues detaching the volume
+            backing_prior = self.volumeops.create_snapshot(backing_ref,
+                                                           "{}-{}".format(snapshot['name'],time()),
+                                                           snapshot['display_description'])
+
             # apply the disk replacement
             reconfigure_spec = self.session.vim.client.factory.create(
                     'ns0:VirtualMachineConfigSpec')
@@ -730,6 +738,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # snapshot the backing vm
             self.volumeops.create_snapshot(backing_ref, snapshot['name'],
                                            snapshot['display_description'])
+
+            # revert to the previous snapshot
+            self.volumeops.revert_to_snapshot(backing_prior)
 
             # Remove the cloned vm
             self.volumeops.delete_backing(cloned_vm_ref)

@@ -1719,6 +1719,12 @@ class VMwareVolumeOps(object):
         LOG.info(_LI("Successfully created virtual machine clone: %s."), cloned_vm_ref)
         return cloned_vm_ref
 
+    def revert_to_snapshot(self, snapshot_ref):
+        task = self._session.invoke_api(self._session.vim,
+                                        'RevertToSnapshot_Task',
+                                        snapshot_ref)
+        task_info = self._session.wait_for_task(task)
+
     def get_vm_ref_from_vm_uuid(self, instance_uuid):
         """Get reference to the VM.
 
