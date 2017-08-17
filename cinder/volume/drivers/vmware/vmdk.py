@@ -720,6 +720,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             virtual_disk_spec.device.controllerKey = backing_disks[0].controllerKey
             virtual_disk_spec.device.key = backing_disks[0].key
 
+            # apply the disk replacement
             reconfigure_spec = self.session.vim.client.factory.create(
                     'ns0:VirtualMachineConfigSpec')
             reconfigure_spec.deviceChange = [virtual_disk_spec]
@@ -729,8 +730,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # snapshot the backing vm
             self.volumeops.create_snapshot(backing_ref, snapshot['name'],
                                            snapshot['display_description'])
-
-            # ... ?
 
             # Remove the cloned vm
             self.volumeops.delete_backing(cloned_vm_ref)
@@ -744,7 +743,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             raise exception.InvalidVolume(msg)
 
         LOG.info(_LI("Successfully created snapshot: %s."), snapshot['name'])
-
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot.
