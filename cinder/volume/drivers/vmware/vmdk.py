@@ -673,11 +673,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # Snapshot the VM
             snapshotName = "tempVolumeSnapshot"
             snapshot_ref = self.volumeops.create_snapshot(vm_ref, snapshotName, None)
-            with deferred(None, self.volumeops.delete_snapshot, vm_ref, snapshotName):
+            with deferred(self.volumeops.delete_snapshot_ref, snapshot_ref):
 
                 # Clone from snapshot (so that we use linked mode)
                 cloned_vm_ref = self.volumeops.clone_vm(vm_ref, snapshot_ref)
-                with deferred(None, self.volumeops.delete_backing, cloned_vm_ref):
+                with deferred(self.volumeops.delete_backing, cloned_vm_ref):
 
                     # Determine the disk ?
                     backing_disks = self.volumeops._get_disk_devices(backing_ref)
@@ -726,21 +726,23 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
                     # snapshot the backing vm before replacing the disk
                     # otherwise nova will have issues detaching the volume
+                    backing_snapshot_name = "{}-{}".format(snapshot['name'], time())
                     backing_prior = self.volumeops.create_snapshot(backing_ref,
-                                                                   "{}-{}".format(snapshot['name'], time()),
+                                                                   backing_snapshot_name,
                                                                    snapshot['display_description'])
-                    with deferred(None, self.volumeops.revert_to_snapshot, backing_prior):
+                    with deferred(self.volumeops.delete_snapshot_ref, backing_prior):
+                        with deferred(self.volumeops.revert_to_snapshot, backing_prior):
 
-                        # apply the disk replacement
-                        reconfigure_spec = self.session.vim.client.factory.create(
-                                'ns0:VirtualMachineConfigSpec')
-                        reconfigure_spec.deviceChange = [virtual_disk_spec]
-                        LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
-                        self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
+                            # apply the disk replacement
+                            reconfigure_spec = self.session.vim.client.factory.create(
+                                    'ns0:VirtualMachineConfigSpec')
+                            reconfigure_spec.deviceChange = [virtual_disk_spec]
+                            LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
+                            self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
 
-                        # snapshot the backing vm
-                        self.volumeops.create_snapshot(backing_ref, snapshot['name'],
-                                                       snapshot['display_description'])
+                            # snapshot the backing vm
+                            self.volumeops.create_snapshot(backing_ref, snapshot['name'],
+                                                           snapshot['display_description'])
         else:
             msg = _("Snapshot of volume not supported in "
                     "state: %s.") % volume['status']
@@ -2195,9 +2197,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._create_cloned_volume(volume, src_vref)
 
 @contextlib.contextmanager
-def deferred(obj, *args):
-    """ Yields obj and calls the second argument with the rest on closing """
+def deferred(func, *args):
+    """ Yields and calls func with the rest of the args on closing """
     try:
-        yield obj
+        yield
     finally:
-        args[0](*args[1:])
+        try:
+            func(*args)
+        except Exception as e:
+            LOG.error("Deferred call raised an exception - {}".format(e))

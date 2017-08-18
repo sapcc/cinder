@@ -1102,15 +1102,20 @@ class VMwareVolumeOps(object):
                          "%(backing)s. Need not delete anything."),
                      {'name': name, 'backing': backing})
             return
-        task = self._session.invoke_api(self._session.vim,
-                                        'RemoveSnapshot_Task',
-                                        snapshot, removeChildren=False)
         LOG.debug("Initiated snapshot: %(name)s deletion for backing: "
                   "%(backing)s.",
                   {'name': name, 'backing': backing})
-        self._session.wait_for_task(task)
+        self.delete_snapshot_ref(snapshot)
         LOG.info(_LI("Successfully deleted snapshot: %(name)s of backing: "
                      "%(backing)s."), {'backing': backing, 'name': name})
+
+    def delete_snapshot_ref(self, snapshot_ref):
+        """Deletes a snapshot by its managed object reference"""
+        task = self._session.invoke_api(self._session.vim,
+                                        'RemoveSnapshot_Task',
+                                        snapshot_ref, removeChildren=False)
+
+        self._session.wait_for_task(task)
 
     def _get_folder(self, backing):
         """Get parent folder of the backing.
