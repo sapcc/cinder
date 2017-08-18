@@ -769,7 +769,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
 
         volume = snapshot['volume']
-        if volume['status'] != 'available':
+        if volume['status'] not in ('available', 'in-use'):
             msg = _("Delete snapshot of volume not supported in "
                     "state: %s.") % volume['status']
             LOG.error(msg)
