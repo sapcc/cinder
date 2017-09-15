@@ -1692,14 +1692,14 @@ class VMwareVolumeOps(object):
                     and backing.fileName == vmdk_path):
                 return disk_device
 
-    def clone_vm(self, vm_ref, snapshot=None):
+    def clone_vm(self, vm_ref, snapshot=None, device_change=None):
         """Clones the specified VM
         """
         # Use source folder as the location of the clone.
         folder = self._get_folder(vm_ref)
 
-        # Do a linked clone
-        disk_move_type = 'createNewChildDiskBacking'
+        # Do a full clone
+        disk_move_type = 'moveAllDiskBackingsAndDisallowSharing'
 
         vm_name = self.get_entity_name(vm_ref)
         new_name = vm_name + '-' + str(int(time()))
@@ -1713,6 +1713,11 @@ class VMwareVolumeOps(object):
             host=None,
             resource_pool=None,
             extra_config=None)
+
+        if device_change:
+            clone_spec.location.deviceChange = device_change
+            from pprint import pformat
+            LOG.debug("device_change is: %s", pformat(device_change))
 
         task = self._session.invoke_api(self._session.vim, 'CloneVM_Task',
                                         vm_ref, folder=folder, name=new_name,
