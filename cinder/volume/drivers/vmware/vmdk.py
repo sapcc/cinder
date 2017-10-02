@@ -657,8 +657,19 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self.volumeops.create_snapshot(backing, snapshot['name'],
                                            snapshot['display_description'])
         elif volume['status'] == 'in-use':
+            factory = self.session.vim.client.factory
+
             # Get a reference to the shadow VM that is backing the volume
             backing_ref = self.volumeops.get_backing(snapshot['volume_name'])
+
+            # Determine the disk on the backing vm
+            backing_disks = self.volumeops._get_disk_devices(backing_ref)
+            if len(backing_disks) != 1:
+                err_msg = "Unexpected number of virtual disks on backing vm."
+                LOG.error(err_msg)
+                raise Exception(err_msg)
+            backing_disk_uuid = backing_disks[0].backing.uuid
+            backing_disk_file_name = backing_disks[0].backing.fileName
 
             # The volume is in use -> it is attached
             all_attachments = volume['volume_attachment']
@@ -670,32 +681,48 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             instance_uuid = attachment['instance_uuid']
             vm_ref = self.volumeops.get_vm_ref_from_vm_uuid(instance_uuid)
 
+            # Find the attached disk and prep the rest for removal
+            # note: removal of disks doesn't seem to work for me on vSphere 6.5
+            # in this way when cloning a vm. The vcenter does not fail,
+            # it simply add all disks in the clone...
+            dev_change = []
+            disk_key = None
+            attached_disks = self.volumeops._get_disk_devices(vm_ref)
+            for attached_disk in attached_disks:
+                if attached_disk.backing.uuid != backing_disk_uuid:
+                    # prep a device change for removal
+                    vdcs = factory.create('ns0:VirtualDeviceConfigSpec')
+                    vdcs.operation = "remove"
+                    vdcs.fileOperation = "destroy"
+                    vdcs.device = attached_disk
+                    dev_change.append(vdcs)
+                else:
+                    disk_key = attached_disk.key
+            else:
+                if not disk_key:
+                    err_msg = "Unable to find disk in attachment destination vm."
+                    LOG.error(err_msg)
+                    raise Exception(err_msg)
+
             # Snapshot the VM
             snapshotName = "tempVolumeSnapshot"
             snapshot_ref = self.volumeops.create_snapshot(vm_ref, snapshotName, None)
             with deferred(self.volumeops.delete_snapshot_ref, snapshot_ref):
 
-                # Clone from snapshot (so that we use linked mode)
-                cloned_vm_ref = self.volumeops.clone_vm(vm_ref, snapshot_ref)
+                # Clone from snapshot using full clone and discard all other disks
+                cloned_vm_ref = self.volumeops.clone_vm(vm_ref, snapshot_ref, dev_change)
                 with deferred(self.volumeops.delete_backing, cloned_vm_ref):
 
-                    # Determine the disk ?
-                    backing_disks = self.volumeops._get_disk_devices(backing_ref)
-                    if len(backing_disks) != 1:
-                        err_msg = "Unexpected number of virtual disks on backing vm."
-                        LOG.error(err_msg)
-                        raise Exception(err_msg)
-                    backing_disk_uuid = backing_disks[0].backing.uuid
-                    backing_disk_file_name = backing_disks[0].backing.fileName
-
+                    # Determine the disk on the snapshot clone vm
+                    # note: looking up disk by key because the vcenter
+                    # is not honouring the device change specs -
+                    # - otherwise there would be a single disk in the cloned vm
                     cloned_disks = self.volumeops._get_disk_devices(cloned_vm_ref)
                     for disk_device in cloned_disks:
-                        if disk_device.backing.uuid == backing_disk_uuid:
+                        if disk_device.key == disk_key:
                             break # disk found
                     else:
                         err_msg = "Unable to find matching disk in cloned vm."
-                        LOG.error(err_msg)
-                        raise Exception(err_msg)
 
                     # detach the new disk from the cloned vm
                     LOG.debug("Detaching new disk from cloned vm {}.".format(cloned_vm_ref))
@@ -734,8 +761,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         with deferred(self.volumeops.revert_to_snapshot, backing_prior):
 
                             # apply the disk replacement
-                            reconfigure_spec = self.session.vim.client.factory.create(
-                                    'ns0:VirtualMachineConfigSpec')
+                            reconfigure_spec = factory.create('ns0:VirtualMachineConfigSpec')
                             reconfigure_spec.deviceChange = [virtual_disk_spec]
                             LOG.debug("Replacing disk on backing vm {}.".format(backing_ref))
                             self.volumeops._reconfigure_backing(backing_ref, reconfigure_spec)
