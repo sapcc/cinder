@@ -676,7 +676,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
     def _create_temp_backing_from_attached_vmdk(
             self, src_vref, host, rp, folder, datastore, tmp_name=None):
-        instance = self.volumeops.get_backing_by_uuid(
+        instance = self.volumeops.get_vm_ref_from_vm_uuid(
             src_vref['volume_attachment'][0]['instance_uuid'])
         vol_dev_uuid = self._get_volume_device_uuid(instance, src_vref['id'])
         LOG.debug("Cloning volume device: %(dev)s attached to instance: "
@@ -2024,8 +2024,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 cluster_names).values()
             LOG.info(_LI("Using compute cluster(s): %s."), cluster_names)
 
-        self.volumeops.build_backing_ref_cache()
-
         LOG.info(_LI("Successfully setup driver: %(driver)s for server: "
                      "%(ip)s."), {'driver': self.__class__.__name__,
                                   'ip': self.configuration.vmware_host_ip})
@@ -2192,8 +2190,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param volume: New Volume object
         :param snapshot: Reference to snapshot entity
         """
-        backing = self.volumeops.get_backing(snapshot['volume_name'],
-                                             snapshot['volume']['id'])
+        backing = self.volumeops.get_backing(snapshot['volume_name'])
         if not backing:
             LOG.info("There is no backing for the snapshotted volume: "
                      "%(snap)s. Not creating any backing for the "
@@ -2202,9 +2199,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             return
 
         inv_path = snapshot.get('provider_location')
-#         LOG.info("---VOL: %s", volume)
-        LOG.info("---SNAP: %s", snapshot)
-        LOG.info("---inv path: %s", inv_path)
         if inv_path:
             self._create_volume_from_template(volume, inv_path)
         else:
