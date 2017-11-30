@@ -772,28 +772,31 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
     def _delete_snapshot(self, snapshot):
         """Delete snapshot.
-
         If the volume does not have a backing or the snapshot does not exist
-        then simply pass, else delete the snapshot.
-        Snapshot deletion of only available volume is supported.
-
+        then simply pass, else delete the snapshot. The volume must not be
+        attached for deletion of snapshot in COW format.
         :param snapshot: Snapshot object
         """
+        inv_path = snapshot.provider_location
+        is_template = inv_path is not None
 
-        volume = snapshot['volume']
-        if volume['status'] not in ('available', 'in-use'):
-            msg = _("Delete snapshot of volume not supported in "
-                    "state: %s.") % volume['status']
-            LOG.error(msg)
-            raise exception.InvalidVolume(msg)
-        backing = self.volumeops.get_backing(snapshot['volume_name'])
+        backing = self.volumeops.get_backing(snapshot.volume_name,
+                                             snapshot.volume.id)
         if not backing:
-            LOG.info(_LI("There is no backing, and so there is no "
-                         "snapshot: %s."), snapshot['name'])
+            LOG.debug("Backing does not exist for volume.",
+                      resource=snapshot.volume)
+        elif is_template:
+            self._delete_snapshot_template_format(snapshot)
         else:
-            self.volumeops.delete_snapshot(backing, snapshot['name'])
-            LOG.info(_LI("Successfully deleted snapshot: %s."),
-                     snapshot['name'])
+            if not self.volumeops.get_snapshot(backing, snapshot.name):
+                LOG.debug("Snapshot does not exist in backend.", resource=snapshot)
+            elif self._in_use(snapshot.volume):
+                msg = _("Delete snapshot of volume not supported in "
+                        "state: %s.") % snapshot.volume.status
+                LOG.error(msg)
+                raise exception.InvalidSnapshot(reason=msg)
+            else:
+                self.volumeops.delete_snapshot(backing, snapshot.name)
 
     def delete_snapshot(self, snapshot):
         """Delete snapshot.
