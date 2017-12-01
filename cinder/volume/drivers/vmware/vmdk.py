@@ -780,8 +780,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         inv_path = snapshot.provider_location
         is_template = inv_path is not None
 
-        backing = self.volumeops.get_backing(snapshot.volume_name,
-                                             snapshot.volume.id)
+        backing = self.volumeops.get_backing(snapshot.volume_name)
         if not backing:
             LOG.debug("Backing does not exist for volume.",
                       resource=snapshot.volume)
