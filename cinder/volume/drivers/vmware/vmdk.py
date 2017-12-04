@@ -2211,9 +2211,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             snapshot_moref = self.volumeops.get_snapshot(backing,
                                                          snapshot['name'])
             if not snapshot_moref:
-                LOG.info("There is no snapshot point for the snapshotted "
-                         "volume: %(snap)s. Not creating any backing for "
-                         "the volume: %(vol)s.",
+                LOG.info(_LI("There is no snapshot point for the snapshotted "
+                             "volume: %(snap)s. Not creating any backing for "
+                             "the volume: %(vol)s."),
                          {'snap': snapshot['name'], 'vol': volume['name']})
                 return
             clone_type = VMwareVcVmdkDriver._get_clone_type(volume)
