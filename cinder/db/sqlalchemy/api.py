@@ -1942,7 +1942,9 @@ def _volume_x_metadata_update(context, volume_id, metadata, delete, model,
             # We don't want to delete keys we are going to update
             if metadata:
                 expected_values['key'] = db.Not(metadata.keys())
-            conditional_update(context, model, {'deleted': True},
+            conditional_update(context, model,
+                               {'deleted': True,
+                                'deleted_at': timeutils.utcnow()},
                                expected_values)
 
         # Get existing metadata
@@ -2447,7 +2449,8 @@ def snapshot_metadata_update(context, snapshot_id, metadata, delete):
                     meta_ref = _snapshot_metadata_get_item(context,
                                                            snapshot_id,
                                                            meta_key, session)
-                    meta_ref.update({'deleted': True})
+                    meta_ref.update({'deleted': True,
+                                     'deleted_at': timeutils.utcnow()})
                     meta_ref.save(session=session)
 
         meta_ref = None
@@ -4254,12 +4257,12 @@ def purge_deleted_rows(context, age_in_days):
                 and hasattr(model_class, "deleted"):
             tables.append(model_class.__tablename__)
 
-    # Reorder the list so the snapshot table is second-last to avoid FK constraints
-    tables.remove("snapshots")
-    tables.append("snapshots")
-    # Reorder the list so the volumes table is last to avoid FK constraints
-    tables.remove("volumes")
-    tables.append("volumes")
+    # Reorder the list so the volumes and volume_types tables are last
+    # to avoid FK constraints
+    for table in ("volume_types", "snapshots", "volumes"):
+        tables.remove(table)
+        tables.append(table)
+
     for table in tables:
         t = Table(table, metadata, autoload=True)
         LOG.info(_LI('Purging deleted rows older than age=%(age)d days '
