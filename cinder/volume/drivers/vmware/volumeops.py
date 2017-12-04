@@ -29,6 +29,7 @@ from six.moves import urllib
 from cinder.i18n import _, _LE, _LI
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 
+from time import time
 
 LOG = logging.getLogger(__name__)
 LINKED_CLONE_TYPE = 'linked'
@@ -278,14 +279,15 @@ class ControllerType(object):
 class VMwareVolumeOps(object):
     """Manages volume operations."""
 
-    def __init__(self, session, max_objects):
+    def __init__(self, session, max_objects, extension_key, extension_type):
         self._session = session
         self._max_objects = max_objects
+        self._extension_key = extension_key
+        self._extension_type = extension_type
         self._folder_cache = {}
 
     def get_backing(self, name):
         """Get the backing based on name.
-
         :param name: Name of the backing
         :return: Managed object reference to the backing
         """
@@ -760,6 +762,13 @@ class VMwareVolumeOps(object):
 
         return option_values
 
+    def _create_managed_by_info(self):
+        managed_by = self._session.vim.client.factory.create(
+            'ns0:ManagedByInfo')
+        managed_by.extensionKey = self._extension_key
+        managed_by.type = self._extension_type
+        return managed_by
+
     def _get_create_spec_disk_less(self, name, ds_name, profileId=None,
                                    extra_config=None):
         """Return spec for creating disk-less backing.
@@ -1101,15 +1110,20 @@ class VMwareVolumeOps(object):
                          "%(backing)s. Need not delete anything."),
                      {'name': name, 'backing': backing})
             return
-        task = self._session.invoke_api(self._session.vim,
-                                        'RemoveSnapshot_Task',
-                                        snapshot, removeChildren=False)
         LOG.debug("Initiated snapshot: %(name)s deletion for backing: "
                   "%(backing)s.",
                   {'name': name, 'backing': backing})
-        self._session.wait_for_task(task)
+        self.delete_snapshot_ref(snapshot)
         LOG.info(_LI("Successfully deleted snapshot: %(name)s of backing: "
                      "%(backing)s."), {'backing': backing, 'name': name})
+
+    def delete_snapshot_ref(self, snapshot_ref):
+        """Deletes a snapshot by its managed object reference"""
+        task = self._session.invoke_api(self._session.vim,
+                                        'RemoveSnapshot_Task',
+                                        snapshot_ref, removeChildren=False)
+
+        self._session.wait_for_task(task)
 
     def _get_folder(self, backing):
         """Get parent folder of the backing.
@@ -1121,9 +1135,8 @@ class VMwareVolumeOps(object):
 
     def _get_clone_spec(self, datastore, disk_move_type, snapshot, backing,
                         disk_type, host=None, resource_pool=None,
-                        extra_config=None):
+                        extra_config=None, disks_to_clone=None):
         """Get the clone spec.
-
         :param datastore: Reference to datastore
         :param disk_move_type: Disk move type
         :param snapshot: Reference to snapshot
@@ -1133,6 +1146,7 @@ class VMwareVolumeOps(object):
         :param resource_pool: Target resource pool
         :param extra_config: Key-value pairs to be written to backing's
                              extra-config
+        :param disks_to_clone: UUIDs of disks to clone
         :return: Clone spec
         """
         if disk_type is not None:
@@ -1150,24 +1164,41 @@ class VMwareVolumeOps(object):
         clone_spec.template = False
         clone_spec.snapshot = snapshot
 
+        config_spec = cf.create('ns0:VirtualMachineConfigSpec')
+        config_spec.managedBy = self._create_managed_by_info()
+        clone_spec.config = config_spec
+
         if extra_config:
-            config_spec = cf.create('ns0:VirtualMachineConfigSpec')
+            if BACKING_UUID_KEY in extra_config:
+                config_spec.instanceUuid = extra_config.pop(BACKING_UUID_KEY)
             config_spec.extraConfig = self._get_extra_config_option_values(
                 extra_config)
-            clone_spec.config = config_spec
+
+        if disks_to_clone:
+            config_spec.deviceChange = (
+                self._create_device_change_for_disk_removal(
+                    backing, disks_to_clone))
 
         LOG.debug("Spec for cloning the backing: %s.", clone_spec)
         return clone_spec
 
+    def _create_device_change_for_disk_removal(self, backing, disks_to_clone):
+        disk_devices = self._get_disk_devices(backing)
+
+        device_change = []
+        for device in disk_devices:
+            if device.backing.uuid not in disks_to_clone:
+                device_change.append(self._create_spec_for_disk_remove(device))
+
+        return device_change
+
     def clone_backing(self, name, backing, snapshot, clone_type, datastore,
                       disk_type=None, host=None, resource_pool=None,
-                      extra_config=None, folder=None):
+                      extra_config=None, folder=None, disks_to_clone=None):
         """Clone backing.
-
         If the clone_type is 'full', then a full clone of the source volume
         backing will be created. Else, if it is 'linked', then a linked clone
         of the source volume backing will be created.
-
         :param name: Name for the clone
         :param backing: Reference to the backing entity
         :param snapshot: Snapshot point from which the clone should be done
@@ -1179,6 +1210,7 @@ class VMwareVolumeOps(object):
         :param extra_config: Key-value pairs to be written to backing's
                              extra-config
         :param folder: The location of the clone
+        :param disks_to_clone: UUIDs of disks to clone
         """
         LOG.debug("Creating a clone of backing: %(back)s, named: %(name)s, "
                   "clone type: %(type)s from snapshot: %(snap)s on "
@@ -1198,7 +1230,9 @@ class VMwareVolumeOps(object):
             disk_move_type = 'moveAllDiskBackingsAndDisallowSharing'
         clone_spec = self._get_clone_spec(
             datastore, disk_move_type, snapshot, backing, disk_type, host=host,
-            resource_pool=resource_pool, extra_config=extra_config)
+            resource_pool=resource_pool, extra_config=extra_config,
+            disks_to_clone=disks_to_clone)
+
         task = self._session.invoke_api(self._session.vim, 'CloneVM_Task',
                                         backing, folder=folder, name=name,
                                         spec=clone_spec)
@@ -1252,14 +1286,16 @@ class VMwareVolumeOps(object):
         self._reconfigure_backing(backing, reconfig_spec)
         LOG.debug("Backing VM: %s reconfigured with new disk.", backing)
 
-    def _create_spec_for_disk_remove(self, disk_device):
+    def _create_spec_for_disk_remove(self, disk_device, destroy_disk=False):
         cf = self._session.vim.client.factory
         disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
         disk_spec.operation = 'remove'
         disk_spec.device = disk_device
+        if destroy_disk:
+            disk_spec.fileOperation = "destroy"
         return disk_spec
 
-    def detach_disk_from_backing(self, backing, disk_device):
+    def detach_disk_from_backing(self, backing, disk_device, destroy_disk=False):
         """Detach the given disk from backing."""
 
         LOG.debug("Reconfiguring backing VM: %(backing)s to remove disk: "
@@ -1268,7 +1304,7 @@ class VMwareVolumeOps(object):
 
         cf = self._session.vim.client.factory
         reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
-        spec = self._create_spec_for_disk_remove(disk_device)
+        spec = self._create_spec_for_disk_remove(disk_device, destroy_disk)
         reconfig_spec.deviceChange = [spec]
         self._reconfigure_backing(backing, reconfig_spec)
 
@@ -1683,3 +1719,37 @@ class VMwareVolumeOps(object):
             if (backing.__class__.__name__ == "VirtualDiskFlatVer2BackingInfo"
                     and backing.fileName == vmdk_path):
                 return disk_device
+
+    def revert_to_snapshot(self, snapshot_ref):
+        task = self._session.invoke_api(self._session.vim,
+                                        'RevertToSnapshot_Task',
+                                        snapshot_ref)
+        task_info = self._session.wait_for_task(task)
+
+    def get_vm_ref_from_vm_uuid(self, instance_uuid):
+        """Get reference to the VM.
+
+        The method will make use of FindAllByUuid to get the VM reference.
+        This method finds all VM's on the backend that match the
+        instance_uuid, more specifically all VM's on the backend that have
+        'config_spec.instanceUuid' set to 'instance_uuid' and returns the
+        first match.
+        """
+        vm_refs = self._session.invoke_api(
+            self._session.vim,
+            "FindAllByUuid",
+            self._session.vim.service_content.searchIndex,
+            uuid=instance_uuid,
+            vmSearch=True,
+            instanceUuid=True)
+        if vm_refs:
+            return vm_refs[0]
+
+    def get_inventory_path(self, entity):
+        return self._session.invoke_api(
+            vim_util, 'get_inventory_path', self._session.vim, entity)
+
+    def mark_backing_as_template(self, backing):
+        LOG.debug("Marking backing: %s as template.", backing)
+        self._session.invoke_api(self._session.vim, 'MarkAsTemplate', backing)
+
