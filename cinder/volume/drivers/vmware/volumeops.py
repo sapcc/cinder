@@ -1239,7 +1239,7 @@ class VMwareVolumeOps(object):
         LOG.debug("Initiated clone of backing: %s.", name)
         task_info = self._session.wait_for_task(task)
         new_backing = task_info.result
-        LOG.info("Successfully created clone: %s.", new_backing)
+        LOG.info(_LI("Successfully created clone: %s."), new_backing)
         return new_backing
 
     def _reconfigure_backing(self, backing, reconfig_spec):

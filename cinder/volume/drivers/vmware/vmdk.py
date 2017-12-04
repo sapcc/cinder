@@ -2198,9 +2198,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
         backing = self.volumeops.get_backing(snapshot['volume_name'])
         if not backing:
-            LOG.info("There is no backing for the snapshotted volume: "
-                     "%(snap)s. Not creating any backing for the "
-                     "volume: %(vol)s.",
+            LOG.info(_LI("There is no backing for the snapshotted volume: "
+                         "%(snap)s. Not creating any backing for the "
+                         "volume: %(vol)s."),
                      {'snap': snapshot['name'], 'vol': volume['name']})
             return
 
