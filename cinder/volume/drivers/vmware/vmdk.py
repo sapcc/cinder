@@ -256,7 +256,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if not self._volumeops:
             max_objects = self.configuration.vmware_max_objects_retrieval
             self._volumeops = volumeops.VMwareVolumeOps(self.session,
-                                                        max_objects)
+                                                        max_objects,
+                                                        EXTENSION_KEY,
+                                                        EXTENSION_TYPE)
         return self._volumeops
 
     @property
