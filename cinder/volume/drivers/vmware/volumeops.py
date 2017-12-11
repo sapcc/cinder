@@ -35,6 +35,8 @@ LOG = logging.getLogger(__name__)
 LINKED_CLONE_TYPE = 'linked'
 FULL_CLONE_TYPE = 'full'
 
+BACKING_UUID_KEY = 'instanceUuid'
+
 
 def split_datastore_path(datastore_path):
     """Split the datastore path to components.

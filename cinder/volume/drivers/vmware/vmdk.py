@@ -2268,14 +2268,3 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param src_vref: Source Volume object
         """
         self._create_cloned_volume(volume, src_vref)
-
-@contextlib.contextmanager
-def deferred(func, *args):
-    """ Yields and calls func with the rest of the args on closing """
-    try:
-        yield
-    finally:
-        try:
-            func(*args)
-        except Exception as e:
-            LOG.error("Deferred call raised an exception - {}".format(e))
