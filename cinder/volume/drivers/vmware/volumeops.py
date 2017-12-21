@@ -1194,7 +1194,7 @@ class VMwareVolumeOps(object):
 
     def clone_backing(self, name, backing, snapshot, clone_type, datastore,
                       disk_type=None, host=None, resource_pool=None,
-                      extra_config=None, folder=None, disks_to_clone=None):
+                      extra_config=None, folder=None, device_changes=None):
         """Clone backing.
         If the clone_type is 'full', then a full clone of the source volume
         backing will be created. Else, if it is 'linked', then a linked clone
@@ -1210,7 +1210,7 @@ class VMwareVolumeOps(object):
         :param extra_config: Key-value pairs to be written to backing's
                              extra-config
         :param folder: The location of the clone
-        :param disks_to_clone: UUIDs of disks to clone
+        :param device_changes: Device changes to be applied during cloning
         """
         LOG.debug("Creating a clone of backing: %(back)s, named: %(name)s, "
                   "clone type: %(type)s from snapshot: %(snap)s on "
@@ -1231,7 +1231,7 @@ class VMwareVolumeOps(object):
         clone_spec = self._get_clone_spec(
             datastore, disk_move_type, snapshot, backing, disk_type, host=host,
             resource_pool=resource_pool, extra_config=extra_config,
-            disks_to_clone=disks_to_clone)
+            device_changes=device_changes)
 
         task = self._session.invoke_api(self._session.vim, 'CloneVM_Task',
                                         backing, folder=folder, name=name,
