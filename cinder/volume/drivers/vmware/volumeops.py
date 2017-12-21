@@ -1137,7 +1137,7 @@ class VMwareVolumeOps(object):
 
     def _get_clone_spec(self, datastore, disk_move_type, snapshot, backing,
                         disk_type, host=None, resource_pool=None,
-                        extra_config=None, disks_to_clone=None):
+                        extra_config=None, device_changes=None):
         """Get the clone spec.
         :param datastore: Reference to datastore
         :param disk_move_type: Disk move type
@@ -1148,7 +1148,7 @@ class VMwareVolumeOps(object):
         :param resource_pool: Target resource pool
         :param extra_config: Key-value pairs to be written to backing's
                              extra-config
-        :param disks_to_clone: UUIDs of disks to clone
+        :param device_changes: Device changes to be applied during cloning
         :return: Clone spec
         """
         if disk_type is not None:
@@ -1176,10 +1176,8 @@ class VMwareVolumeOps(object):
             config_spec.extraConfig = self._get_extra_config_option_values(
                 extra_config)
 
-        if disks_to_clone:
-            config_spec.deviceChange = (
-                self._create_device_change_for_disk_removal(
-                    backing, disks_to_clone))
+        if device_changes:
+            config_spec.deviceChange = device_changes
 
         LOG.debug("Spec for cloning the backing: %s.", clone_spec)
         return clone_spec
@@ -1295,6 +1293,15 @@ class VMwareVolumeOps(object):
         disk_spec.device = disk_device
         if destroy_disk:
             disk_spec.fileOperation = "destroy"
+        return disk_spec
+
+    def _create_spec_for_disk_expand(self, disk_device, new_size_in_kb):
+        cf = self._session.vim.client.factory
+        disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
+        disk_spec.operation = 'edit'
+        disk_spec.device = disk_device
+        disk_spec.device.capacityInKB = new_size_in_kb
+        disk_spec.device.capacityInBytes = disk_spec.device.capacityInKB * units.Ki
         return disk_spec
 
     def detach_disk_from_backing(self, backing, disk_device, destroy_disk=False):
