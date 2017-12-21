@@ -2188,8 +2188,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             new_size_in_kb = volume['size'] * units.Gi / units.Ki
             disk_device = self.volumeops._get_disk_device(template)
             if new_size_in_kb > disk_device.capacityInKB:
-                device_changes = self.volumeops._create_spec_for_disk_expand(disk_device,
-                                                                             volume['size'] * units.Gi / units.Ki)
+                device_changes = self.volumeops._create_spec_for_disk_expand(disk_device, new_size_in_kb)
+        
         tmp_backing = self.volumeops.clone_backing(tmp_name,
                                                    template,
                                                    None,
