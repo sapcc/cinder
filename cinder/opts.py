@@ -57,6 +57,8 @@ from cinder.keymgr import conf_key_mgr as cinder_keymgr_confkeymgr
 from cinder.message import api as cinder_message_api
 from cinder import quota as cinder_quota
 from cinder.scheduler import driver as cinder_scheduler_driver
+from cinder.scheduler.filters import shard_filter as \
+    cinder_scheduler_filters_shardfilter
 from cinder.scheduler import host_manager as cinder_scheduler_hostmanager
 from cinder.scheduler import manager as cinder_scheduler_manager
 from cinder.scheduler import scheduler_options as \
@@ -252,6 +254,7 @@ def list_opts():
                 [cinder_volume_api.volume_host_opt],
                 [cinder_volume_api.volume_same_az_opt],
                 [cinder_volume_api.az_cache_time_opt],
+                [cinder_volume_api.migrate_on_attach_opt],
                 cinder_volume_driver.volume_opts,
                 cinder_volume_driver.iser_opts,
                 cinder_volume_driver.nvmet_opts,
@@ -277,6 +280,10 @@ def list_opts():
                 cinder_zonemanager_drivers_brocade_brcdfczonedriver.brcd_opts,
                 cinder_zonemanager_drivers_cisco_ciscofczonedriver.cisco_opts,
                 cinder_zonemanager_fczonemanager.zone_manager_opts,
+            )),
+        ('keystone_group',
+            itertools.chain(
+                cinder_scheduler_filters_shardfilter.keystone_opts,
             )),
         ('key_manager',
             itertools.chain(

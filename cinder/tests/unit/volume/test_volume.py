@@ -104,6 +104,7 @@ class VolumeTestCase(base.BaseVolumeTestCase):
                               v2_fakes.fake_default_type_get(
                                   id=fake.VOLUME_TYPE2_ID))
         self.vol_type = db.volume_type_get_by_name(elevated, '__DEFAULT__')
+        self._setup_volume_types()
 
     def _create_volume(self, context, **kwargs):
         return tests_utils.create_volume(
@@ -195,6 +196,26 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # ...lets switch it and check again!
         self.volume.driver._initialized = False
         self.assertFalse(self.volume.is_working())
+
+    def _create_min_max_size_dict(self, min_size, max_size):
+        return {volume_types.MIN_SIZE_KEY: min_size,
+                volume_types.MAX_SIZE_KEY: max_size}
+
+    def _setup_volume_types(self):
+        """Creates 2 types, one with size limits, one without."""
+
+        spec_dict = self._create_min_max_size_dict(2, 4)
+        sized_vol_type_dict = {'name': 'limit',
+                               'extra_specs': spec_dict}
+        db.volume_type_create(self.context, sized_vol_type_dict)
+        self.sized_vol_type = db.volume_type_get_by_name(
+            self.context, sized_vol_type_dict['name'])
+
+        unsized_vol_type_dict = {'name': 'unsized', 'extra_specs': {}}
+        db.volume_type_create(context.get_admin_context(),
+                              unsized_vol_type_dict)
+        self.unsized_vol_type = db.volume_type_get_by_name(
+            self.context, unsized_vol_type_dict['name'])
 
     @mock.patch('cinder.tests.unit.fake_notifier.FakeNotifier._notify')
     @mock.patch.object(QUOTAS, 'reserve')
@@ -638,6 +659,35 @@ class VolumeTestCase(base.BaseVolumeTestCase):
                                    'description',
                                    volume_type=db_vol_type)
         self.assertEqual(db_vol_type.get('id'), volume['volume_type_id'])
+
+    @mock.patch('cinder.quota.QUOTAS.rollback', new=mock.MagicMock())
+    @mock.patch('cinder.quota.QUOTAS.commit', new=mock.MagicMock())
+    @mock.patch('cinder.quota.QUOTAS.reserve', return_value=["RESERVATION"])
+    def test_create_volume_with_volume_type_size_limits(self, _mock_reserve):
+        """Test that volume type size limits are enforced."""
+        volume_api = cinder.volume.api.API()
+
+        volume = volume_api.create(self.context,
+                                   2,
+                                   'name',
+                                   'description',
+                                   volume_type=self.sized_vol_type)
+        self.assertEqual(self.sized_vol_type['id'], volume['volume_type_id'])
+
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.create,
+                          self.context,
+                          1,
+                          'name',
+                          'description',
+                          volume_type=self.sized_vol_type)
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.create,
+                          self.context,
+                          5,
+                          'name',
+                          'description',
+                          volume_type=self.sized_vol_type)
 
     def test_create_volume_with_multiattach_volume_type(self):
         """Test volume creation with multiattach volume type."""
@@ -2554,6 +2604,26 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # clean up
         self.volume.delete_volume(self.context, volume)
 
+    @mock.patch.object(QUOTAS, 'limit_check')
+    @mock.patch.object(QUOTAS, 'reserve')
+    def test_extend_volume_with_volume_type_limit(self, reserve, limit_check):
+        """Test volume can be extended at API level."""
+        volume_api = cinder.volume.api.API()
+        volume = tests_utils.create_volume(
+            self.context, size=2,
+            volume_type_id=self.sized_vol_type['id'])
+
+        volume_api.scheduler_rpcapi = mock.MagicMock()
+        volume_api.scheduler_rpcapi.extend_volume = mock.MagicMock()
+
+        volume_api._extend(self.context, volume, 3)
+
+        self.assertRaises(exception.InvalidInput,
+                          volume_api._extend,
+                          self.context,
+                          volume,
+                          5)
+
     def test_extend_volume_driver_not_initialized(self):
         """Test volume can be extended at API level."""
         # create a volume and assign to host
@@ -3230,6 +3300,59 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         self.assertEqual(100, eventlet.tpool._nthreads)
         self.assertListEqual([], eventlet.tpool._threads)
         eventlet.tpool._nthreads = 20
+
+    @mock.patch('cinder.volume.volume_types.get_volume_type')
+    def test_initialize_connection_with_rejected_connector(
+            self, fake_get_volume_type):
+        ini_ret = {'ip': '1.2.3.4'}
+        connector = {'ip': '0.0.0.0'}
+        volume_type = 'fake-volume-type'
+        volume = tests_utils.create_volume(self.context)
+        host_obj = {'host': 'fake-host',
+                    'cluster_name': 'fake-cluster',
+                    'capabilities': {}}
+
+        self.override_config('allow_migration_on_attach', True)
+        fake_get_volume_type.return_value = volume_type
+
+        volume_api = cinder.volume.api.API()
+        scheduler_rpcapi = mock.Mock()
+        volume_api.scheduler_rpcapi = scheduler_rpcapi
+        volume_api.scheduler_rpcapi.find_backend_for_connector.return_value =\
+            host_obj
+
+        volume_rpcapi = mock.Mock()
+        volume_api.volume_rpcapi = volume_rpcapi
+
+        call_times = {volume.id: -1}
+
+        def _initialize_connection_side_effect(context, volume, connector):
+            call_times[volume.id] += 1
+            if call_times[volume.id] == 0:
+                # First time it rejects the connector
+                raise exception.ConnectorRejected(reason=None)
+            if call_times[volume.id] == 1:
+                # Second time (after migration) it returns the connection data
+                return ini_ret
+
+        volume_rpcapi.initialize_connection.side_effect =\
+            _initialize_connection_side_effect
+
+        conn_result =\
+            volume_api.initialize_connection(self.context, volume, connector)
+
+        self.assertEqual(conn_result, ini_ret)
+        volume_rpcapi.initialize_connection.assert_has_calls([
+            mock.call(self.context, volume, connector),
+            mock.call(self.context, volume, connector)
+        ])
+        volume_rpcapi.migrate_volume.assert_called_once_with(
+            self.context, volume, mock.ANY, force_host_copy=False,
+            wait_for_completion=True)
+        backend = volume_rpcapi.migrate_volume.call_args[0][2]
+        self.assertEqual(backend.host, host_obj['host'])
+        self.assertEqual(backend.cluster_name, host_obj['cluster_name'])
+        self.assertEqual(backend.capabilities, host_obj['capabilities'])
 
 
 class VolumeTestCaseLocks(base.BaseVolumeTestCase):

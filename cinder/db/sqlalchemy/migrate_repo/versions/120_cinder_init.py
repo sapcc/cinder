@@ -410,6 +410,7 @@ def define_tables(meta):
         Column('until_refresh', Integer(), nullable=True),
         Index('quota_usage_project_resource_idx',
               'project_id', 'resource'),
+        UniqueConstraint('project_id', 'resource', 'deleted'),
         mysql_engine='InnoDB',
         mysql_charset='utf8',
     )
@@ -523,7 +524,6 @@ def define_tables(meta):
         Column('salt', String(255)),
         Column('crypt_hash', String(255)),
         Column('expires_at', DateTime(timezone=False)),
-        Column('no_snapshots', Boolean, default=False),
         mysql_engine='InnoDB',
         mysql_charset='utf8'
     )
