@@ -19,12 +19,12 @@ Classes and utility methods for datastore selection.
 
 import random
 
+from oslo_concurrency.lockutils import lock
 from oslo_log import log as logging
 from oslo_vmware import pbm
 from oslo_vmware import vim_util
 
 from cinder.i18n import _LE
-from cinder import coordination
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 
 
@@ -61,8 +61,11 @@ class DatastoreSelector(object):
         self._max_objects = max_objects
         self._profile_id_cache = {}
 
-    @coordination.synchronized('vmware-datastore-profile-{profile_name}')
     def get_profile_id(self, profile_name):
+        with lock(profile_name, __name__):
+            return self._get_profile_id(profile_name)
+
+    def _get_profile_id(self, profile_name):
         """Get vCenter profile ID for the given profile name.
 
         :param profile_name: profile name
