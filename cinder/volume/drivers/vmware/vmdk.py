@@ -302,6 +302,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
     @property
     def volumeops(self):
+        if not self._volumeops:
+            max_objects = self.configuration.vmware_max_objects_retrieval
+            self._volumeops = volumeops.VMwareVolumeOps(self.session,
+                                                        max_objects,
+                                                        EXTENSION_KEY,
+                                                        EXTENSION_TYPE
+                                                        )
         return self._volumeops
 
     @property
@@ -1873,8 +1880,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._register_extension()
 
         max_objects = self.configuration.vmware_max_objects_retrieval
-        self._volumeops = volumeops.VMwareVolumeOps(
-            self.session, max_objects, EXTENSION_KEY, EXTENSION_TYPE)
         self._ds_sel = hub.DatastoreSelector(
             self.volumeops, self.session, max_objects, ds_regex=self._ds_regex)
 
