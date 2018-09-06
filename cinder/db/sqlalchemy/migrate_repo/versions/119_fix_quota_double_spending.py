@@ -18,12 +18,14 @@ from sqlalchemy import select, join, and_
 from oslo_log import log as logging
 
 LOG = logging.getLogger(__name__)
+META = MetaData()
+
 
 def quota_usages_table(migrate_engine):
-    meta = MetaData()
-    meta.bind = migrate_engine
+    global META
+    META.bind = migrate_engine
 
-    return Table('quota_usages', meta, autoload=True)
+    return Table('quota_usages', META, autoload=True)
 
 
 def _build_constraint(migrate_engine, quota_usages=None):
@@ -36,6 +38,7 @@ def _build_constraint(migrate_engine, quota_usages=None):
 
 
 def upgrade(migrate_engine):
+    global META
     quota_usages = quota_usages_table(migrate_engine)
 
     qu1 = quota_usages.alias('qu1')
@@ -48,15 +51,23 @@ def upgrade(migrate_engine):
             qu1.c.deleted == qu2.c.deleted,
         )
     )).where(
-        qu1.c.id>qu2.c.id
+        qu1.c.id > qu2.c.id
     )
 
+    reservations = Table('reservations', META, autoload=True)
+
+    query = reservations.delete(
+        whereclause=and_(reservations.c.usage_id.in_(duplicates),
+                         reservations.c.deleted)
+    )
+
+    migrate_engine.execute(query)
 
     query = quota_usages.delete(
         whereclause=quota_usages.c.id.in_(duplicates)
     )
 
-    result = migrate_engine.execute(query)
+    migrate_engine.execute(query)
     cons = _build_constraint(migrate_engine, quota_usages=quota_usages)
     cons.create()
 
