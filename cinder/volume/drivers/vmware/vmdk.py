@@ -327,6 +327,27 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self._stats = self._get_volume_stats()
         return self._stats
 
+    def _get_object_properties(self, obj_content):
+        props = {}
+        if hasattr(obj_content, 'propSet'):
+            prop_set = obj_content.propSet
+            if prop_set:
+                props = {prop.name: prop.val for prop in prop_set}
+        return props
+
+    def _is_datastore_accessible(self, ds_summary, ds_host_mounts,
+                                 available_hosts):
+        # available_hosts empty => vmware_cluster_name not specified => don't
+        # filter by hosts
+        cluster_access_to_ds = not available_hosts
+        for host_mount in ds_host_mounts.DatastoreHostMount:
+            for avlbl_host in available_hosts:
+                if avlbl_host.value == host_mount.key.value:
+                    cluster_access_to_ds = True
+        return (ds_summary.accessible
+                and not self.volumeops._in_maintenance(ds_summary)
+                and cluster_access_to_ds)
+
     def _get_volume_stats(self):
         backend_name = self.configuration.safe_get('volume_backend_name')
         if not backend_name:
@@ -377,7 +398,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     self.session.vim.service_content.rootFolder,
                     [vim_util.build_recursive_traversal_spec(client_factory)]))
         prop_spec = vim_util.build_property_spec(
-            client_factory, 'Datastore', ['summary'])
+            client_factory, 'Datastore', ['summary', 'host'])
         filter_spec = vim_util.build_property_filter_spec(
             client_factory, prop_spec, object_specs)
         options = client_factory.create('ns0:RetrieveOptions')
@@ -386,13 +407,17 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self.session.vim.service_content.propertyCollector,
             specSet=[filter_spec],
             options=options)
+        available_hosts = self._get_hosts(self._clusters)
         global_capacity = 0
         global_free = 0
         while True:
             for ds in result.objects:
-                summary = ds.propSet[0].val
-                global_capacity += summary.capacity
-                global_free += summary.freeSpace
+                ds_props = self._get_object_properties(ds)
+                summary = ds_props['summary']
+                if self._is_datastore_accessible(summary, ds_props['host'],
+                                                 available_hosts):
+                    global_capacity += summary.capacity
+                    global_free += summary.freeSpace
             if getattr(result, 'token', None):
                 result = self.session.vim.ContinueRetrievePropertiesEx(
                     self.session.vim.service_content.propertyCollector,
