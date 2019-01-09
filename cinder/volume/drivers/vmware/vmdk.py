@@ -1360,8 +1360,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                                        image_service, image_id,
                                                        image_meta['size'],
                                                        image_adapter_type)
-
-                    return None, True
             except (exceptions.VimException,
                     exceptions.VMwareDriverException):
                 with excutils.save_and_reraise_exception():
@@ -1374,6 +1372,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                        'image_id': image_id})
 
             self._extend_backing_disk_if_required(volume)
+
+            return None, True
 
         return None, False
 
