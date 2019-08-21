@@ -443,7 +443,6 @@ class VolumeTypeProjects(BASE, CinderBase):
     volume_type_id = Column(String, ForeignKey('volume_types.id'),
                             nullable=False)
     project_id = Column(String(255))
-    deleted = Column(Integer, default=0)
 
     volume_type = relationship(
         VolumeTypes,
