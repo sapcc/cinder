@@ -1347,19 +1347,19 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self.volumeops.extend_virtual_disk(new_size_in_gb, root_vmdk_path,
                                            datacenter)
         self.volumeops.reload_backing(backing)
-    
+
     def _extend_backing_online(self, backing, new_size_in_gb, attachedvm):
-        """ Extend volume backing's virtual disk online
+        """Extend volume backing's virtual disk online
 
         :param backing: volume backing
         :param new_size_in_gb: new size of virtual disk
-        :param attachedvm: the mo id of the vm where the virtual disk is attached currenly
+        :param attachedvm: the id of the vm where the virtual disk is attached
         """
         root_vmdk_path = self.volumeops.get_vmdk_path(backing)
-        self.volumeops.extend_virtual_disk_online(new_size_in_gb,root_vmdk_path, 
+        self.volumeops.extend_virtual_disk_online(new_size_in_gb,
+                                                  root_vmdk_path,
                                                   attachedvm)
         self.volumeops.reload_backing(backing)
-
 
     def clone_image(self, context, volume, image_location,
                     image_meta, image_service):
@@ -1753,14 +1753,14 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             try:
                 self._extend_backing_online(backing, new_size, attachedvm)
                 LOG.info("Successfully extended volume: %(vol)s to size: "
-                     "%(size)s GB.",
-                     {'vol': vol_name, 'size': new_size})
+                         "%(size)s GB.",
+                         {'vol': vol_name, 'size': new_size})
                 return
             except exceptions.NoDiskSpaceException:
                 LOG.warning("Unable to extend volume: %(vol)s to size: "
-                        "%(size)s on current datastore due to insufficient"
-                        " space.",
-                        {'vol': vol_name, 'size': new_size})
+                            "%(size)s on current datastore due to insufficient"
+                            " space.",
+                            {'vol': vol_name, 'size': new_size})
                 return
         # try extending vmdk in place offline
         try:
