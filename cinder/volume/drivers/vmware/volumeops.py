@@ -656,29 +656,29 @@ class VMwareVolumeOps(object):
                     device.backing.fileName == path:
                 disk = device
                 break
-        if disk:
-            disk.capacityInKB = size_in_kb
-            delattr(disk, 'capacityInBytes')
-            delattr(disk, 'deviceInfo')
-            device_change = []
-            devspec = cf.create('ns0:VirtualDeviceConfigSpec')
-            devspec.operation = 'edit'
-            devspec.device = disk
-            device_change.append(devspec)
-            config_spec.deviceChange = device_change
-            task = self._session.invoke_api(self._session.vim,
-                                            "ReconfigVM_Task",
-                                            vm_ref,
-                                            spec=config_spec)
-            self._session.wait_for_task(task)
-            LOG.info("Successfully extended virtual disk: %(path)s to "
-                     "%(size)s GB.",
-                     {'path': path, 'size': requested_size_in_gb})
         else:
             msg = str.format("Error during online-resize of disk: %(path)s to "
                              "%(size)s GB. Can't find the attachment",
                              {'path': path, 'size': requested_size_in_gb})
             raise exceptions.VimException(msg)
+
+        disk.capacityInKB = size_in_kb
+        delattr(disk, 'capacityInBytes')
+        delattr(disk, 'deviceInfo')
+        device_change = []
+        devspec = cf.create('ns0:VirtualDeviceConfigSpec')
+        devspec.operation = 'edit'
+        devspec.device = disk
+        device_change.append(devspec)
+        config_spec.deviceChange = device_change
+        task = self._session.invoke_api(self._session.vim,
+                                        "ReconfigVM_Task",
+                                        vm_ref,
+                                        spec=config_spec)
+        self._session.wait_for_task(task)
+        LOG.info("Successfully extended virtual disk: %(path)s to "
+                 "%(size)s GB.",
+                 {'path': path, 'size': requested_size_in_gb})
 
     def _create_controller_config_spec(self, adapter_type):
         """Returns config spec for adding a disk controller."""
