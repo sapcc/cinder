@@ -655,6 +655,7 @@ class VMwareVolumeOps(object):
             if device.__class__.__name__ == "VirtualDisk" and \
                     device.backing.fileName == path:
                 disk = device
+                break
         if disk:
             disk.capacityInKB = size_in_kb
             delattr(disk, 'capacityInBytes')
@@ -675,7 +676,7 @@ class VMwareVolumeOps(object):
                      {'path': path, 'size': requested_size_in_gb})
         else:
             msg = str.format("Error during online-resize of disk: %(path)s to "
-                             "%(size)s GB.",
+                             "%(size)s GB. Can't find the attachment",
                              {'path': path, 'size': requested_size_in_gb})
             raise exceptions.VimException(msg)
 
