@@ -1750,7 +1750,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                      "extend the virtual disk.", vol_name)
             return
         if (self._in_use(volume) and not volume['multiattach'] and
-            self.configuration.vmware_online_resize):
+                self.configuration.vmware_online_resize):
             attachments = volume.volume_attachment
             instance_uuid = attachments[0]['instance_uuid']
             attachedvm = self.volumeops.get_backing_by_uuid(instance_uuid)
