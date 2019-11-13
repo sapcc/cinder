@@ -153,6 +153,9 @@ vmdk_opts = [
                      ' lazily when the volume is created without any source. '
                      'The backend volume is created when the volume is '
                      'attached, uploaded to image service or during backup.'),
+    cfg.BoolOpt('vmware_online_resize',
+                default=True,
+                help='If true, enables volume resize in in-use state'),   
 ]
 
 CONF = cfg.CONF
@@ -1746,7 +1749,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             LOG.info("There is no backing for volume: %s; no need to "
                      "extend the virtual disk.", vol_name)
             return
-        if self._in_use(volume) and not volume['multiattach']:
+        if (self._in_use(volume) and not volume['multiattach'] and
+            self.configuration.vmware_online_resize):
             attachments = volume.volume_attachment
             instance_uuid = attachments[0]['instance_uuid']
             attachedvm = self.volumeops.get_backing_by_uuid(instance_uuid)
