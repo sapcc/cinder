@@ -2055,7 +2055,8 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
     @mock.patch.object(VMDK_DRIVER, '_get_disk_type')
     def test_get_connection_import_data(self, get_disk_type, get_adapter_type,
                                         get_extra_config,
-                                        select_ds_for_volume, vops):
+                                        select_ds_for_volume, vops,
+                                        controller_type):
         volume = self._create_volume_obj(size=1)
         folder = mock.Mock(value=mock.Mock())
         rp = mock.Mock(value=mock.Mock())
@@ -2064,10 +2065,10 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             'resource_pool': rp.value,
             'vm': {
                 'path_name': '[ds-1]',
-                'guest_id': 'guest-id',
-                'num_cpus': 1,
-                'memory_mb': 128,
-                'vmx_version': 'vmx-8',
+                'guest_id': volumeops.VM_GUEST_ID,
+                'num_cpus': volumeops.VM_NUM_CPUS,
+                'memory_mb': volumeops.VM_MEMORY_MB,
+                'vmx_version': volumeops.VMX_VERSION,
                 'extension_key': 'foo-extension-key',
                 'extension_type': 'foo-extension-type',
                 'extra_config': {}
@@ -2078,33 +2079,29 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                 'key': 1,
                 'create': True,
                 'shared_bus': 'shared',
-                'bus_number': 1
+                'bus_number': volumeops.CONTROLLER_DEVICE_BUS_NUMBER
             },
             'disk': {
                 'type': 'diskTypeOne',
                 'key': -101,
                 'capacity_in_kb': 1024 * 1024,
-                'eagerly_scrub': None,
+                'eagerly_scrub': False,
                 'thin_provisioned': True
             }
         }
 
-        vops.get_controller_type.return_value = mock_data['controller']['type']
+        controller_type.get_controller_type.return_value = mock_data[
+            'controller']['type']
         vops.get_controller_key_and_spec.return_value = (mock_data[
                                                              'controller'][
                                                              'key'],
                                                          mock.Mock())
         vops.get_vm_path_name.return_value = mock_data['vm']['path_name']
-        vops.get_vm_guest_id.return_value = mock_data['vm']['guest_id']
-        vops.get_vm_num_cpus.return_value = mock_data['vm']['num_cpus']
-        vops.get_vm_memory_mb.return_value = mock_data['vm']['memory_mb']
         vops.get_vmx_version.return_value = mock_data['vm']['vmx_version']
         vops._extension_key = mock_data['vm']['extension_key']
         vops._extension_type = mock_data['vm']['extension_type']
         vops.get_controller_device_shared_bus.return_value = mock_data[
             'controller']['shared_bus']
-        vops.get_controller_device_default_bus_number.return_value = \
-            mock_data['controller']['bus_number']
         vops.get_disk_device_key.return_value = mock_data['disk']['key']
         vops.get_disk_capacity_in_kb.return_value = mock_data['disk'][
             'capacity_in_kb']
