@@ -968,7 +968,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if (connector and 'platform' in connector and 'os_type' in connector
                 and self._is_volume_subject_to_import_vapp(volume)):
             backing = self.volumeops.get_backing_by_uuid(volume['id'])
-
             self.volumeops.rename_backing(backing, volume['name'])
             self.volumeops.update_backing_disk_uuid(backing, volume['id'])
 
