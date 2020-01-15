@@ -156,6 +156,13 @@ vmdk_opts = [
     cfg.BoolOpt('vmware_online_resize',
                 default=True,
                 help='If true, enables volume resize in in-use state'),
+    cfg.BoolOpt('vmware_profile_check_on_attach',
+                default=False,
+                help='If False, we are not checking the storage policy' 
+                      ' in case of attach operation.'
+                     'This is required to allow DS maintanance,' 
+                     'and still keep constaint attachment times for k8s'),
+
 ]
 
 CONF = cfg.CONF
@@ -2057,7 +2064,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # the instance and compliant with the storage profile.
         datastore = self.volumeops.get_datastore(backing)
         backing_profile = None
-        if self._storage_policy_enabled:
+        if (self._storage_policy_enabled and
+                self.configuration.vmware_profile_check_on_attach):
             backing_profile = self._get_storage_profile(volume)
         if (self.volumeops.is_datastore_accessible(datastore, host) and
                 self.ds_sel.is_datastore_compliant(datastore,
