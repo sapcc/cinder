@@ -158,11 +158,10 @@ vmdk_opts = [
                 help='If true, enables volume resize in in-use state'),
     cfg.BoolOpt('vmware_profile_check_on_attach',
                 default=False,
-                help='If False, we are not checking the storage policy' 
+                help='If False, we are not checking the storage policy'
                       ' in case of attach operation.'
-                     'This is required to allow DS maintanance,' 
+                     'This is required to allow DS maintanance,'
                      'and still keep constaint attachment times for k8s'),
-
 ]
 
 CONF = cfg.CONF
