@@ -2120,7 +2120,6 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         self.assertEqual(mock_data, data)
 
-
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch('oslo_vmware.vim_util.get_moref')
     @mock.patch.object(VMDK_DRIVER, '_create_backing')
