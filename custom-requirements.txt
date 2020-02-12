@@ -1,0 +1,6 @@
+# This file is for SAP to override a few packages
+# that have been modified from upstream repos
+# The SAP loci system looks for this file to install
+# custom required packages for this project.
+oslo.vmware @ git+https://github.com/sapcc/oslo.vmware.git@stable/queens-m3
+os-brick @ git+https://github.com/sapcc/os-brick.git@stable/queens-m3
