@@ -284,7 +284,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # 3.4.0 - added NFS41 as a supported datastore type
     # 3.4.1 - volume capacity stats implemented
     # 3.4.2 - deprecated option vmware_storage_profile
-    VERSION = '3.4.2'
+
+    # 3.4.2.99.0 - Added reporting of thin_provisioning_support,
+    #          max_over_subscription_ratio.
+    VERSION = '3.4.2.99.0'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "VMware_CI"
@@ -355,13 +358,19 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         backend_name = self.configuration.safe_get('volume_backend_name')
         if not backend_name:
             backend_name = self.__class__.__name__
+
+        max_over_subscription_ratio = self.configuration.safe_get(
+            'max_over_subscription_ratio')
         data = {'volume_backend_name': backend_name,
                 'vendor_name': 'VMware',
                 'driver_version': self.VERSION,
                 'storage_protocol': 'vmdk',
                 'reserved_percentage': self.configuration.reserved_percentage,
                 'total_capacity_gb': 'unknown',
-                'free_capacity_gb': 'unknown'}
+                'free_capacity_gb': 'unknown',
+                'thin_provisioning_support': True,
+                'thick_provisioning_support': True,
+                'max_over_subscription_ratio': max_over_subscription_ratio}
         client_factory = self.session.vim.client.factory
         object_specs = []
         if (self._storage_policy_enabled and
