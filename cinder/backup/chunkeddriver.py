@@ -846,14 +846,12 @@ class BackupRestoreHandle(object):
         remove the corresponding object reader, freeing up the memory.
         """
         obj_name = segment.obj['name']
-        for _segment in self._segments[self._idx:]:
+        for _segment in self._segments[self._idx + 1:]:
             if obj_name == _segment.obj['name']:
                 return
 
-        obj_reader = self._object_readers[obj_name]
-        if obj_reader:
-            obj_reader.close()
-            self._object_readers.pop(obj_name)
+        self._object_readers[obj_name].close()
+        self._object_readers.pop(obj_name)
 
     def add_object(self, metadata_object):
         """Merges a backup chunk over the self._segments list.

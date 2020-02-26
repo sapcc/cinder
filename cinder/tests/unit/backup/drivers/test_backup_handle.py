@@ -147,7 +147,10 @@ class BackupRestoreHandleTestCase(test.TestCase):
 
         handle = chunkeddriver.BackupRestoreHandle(self._driver)
         handle._object_readers = obj_readers_mock
-        handle._segments = [self._segment, chunkeddriver.Segment(obj)]
+        handle._segments = [self._segment,
+                            chunkeddriver.Segment(obj),
+                            chunkeddriver.Segment(self._obj)]
+
         handle._idx = 0
         handle._clear_reader(self._segment)
         obj_readers_mock.__getitem__.assert_not_called()
@@ -155,6 +158,12 @@ class BackupRestoreHandleTestCase(test.TestCase):
         obj_readers_mock.pop.assert_not_called()
 
         handle._idx = 1
+        handle._clear_reader(self._segment)
+        obj_readers_mock.__getitem__.assert_not_called()
+        obj_reader.close.assert_not_called()
+        obj_readers_mock.pop.assert_not_called()
+
+        handle._idx = 2
         handle._clear_reader(self._segment)
         obj_readers_mock.__getitem__.assert_called_once_with(self._obj['name'])
         obj_reader.close.assert_called_once_with()
