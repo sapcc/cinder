@@ -860,11 +860,12 @@ class BackupRestoreHandle(object):
         # make a copy because we will modify it later
         alt_obj = metadata_object.copy()
         found = False
-        for idx, segment in enumerate(self._segments):
+        idx = 0
+        while idx < len(self._segments):
+            segment = self._segments[idx]
             offset = alt_obj['offset']
             length = alt_obj['length']
             end = offset + length
-            alt_idx = idx
 
             # the object can be merged with this segment
             if segment.offset <= offset < segment.end:
@@ -877,25 +878,27 @@ class BackupRestoreHandle(object):
                 # keep the beginning of this segment
                 diff = offset - segment.offset
                 if diff > 0:
-                    self._segments.insert(alt_idx,
+                    self._segments.insert(idx,
                                           Segment.of(segment,
                                                      length=diff))
-                    alt_idx += 1
+                    idx += 1
 
                 # if the object ends before this segment's end, then we keep
                 # the last part of this segment, otherwise we don't
                 diff = segment.end - end
                 if diff > 0:
-                    self._segments.insert(alt_idx, Segment(alt_obj))
-                    alt_idx += 1
-                    self._segments.insert(alt_idx,
+                    self._segments.insert(idx, Segment(alt_obj))
+                    idx += 1
+                    self._segments.insert(idx,
                                           Segment.of(segment,
                                                      length=diff,
                                                      offset=end))
+                    idx += 1
                 else:
-                    self._segments.insert(alt_idx,
+                    self._segments.insert(idx,
                                           Segment(alt_obj,
                                                   length=length + diff))
+                    idx += 1
                     # if there is nothing left from this object, we're done
                     if diff == 0:
                         break
@@ -903,6 +906,8 @@ class BackupRestoreHandle(object):
                     # merging it over the next segment
                     alt_obj['offset'] = segment.end
                     alt_obj['length'] = abs(diff)
+            else:
+                idx += 1
 
         # we did not find a segment which can be merged with this object,
         # so we're adding this object straight to the list, just as it is.
