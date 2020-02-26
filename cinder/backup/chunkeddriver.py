@@ -627,9 +627,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
 
     def _restore_v1(self, volume_id, restore_handle, volume_file):
         """Restore a v1 volume backup."""
-        while restore_handle.has_next():
-            segment = restore_handle.get_next()
-
+        for segment in restore_handle:
             LOG.debug('restoring object. backup: %(backup_id)s, '
                       'container: %(container)s, object name: '
                       '%(object_name)s, volume: %(volume_id)s.',
@@ -784,12 +782,18 @@ class BackupRestoreHandle(object):
         self._driver = chunked_driver
         self._segments = []
         self._object_readers = {}
+
+    def __iter__(self):
         self._idx = -1
+        return self
 
-    def has_next(self):
-        return self._idx < len(self._segments) - 1
+    # Python2 compatibility, __next__ is for Python3.
+    def next(self):
+        return self.__next__()
 
-    def get_next(self):
+    def __next__(self):
+        if self._idx >= len(self._segments) - 1:
+            raise StopIteration
         self._idx += 1
         return self._segments[self._idx]
 
