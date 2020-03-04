@@ -938,6 +938,7 @@ class Segment(object):
 
     @staticmethod
     def of(segment, offset=None, length=None):
+        """Returns a new segment with different offset and/or length."""
         return Segment(segment.obj,
                        segment.offset if offset is None else offset,
                        segment.length if length is None else length)
