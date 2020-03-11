@@ -589,6 +589,7 @@ class VMwareVolumeOps(object):
                   "of datacenter: %(datacenter)s.",
                   {'path_comp': path_comp,
                    'datacenter': datacenter})
+        LOG.debug("FOLDER CACHE = '%s'" % self._folder_cache)
         path = "/" + datacenter.value
         parent = self._folder_cache.get(path)
         if not parent:
