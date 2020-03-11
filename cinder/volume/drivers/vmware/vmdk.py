@@ -130,7 +130,8 @@ vmdk_opts = [
     cfg.MultiStrOpt('vmware_cluster_name',
                     help='Name of a vCenter compute cluster where volumes '
                          'should be created.'),
-    cfg.MultiStrOpt('vmware_storage_profile',
+    cfg.ListOpt('vmware_storage_profile',
+                    default=[],
                     help='Names of storage profiles to be monitored.'),
     cfg.IntOpt('vmware_connection_pool_size',
                default=10,
@@ -349,16 +350,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         max_over_subscription_ratio = self.configuration.safe_get(
             'max_over_subscription_ratio')
-        data = {'volume_backend_name': backend_name,
-                'vendor_name': 'VMware',
-                'driver_version': self.VERSION,
-                'storage_protocol': 'vmdk',
-                'reserved_percentage': self.configuration.reserved_percentage,
-                'total_capacity_gb': 'unknown',
-                'free_capacity_gb': 'unknown',
-                'thin_provisioning_support': True,
-                'thick_provisioning_support': True,
-                'max_over_subscription_ratio': max_over_subscription_ratio}
+
+        pools = []
         client_factory = self.session.vim.client.factory
         object_specs = []
         if (self._storage_policy_enabled and
@@ -366,10 +359,14 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # Get all available storage profiles on the vCenter and extract
             # the IDs of those that we want to observe
             profiles_ids = []
+            LOG.debug("Profiles = '%s'" % self.configuration.vmware_storage_profile)
+            for profile in self.configuration.vmware_storage_profile:
             for profile in pbm.get_all_profiles(self.session):
                 if profile.name in self.configuration.vmware_storage_profile:
                     profiles_ids.append(profile.profileId)
+
             # Get all matching Datastores for each profile
+            LOG.debug("Storage Profile IDs = '%s'" % profiles_ids)
             datastores = {}
             for profile_id in profiles_ids:
                 for h in pbm.filter_hubs_by_profile(self.session,
@@ -383,6 +380,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         # datastore
                         datastores[h.hubId] = vim_util.get_moref(h.hubId,
                                                                  "Datastore")
+            LOG.debug("datastores = '%s'" % datastores)
             # Build property collector object specs out of them
             for datastore_ref in six.itervalues(datastores):
                 object_specs.append(
@@ -409,19 +407,40 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             options=options)
         global_capacity = 0
         global_free = 0
+        pools = []
         while True:
             for ds in result.objects:
                 summary = ds.propSet[0].val
+                pool_state = "up" if summary.accessible  == "True" else "down"
+                pool = {'pool_name': summary.name,
+                        'total_capacity_gb': round(summary.capacity / units.Gi),
+                        'free_capacity_gb': round(summary.freeSpace / units.Gi),
+                        'thin_provisioning_support': True,
+                        'max_over_subscription_ratio': max_over_subscription_ratio,
+                        'reserved_percentage': self.configuration.reserved_percentage,
+                        'Multiattach': False,
+                        'datastore_type': summary.type,
+                        'location_url': summary.url,
+                        'backend_state': pool_state
+                        }
+                LOG.debug("DataStore Summary = '%s'" % summary)
                 global_capacity += summary.capacity
                 global_free += summary.freeSpace
+                pools.append(pool)
             if getattr(result, 'token', None):
                 result = self.session.vim.ContinueRetrievePropertiesEx(
                     self.session.vim.service_content.propertyCollector,
                     result.token)
             else:
                 break
-        data['total_capacity_gb'] = round(global_capacity / units.Gi)
-        data['free_capacity_gb'] = round(global_free / units.Gi)
+        data = {'volume_backend_name': backend_name,
+                'vendor_name': 'VMware',
+                'driver_version': self.VERSION,
+                'storage_protocol': 'vmdk',
+                'total_capacity_gb': round(global_capacity / units.Gi),
+                'free_capacity_gb': round(global_free / units.Gi),
+                'pools': pools
+                }
         return data
 
     def _verify_volume_creation(self, volume):
