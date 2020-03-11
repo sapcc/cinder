@@ -66,6 +66,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self._config.vmware_max_objects_retrieval = self.MAX_OBJECTS
         self._config.vmware_storage_profile = None
         self._config.reserved_percentage = 0
+        self._config.vmware_datastores_as_pools = False
         self._driver = fcd.VMwareVStorageObjectDriver(
             configuration=self._config)
         self._driver._vc_version = self.VC_VERSION
