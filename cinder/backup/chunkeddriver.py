@@ -33,6 +33,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_service import loopingcall
 from oslo_utils import excutils
+from oslo_utils import importutils
 from oslo_utils import units
 import six
 
@@ -77,7 +78,9 @@ class ChunkedBackupDriver(driver.BackupDriver):
     """
 
     DRIVER_VERSION = '1.0.0'
-    DRIVER_VERSION_MAPPING = {'1.0.0': '_restore_v1'}
+    DRIVER_VERSION_MAPPING = {
+        '1.0.0': 'cinder.backup.chunkeddriver.BackupRestoreHandleV1'
+    }
 
     def _get_compressor(self, algorithm):
         try:
@@ -625,39 +628,6 @@ class ChunkedBackupDriver(driver.BackupDriver):
 
         self._finalize_backup(backup, container, object_meta, object_sha256)
 
-    def _restore_v1(self, volume_id, restore_handle, volume_file):
-        """Restore a v1 volume backup."""
-        for segment in restore_handle:
-            LOG.debug('restoring object. backup: %(backup_id)s, '
-                      'container: %(container)s, object name: '
-                      '%(object_name)s, volume: %(volume_id)s.',
-                      {
-                          'backup_id': segment.obj['backup_id'],
-                          'container': segment.obj['container'],
-                          'object_name': segment.obj['name'],
-                          'volume_id': volume_id,
-                      })
-
-            # write the segment bytes to the file
-            volume_file.write(restore_handle.read(segment))
-
-            # force flush every write to avoid long blocking write on close
-            volume_file.flush()
-
-            # Be tolerant to IO implementations that do not support fileno()
-            try:
-                fileno = volume_file.fileno()
-            except IOError:
-                LOG.info("volume_file does not support fileno() so skipping "
-                         "fsync()")
-            else:
-                os.fsync(fileno)
-
-            # Restoring a backup to a volume can take some time. Yield so other
-            # threads can run, allowing for among other things the service
-            # status to be updated
-            eventlet.sleep(0)
-
     def restore(self, backup, volume_id, volume_file):
         """Restore the given volume backup from backup repository."""
         backup_id = backup['id']
@@ -676,9 +646,12 @@ class ChunkedBackupDriver(driver.BackupDriver):
         metadata_version = metadata['version']
         LOG.debug('Restoring backup version %s', metadata_version)
         try:
-            restore_func = getattr(self, self.DRIVER_VERSION_MAPPING.get(
-                metadata_version))
-        except TypeError:
+            restore_handle = importutils.import_object(
+                self.DRIVER_VERSION_MAPPING[metadata_version],
+                self,
+                volume_id,
+                volume_file)
+        except (KeyError, ImportError):
             err = (_('No support to restore backup version %s')
                    % metadata_version)
             raise exception.InvalidBackup(reason=err)
@@ -696,36 +669,11 @@ class ChunkedBackupDriver(driver.BackupDriver):
 
         # Layer the backups in order, from the parent to the last child
         index = len(backup_list) - 1
-        restore_handle = BackupRestoreHandle(self)
         while index >= 0:
             backup1 = backup_list[index]
             index = index - 1
             metadata = self._read_metadata(backup1)
-            metadata_objects = metadata['objects']
-            metadata_object_names = []
-            for obj in metadata_objects:
-                metadata_object_names.extend(obj.keys())
-            LOG.debug('metadata_object_names = %s.', metadata_object_names)
-            prune_list = [self._metadata_filename(backup1),
-                          self._sha256_filename(backup1)]
-            object_names = [object_name for object_name in
-                            self._generate_object_names(backup1)
-                            if object_name not in prune_list]
-            if sorted(object_names) != sorted(metadata_object_names):
-                err = _('restore_backup aborted, actual object list '
-                        'does not match object list stored in metadata.')
-                raise exception.InvalidBackup(reason=err)
-
-            for metadata_object in metadata_objects:
-                object_name, obj = list(metadata_object.items())[0]
-                # keep the information needed to read the object from the
-                # storage backend
-                obj['name'] = object_name
-                obj['backup_id'] = backup['id']
-                obj['container'] = backup['container']
-                obj['extra_metadata'] = metadata.get('extra_metadata')
-
-                restore_handle.add_object(obj)
+            restore_handle.add_backup(backup1, metadata)
 
             volume_meta = metadata.get('volume_meta', None)
             try:
@@ -738,7 +686,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
                 LOG.error(msg)
                 raise exception.BackupOperationError(msg)
 
-        restore_func(volume_id, restore_handle, volume_file)
+        restore_handle.finish_restore()
 
         LOG.debug('restore %(backup_id)s to %(volume_id)s finished.',
                   {'backup_id': backup_id, 'volume_id': volume_id})
@@ -778,26 +726,51 @@ class ChunkedBackupDriver(driver.BackupDriver):
 
 class BackupRestoreHandle(object):
     """Class used to reconstruct a backup from chunks."""
-    def __init__(self, chunked_driver):
+    def __init__(self, chunked_driver, volume_id, volume_file):
         self._driver = chunked_driver
+        self._volume_id = volume_id
+        self._volume_file = volume_file
         self._segments = []
         self._object_readers = {}
-
-    def __iter__(self):
         self._idx = -1
-        return self
 
-    # Python2 compatibility, __next__ is for Python3.
-    def next(self):
-        return self.__next__()
+    def add_backup(self, backup, metadata):
+        """This is called for each backup in the incremental backups chain."""
+        raise NotImplementedError()
 
-    def __next__(self):
-        if self._idx >= len(self._segments) - 1:
-            raise StopIteration
-        self._idx += 1
-        return self._segments[self._idx]
+    def finish_restore(self):
+        for segment in self._segments:
+            LOG.debug('restoring object. backup: %(backup_id)s, '
+                      'container: %(container)s, object name: '
+                      '%(object_name)s, volume: %(volume_id)s.',
+                      {
+                          'backup_id': segment.obj['backup_id'],
+                          'container': segment.obj['container'],
+                          'object_name': segment.obj['name'],
+                          'volume_id': self._volume_id,
+                      })
 
-    def read(self, segment):
+            # write the segment bytes to the file
+            self._volume_file.write(self._read_segment(segment))
+
+            # force flush every write to avoid long blocking write on close
+            self._volume_file.flush()
+
+            # Be tolerant to IO implementations that do not support fileno()
+            try:
+                fileno = self._volume_file.fileno()
+            except IOError:
+                LOG.info("volume_file does not support fileno() so skipping "
+                         "fsync()")
+            else:
+                os.fsync(fileno)
+
+            # Restoring a backup to a volume can take some time. Yield so other
+            # threads can run, allowing for among other things the service
+            # status to be updated
+            eventlet.sleep(0)
+
+    def _read_segment(self, segment):
         """Reads the bytes of a segment"""
         buff_reader = self._get_reader(segment)
         # seek inside the backup chunk containing this segment
@@ -915,6 +888,38 @@ class BackupRestoreHandle(object):
         # so we're adding this object straight to the list, just as it is.
         if not found:
             self._segments.append(Segment(alt_obj))
+
+
+class BackupRestoreHandleV1(BackupRestoreHandle):
+    """Handles restoring of V1 backups."""
+
+    def add_backup(self, backup, metadata):
+        """Processes a v1 volume backup for being restored."""
+        metadata_objects = metadata['objects']
+        metadata_object_names = []
+        for obj in metadata_objects:
+            metadata_object_names.extend(obj.keys())
+        LOG.debug('metadata_object_names = %s.', metadata_object_names)
+        prune_list = [self._driver._metadata_filename(backup),
+                      self._driver._sha256_filename(backup)]
+        object_names = [object_name for object_name in
+                        self._driver._generate_object_names(backup)
+                        if object_name not in prune_list]
+        if sorted(object_names) != sorted(metadata_object_names):
+            err = _('restore_backup aborted, actual object list '
+                    'does not match object list stored in metadata.')
+            raise exception.InvalidBackup(reason=err)
+
+        for metadata_object in metadata_objects:
+            object_name, obj = list(metadata_object.items())[0]
+            # keep the information needed to read the object from the
+            # storage backend
+            obj['name'] = object_name
+            obj['backup_id'] = backup['id']
+            obj['container'] = backup['container']
+            obj['extra_metadata'] = metadata.get('extra_metadata')
+
+            self.add_object(obj)
 
 
 class Segment(object):

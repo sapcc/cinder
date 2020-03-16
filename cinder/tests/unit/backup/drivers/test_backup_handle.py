@@ -26,6 +26,8 @@ class BackupRestoreHandleTestCase(test.TestCase):
     def setUp(self):
         super(BackupRestoreHandleTestCase, self).setUp()
         self._driver = mock.Mock()
+        self._volume_file = mock.Mock()
+        self._volume_id = 'volume-01'
         self._obj = {
             'offset': 100,
             'length': 50,
@@ -42,7 +44,9 @@ class BackupRestoreHandleTestCase(test.TestCase):
         # incremental
         obj3 = {'name': 'obj3', 'offset': 50, 'length': 100}
         obj4 = {'name': 'obj4', 'offset': 60, 'length': 50}
-        handle = chunkeddriver.BackupRestoreHandle(self._driver)
+        handle = chunkeddriver.BackupRestoreHandle(self._driver,
+                                                   self._volume_id,
+                                                   self._volume_file)
         handle.add_object(obj1)
         handle.add_object(obj2)
         handle.add_object(obj3)
@@ -70,13 +74,15 @@ class BackupRestoreHandleTestCase(test.TestCase):
 
     @mock.patch.object(BACKUP_RESTORE_HANDLE, '_get_reader')
     @mock.patch.object(BACKUP_RESTORE_HANDLE, '_clear_reader')
-    def test_read(self, clear_reader, get_reader):
+    def test_read_segment(self, clear_reader, get_reader):
         buff_reader_mock = mock.Mock()
         buff_reader_mock.read.return_value = b"foo"
         get_reader.return_value = buff_reader_mock
 
-        handle = chunkeddriver.BackupRestoreHandle(self._driver)
-        data = handle.read(self._segment)
+        handle = chunkeddriver.BackupRestoreHandle(self._driver,
+                                                   self._volume_id,
+                                                   self._volume_file)
+        data = handle._read_segment(self._segment)
 
         get_reader.assert_called_once_with(self._segment)
         buff_reader_mock.seek.assert_called_once_with(
@@ -88,7 +94,9 @@ class BackupRestoreHandleTestCase(test.TestCase):
     def test_get_reader(self, get_new_reader):
         new_reader = mock.Mock()
         get_new_reader.return_value = new_reader
-        handle = chunkeddriver.BackupRestoreHandle(self._driver)
+        handle = chunkeddriver.BackupRestoreHandle(self._driver,
+                                                   self._volume_id,
+                                                   self._volume_file)
         handle._get_reader(self._segment)
         get_new_reader.assert_called_once_with(self._segment)
         self.assertEqual(handle._object_readers, {
@@ -104,7 +112,9 @@ class BackupRestoreHandleTestCase(test.TestCase):
         get_obj_reader.__enter__ = mock.Mock(return_value=obj_reader)
         get_obj_reader.__exit__ = mock.Mock(return_value=False)
         self._driver._get_object_reader.return_value = get_obj_reader
-        handle = chunkeddriver.BackupRestoreHandle(self._driver)
+        handle = chunkeddriver.BackupRestoreHandle(self._driver,
+                                                   self._volume_id,
+                                                   self._volume_file)
         bytes_io = handle._get_new_reader(self._segment)
         self._driver._get_object_reader.assert_called_once_with(
             self._segment.obj['container'],
@@ -124,7 +134,9 @@ class BackupRestoreHandleTestCase(test.TestCase):
         reader.read.return_value = reader_ret
         self._driver._get_compressor.return_value = compressor
 
-        handle = chunkeddriver.BackupRestoreHandle(self._driver)
+        handle = chunkeddriver.BackupRestoreHandle(self._driver,
+                                                   self._volume_id,
+                                                   self._volume_file)
         handle._get_raw_bytes(reader, obj)
 
         self._driver._get_compressor.\
@@ -145,7 +157,9 @@ class BackupRestoreHandleTestCase(test.TestCase):
         obj_readers_mock = mock.MagicMock()
         obj_readers_mock.__getitem__.side_effect = obj_readers.__getitem__
 
-        handle = chunkeddriver.BackupRestoreHandle(self._driver)
+        handle = chunkeddriver.BackupRestoreHandle(self._driver,
+                                                   self._volume_id,
+                                                   self._volume_file)
         handle._object_readers = obj_readers_mock
         handle._segments = [self._segment,
                             chunkeddriver.Segment(obj),
