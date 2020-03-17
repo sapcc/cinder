@@ -724,6 +724,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
         LOG.debug('delete %s finished.', backup['id'])
 
 
+@six.add_metaclass(abc.ABCMeta)
 class BackupRestoreHandle(object):
     """Class used to reconstruct a backup from chunks."""
     def __init__(self, chunked_driver, volume_id, volume_file):
@@ -734,9 +735,10 @@ class BackupRestoreHandle(object):
         self._object_readers = {}
         self._idx = -1
 
+    @abc.abstractmethod
     def add_backup(self, backup, metadata):
         """This is called for each backup in the incremental backups chain."""
-        raise NotImplementedError()
+        return
 
     def finish_restore(self):
         for segment in self._segments:
