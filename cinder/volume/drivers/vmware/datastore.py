@@ -183,6 +183,34 @@ class DatastoreSelector(object):
 
         return datastores
 
+    def select_datastore_by_name(self, name):
+        """Find a datastore by it's name.
+
+            Returns a host_ref and datastore summary.
+        """
+
+        import pprint
+        host_ref = None
+        resource_pool = None
+        datastores = self._get_datastores()
+        for k,v in datastores.items():
+            #LOG.debug("DSDS(k) = '%s'" % k)
+            #LOG.debug("DSDS(v) = '%s'" % v)
+            LOG.debug("DSDS(v) = '%s'" % pprint.pformat(v))
+            if v['summary'].name == name:
+                datastore = v
+
+        summary = datastore['summary']
+        host_ref = datastore['host'][0]['key']
+        LOG.debug("DSDS summary = %s'" % pprint.pformat(summary))
+        LOG.debug("DSDS host_ref = '%s'" % pprint.pformat(host_ref))
+        host_props = self._get_host_properties(host_ref)
+        parent = host_props.get('parent')
+
+        resource_pool = self._get_resource_pool(parent)
+        LOG.debug("DSDS resource_pool = '%s'" % pprint.pformat(resource_pool))
+        return (host_ref, resource_pool, summary)
+
     def _get_host_properties(self, host_ref):
         retrieve_result = self._session.invoke_api(vim_util,
                                                    'get_object_properties',
