@@ -3588,11 +3588,30 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             else:
                 self.assertEqual((True, None), ret_val)
 
+            if capabilities and 'location_info' in capabilities:
+                if vmdk.LOCATION_DRIVER_NAME in capabilities['location_info']:
+                    if backing:
+                        _assertions_for_migration()
+                    else:
+                        _assertions_for_no_backing()
+                else:
+                    _assertions_migration_not_performed()
+            else:
+                _assertions_migration_not_performed()
+
     def test_migrate_volume_relocate_existing_backing(self):
         self.test_migrate_volume(backing=mock.Mock())
 
     def test_migrate_volume_move_to_folder_error(self):
         self.test_migrate_volume(backing=mock.Mock(), raises_error=True)
+
+    def test_migrate_volume_missing_location_info(self):
+        self.test_migrate_volume(backing=mock.Mock(), capabilities={})
+
+    def test_migrate_volume_invalid_location_info(self):
+        self.test_migrate_volume(backing=mock.Mock(), capabilities={
+            'location_info': 'invalid-location-info'
+        })
 
 
 @ddt.ddt
