@@ -109,6 +109,33 @@ class FilterScheduler(driver.Scheduler):
                                          filter_properties,
                                          allow_reschedule=True)
 
+    def find_backend_for_connector(self, context, connector, request_spec):
+        weighed_backends = self._get_weighted_candidates(context, request_spec)
+
+        if not weighed_backends:
+            raise exception.NoValidBackend(reason=_("No weighed backends "
+                                                    "available"))
+
+        def _backend_matches_connector(bck, conn):
+            key = 'connection_capabilities'
+            backend_capabilities = set(bck.obj.capabilities.get(key, []))
+            connector_capabilities = set(conn.get(key, []))
+            if not backend_capabilities and not connector_capabilities:
+                return True
+            if len(connector_capabilities & backend_capabilities) ==\
+                    len(connector_capabilities):
+                return True
+            return False
+
+        weighed_backends = list(
+            filter(lambda x: _backend_matches_connector(x, connector),
+                   weighed_backends))
+        if not weighed_backends:
+            raise exception.NoValidBackend(reason=_("No weighed backed "
+                                                    "available"))
+
+        return self._choose_top_backend(weighed_backends, request_spec)
+
     def backend_passes_filters(self, context, backend, request_spec,
                                filter_properties):
         """Check if the specified backend passes the filters."""

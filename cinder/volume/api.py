@@ -84,13 +84,20 @@ az_cache_time_opt = cfg.IntOpt('az_cache_duration',
                                help='Cache volume availability zones in '
                                     'memory for the provided duration in '
                                     'seconds')
+migrate_on_attach_opt = cfg.BoolOpt('allow_migration_on_attach',
+                                    default=False,
+                                    help="A host might recognise a connector"
+                                         "as valid but it can't use it to"
+                                         "initialize a connection. This will"
+                                         "allow to migrate the volume to a"
+                                         "valid host prior to attachment.")
 
 CONF = cfg.CONF
 CONF.register_opt(allow_force_upload_opt)
 CONF.register_opt(volume_host_opt)
 CONF.register_opt(volume_same_az_opt)
 CONF.register_opt(az_cache_time_opt)
-
+CONF.register_opt(migrate_on_attach_opt)
 CONF.import_opt('glance_core_properties', 'cinder.image.glance')
 
 LOG = logging.getLogger(__name__)
@@ -799,9 +806,40 @@ class API(base.Base):
             msg = _("The volume connection cannot be initialized in "
                     "maintenance mode.")
             raise exception.InvalidVolume(reason=msg)
-        init_results = self.volume_rpcapi.initialize_connection(context,
-                                                                volume,
-                                                                connector)
+
+        def _migrate_and_initialize_connection():
+            volume_type = {}
+            if volume.volume_type_id:
+                volume_type = volume_types.get_volume_type(
+                    context.elevated(), volume.volume_type_id)
+            request_spec = {
+                'volume_properties': volume,
+                'volume_type': volume_type,
+                'volume_id': volume.id}
+            try:
+                dest = self.scheduler_rpcapi.find_backend_for_connector(
+                    context, connector, request_spec)
+            except exception.NoValidBackend:
+                LOG.exception("The current backend couldn't be used with"
+                              "the provided connector and couldn't find"
+                              "another backend to migrate the volume to.")
+                return None
+            self.volume_rpcapi.migrate_volume(context, volume, dest,
+                                              force_host_copy=False, call=True)
+            volume.refresh()
+            return self.volume_rpcapi.initialize_connection(context, volume,
+                                                            connector)
+        init_results = None
+        try:
+            init_results = self.volume_rpcapi.initialize_connection(context,
+                                                                    volume,
+                                                                    connector)
+        except exception.ConnectorRejected:
+            with excutils.save_and_reraise_exception() as exc_context:
+                if CONF.allow_migration_on_attach:
+                    init_results = _migrate_and_initialize_connection()
+                    exc_context.reraise = False
+
         LOG.info("Initialize volume connection completed successfully.",
                  resource=volume)
         return init_results

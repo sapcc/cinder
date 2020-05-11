@@ -321,6 +321,13 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                                              reservations,
                                              old_reservations)
 
+    def find_backend_for_connector(self, context, connector, request_spec,
+                                   filter_properties=None):
+        self._wait_for_scheduler()
+
+        return self.driver.find_backend_for_connector(context, connector,
+                                                      request_spec)
+
     def manage_existing(self, context, volume, request_spec,
                         filter_properties=None):
         """Ensure that the host exists and can accept the volume."""

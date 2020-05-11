@@ -523,3 +523,57 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         self.assertRaises(exception.NoValidBackend, sched.find_retype_backend,
                           ctx, request_spec, filter_properties={},
                           migration_policy='on-demand')
+
+    @mock.patch('cinder.db.service_get_all')
+    def test_find_backend_for_connector_no_connection_capabilities(
+            self, _mock_service_get_all):
+        sched = fakes.FakeFilterScheduler()
+        sched.host_manager = fakes.FakeHostManager()
+        ctx = context.RequestContext('user', 'project', is_admin=True)
+
+        fakes.mock_host_manager_db_calls(_mock_service_get_all)
+        request_spec = {'volume_id': fake.VOLUME_ID,
+                        'volume_type': {'name': 'LVM_iSCSI'},
+                        'volume_properties': {'project_id': 1,
+                                              'size': 200}}
+        connector = {'connection_capabilities': []}
+        request_spec = objects.RequestSpec.from_primitives(request_spec)
+        weighed_backend = sched.find_backend_for_connector(ctx, connector,
+                                                           request_spec)
+        self.assertEqual('host1', utils.extract_host(weighed_backend.obj.host))
+
+    @mock.patch('cinder.db.service_get_all')
+    def test_find_backend_for_connector_with_valid_connection_capabilities(
+            self, _mock_service_get_all):
+        sched = fakes.FakeFilterScheduler()
+        sched.host_manager = fakes.FakeHostManager()
+        ctx = context.RequestContext('user', 'project', is_admin=True)
+
+        fakes.mock_host_manager_db_calls(_mock_service_get_all)
+        request_spec = {'volume_id': fake.VOLUME_ID,
+                        'volume_type': {'name': 'LVM_iSCSI'},
+                        'volume_properties': {'project_id': 1,
+                                              'size': 150}}
+        connector = {'connection_capabilities': ['host:localhost']}
+        request_spec = objects.RequestSpec.from_primitives(request_spec)
+        weighed_backend = sched.find_backend_for_connector(ctx, connector,
+                                                           request_spec)
+        self.assertEqual('host3', utils.extract_host(weighed_backend.obj.host))
+
+    @mock.patch('cinder.db.service_get_all')
+    def test_find_backend_for_connector_with_invalid_connection_capabilities(
+            self, _mock_service_get_all):
+        sched = fakes.FakeFilterScheduler()
+        sched.host_manager = fakes.FakeHostManager()
+        ctx = context.RequestContext('user', 'project', is_admin=True)
+
+        fakes.mock_host_manager_db_calls(_mock_service_get_all)
+        request_spec = {'volume_id': fake.VOLUME_ID,
+                        'volume_type': {'name': 'LVM_iSCSI'},
+                        'volume_properties': {'project_id': 1,
+                                              'size': 150}}
+        connector = {'connection_capabilities': ['host:another_host']}
+        request_spec = objects.RequestSpec.from_primitives(request_spec)
+        self.assertRaises(exception.NoValidBackend,
+                          sched.find_backend_for_connector,
+                          ctx, connector, request_spec)

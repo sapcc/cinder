@@ -715,6 +715,10 @@ class InvalidConnectorException(VolumeDriverException):
     message = _("Connector doesn't have required information: %(missing)s")
 
 
+class ConnectorRejected(VolumeDriverException):
+    message = _("Connector can't be used with this driver anymore. %(reason)s")
+
+
 class GlanceMetadataExists(Invalid):
     message = _("Glance metadata cannot be updated, key %(key)s"
                 " exists for volume id %(volume_id)s")
