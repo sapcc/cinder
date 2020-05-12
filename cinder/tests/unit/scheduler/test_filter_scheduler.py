@@ -538,9 +538,9 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                                               'size': 200}}
         connector = {'connection_capabilities': []}
         request_spec = objects.RequestSpec.from_primitives(request_spec)
-        weighed_backend = sched.find_backend_for_connector(ctx, connector,
-                                                           request_spec)
-        self.assertEqual('host1', utils.extract_host(weighed_backend.obj.host))
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host1', utils.extract_host(backend['host']))
 
     @mock.patch('cinder.db.service_get_all')
     def test_find_backend_for_connector_with_valid_connection_capabilities(
@@ -556,9 +556,9 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                                               'size': 150}}
         connector = {'connection_capabilities': ['host:localhost']}
         request_spec = objects.RequestSpec.from_primitives(request_spec)
-        weighed_backend = sched.find_backend_for_connector(ctx, connector,
-                                                           request_spec)
-        self.assertEqual('host3', utils.extract_host(weighed_backend.obj.host))
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host3', utils.extract_host(backend['host']))
 
     @mock.patch('cinder.db.service_get_all')
     def test_find_backend_for_connector_with_invalid_connection_capabilities(
@@ -577,3 +577,4 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         self.assertRaises(exception.NoValidBackend,
                           sched.find_backend_for_connector,
                           ctx, connector, request_spec)
+

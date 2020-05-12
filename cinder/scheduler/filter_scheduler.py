@@ -127,14 +127,17 @@ class FilterScheduler(driver.Scheduler):
                 return True
             return False
 
-        weighed_backends = list(
-            filter(lambda x: _backend_matches_connector(x, connector),
-                   weighed_backends))
-        if not weighed_backends:
-            raise exception.NoValidBackend(reason=_("No weighed backed "
-                                                    "available"))
+        weighed_backends = [b for b in weighed_backends if
+                            _backend_matches_connector(b, connector)]
 
-        return self._choose_top_backend(weighed_backends, request_spec)
+        if not weighed_backends:
+            raise exception.NoValidBackend(
+                reason=_("No backend matched the given connector."))
+
+        top_backend = self._choose_top_backend(weighed_backends, request_spec)
+        return {'host': top_backend.obj.host,
+                'cluster_name': top_backend.obj.cluster_name,
+                'capabilities': top_backend.obj.capabilities}
 
     def backend_passes_filters(self, context, backend, request_spec,
                                filter_properties):

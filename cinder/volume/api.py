@@ -56,6 +56,7 @@ from cinder.policies import volume_transfer as vol_transfer_policy
 from cinder.policies import volumes as vol_policy
 from cinder import quota
 from cinder import quota_utils
+from cinder.scheduler import host_manager
 from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder import utils
 from cinder.volume.flows.api import create_volume
@@ -796,6 +797,32 @@ class API(base.Base):
                  resource=volume)
         return detach_results
 
+    def _migrate_by_connector(self, ctxt, volume, connector):
+        volume_type = {}
+        if volume.volume_type_id:
+            volume_type = volume_types.get_volume_type(
+                ctxt.elevated(), volume.volume_type_id)
+        request_spec = {
+            'volume_properties': volume,
+            'volume_type': volume_type,
+            'volume_id': volume.id}
+        try:
+            dest = self.scheduler_rpcapi.find_backend_for_connector(
+                ctxt, connector, request_spec)
+        except exception.NoValidBackend:
+            LOG.exception("The current backend couldn't be used with"
+                          "the provided connector and couldn't find"
+                          "another backend to migrate the volume to.")
+            return None
+        backend = host_manager.BackendState(host=dest['host'],
+                                            cluster_name=dest['cluster_name'],
+                                            capabilities=dest['capabilities'])
+        LOG.debug("Invoking migrate_volume to host=%(host).", dest['host'])
+        self.volume_rpcapi.migrate_volume(ctxt, volume, backend,
+                                          force_host_copy=False,
+                                          wait_for_completion=True)
+        volume.refresh()
+
     def initialize_connection(self, context, volume, connector):
         context.authorize(vol_action_policy.INITIALIZE_POLICY,
                           target_obj=volume)
@@ -808,25 +835,7 @@ class API(base.Base):
             raise exception.InvalidVolume(reason=msg)
 
         def _migrate_and_initialize_connection():
-            volume_type = {}
-            if volume.volume_type_id:
-                volume_type = volume_types.get_volume_type(
-                    context.elevated(), volume.volume_type_id)
-            request_spec = {
-                'volume_properties': volume,
-                'volume_type': volume_type,
-                'volume_id': volume.id}
-            try:
-                dest = self.scheduler_rpcapi.find_backend_for_connector(
-                    context, connector, request_spec)
-            except exception.NoValidBackend:
-                LOG.exception("The current backend couldn't be used with"
-                              "the provided connector and couldn't find"
-                              "another backend to migrate the volume to.")
-                return None
-            self.volume_rpcapi.migrate_volume(context, volume, dest,
-                                              force_host_copy=False, call=True)
-            volume.refresh()
+            self._migrate_by_connector(context, volume, connector)
             return self.volume_rpcapi.initialize_connection(context, volume,
                                                             connector)
         init_results = None
@@ -2233,12 +2242,23 @@ class API(base.Base):
                         '%(vol)s') % {'vol': volume_ref.id}
 
                 raise exception.InvalidVolume(reason=msg)
-
-        connection_info = (
-            self.volume_rpcapi.attachment_update(ctxt,
-                                                 volume_ref,
-                                                 connector,
-                                                 attachment_ref.id))
+        connection_info = None
+        try:
+            connection_info = (
+                self.volume_rpcapi.attachment_update(ctxt,
+                                                     volume_ref,
+                                                     connector,
+                                                     attachment_ref.id))
+        except exception.ConnectorRejected:
+            with excutils.save_and_reraise_exception() as exc_context:
+                if CONF.allow_migration_on_attach:
+                    exc_context.reraise = False
+                    self._migrate_by_connector(ctxt, volume_ref, connector)
+                    connection_info =\
+                        self.volume_rpcapi.attachment_update(ctxt,
+                                                             volume_ref,
+                                                             connector,
+                                                             attachment_ref.id)
         attachment_ref.connection_info = connection_info
         attachment_ref.save()
         return attachment_ref

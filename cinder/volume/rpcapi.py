@@ -249,7 +249,7 @@ class VolumeAPI(rpc.RPCAPI):
                    reservations=reservations)
 
     def migrate_volume(self, ctxt, volume, dest_backend, force_host_copy,
-                       call=False):
+                       wait_for_completion=False):
         backend_p = {'host': dest_backend.host,
                      'cluster_name': dest_backend.cluster_name,
                      'capabilities': dest_backend.capabilities}
@@ -260,7 +260,7 @@ class VolumeAPI(rpc.RPCAPI):
             del backend_p['cluster_name']
 
         cctxt = self._get_cctxt(volume.service_topic_queue, version)
-        method = 'call' if call else 'cast'
+        method = 'call' if wait_for_completion else 'cast'
         getattr(cctxt, method)(ctxt, 'migrate_volume', volume=volume,
                                host=backend_p, force_host_copy=force_host_copy)
 

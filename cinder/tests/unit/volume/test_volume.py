@@ -3096,7 +3096,9 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         connector = {'ip': '0.0.0.0'}
         volume_type = 'fake-volume-type'
         volume = tests_utils.create_volume(self.context)
-        host_obj = {'host': 'fake-host', 'capabilities': {}}
+        host_obj = {'host': 'fake-host',
+                    'cluster_name': 'fake-cluster',
+                    'capabilities': {}}
 
         self.override_config('allow_migration_on_attach', True)
         fake_get_volume_type.return_value = volume_type
@@ -3133,7 +3135,12 @@ class VolumeTestCase(base.BaseVolumeTestCase):
             mock.call(self.context, volume, connector)
         ])
         volume_rpcapi.migrate_volume.assert_called_once_with(
-            self.context, volume, host_obj, force_host_copy=False, call=True)
+            self.context, volume, mock.ANY, force_host_copy=False,
+            wait_for_completion=True)
+        backend = volume_rpcapi.migrate_volume.call_args[0][2]
+        self.assertEqual(backend.host, host_obj['host'])
+        self.assertEqual(backend.cluster_name, host_obj['cluster_name'])
+        self.assertEqual(backend.capabilities, host_obj['capabilities'])
 
 
 class VolumeTestCaseLocks(base.BaseVolumeTestCase):

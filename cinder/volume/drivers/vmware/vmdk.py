@@ -786,15 +786,16 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param connector: Connector information
         :return: Return connection information
         """
-        backing = self.volumeops.get_backing(volume.name, volume.id)
-
         # Check that connection_capabilities match
-        # This ensures the connector is bound to the same v-center service
+        # This ensures the connector is bound to the same vCenter service
         if 'connection_capabilities' in connector:
-            for capability in self._get_connection_capabilities():
-                if capability not in connector['connection_capabilities']:
-                    raise exception.ConnectorRejected(
-                        reason="%s not found in the connector." % capability)
+            missing = set(self._get_connection_capabilities()) -\
+                      set(connector['connection_capabilities'])
+            if missing:
+                raise exception.ConnectorRejected(
+                    reason="Connector is missing %s" % ', '.join(missing))
+
+        backing = self.volumeops.get_backing(volume.name, volume.id)
 
         if 'instance' in connector:
             # The instance exists
