@@ -793,7 +793,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if 'connection_capabilities' in connector:
             for capability in self._get_connection_capabilities():
                 if capability not in connector['connection_capabilities']:
-                    raise exception.ConnectorRejected()
+                    raise exception.ConnectorRejected(
+                        reason="%s not found in the connector." % capability)
 
         if 'instance' in connector:
             # The instance exists
