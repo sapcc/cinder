@@ -826,7 +826,7 @@ class BackupRestoreHandle(object):
                 return
         self._object_readers[obj_name].close()
         del self._object_readers[obj_name]
-        LOG.debug("Cleared reader for object %s" % segment.obj['name'])
+        LOG.debug("Cleared reader for object %s", segment.obj['name'])
 
     def add_object(self, metadata_object):
         """Merges a backup chunk over the self._segments list.
