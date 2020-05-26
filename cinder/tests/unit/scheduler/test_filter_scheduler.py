@@ -577,4 +577,3 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         self.assertRaises(exception.NoValidBackend,
                           sched.find_backend_for_connector,
                           ctx, connector, request_spec)
-

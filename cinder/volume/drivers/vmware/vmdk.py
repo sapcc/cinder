@@ -790,7 +790,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # This ensures the connector is bound to the same vCenter service
         if 'connection_capabilities' in connector:
             missing = set(self._get_connection_capabilities()) -\
-                      set(connector['connection_capabilities'])
+                set(connector['connection_capabilities'])
             if missing:
                 raise exception.ConnectorRejected(
                     reason="Connector is missing %s" % ', '.join(missing))
