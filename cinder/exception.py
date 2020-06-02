@@ -614,6 +614,10 @@ class NoValidBackend(CinderException):
     message = _("No valid backend was found. %(reason)s")
 
 
+class InvalidConnectionCapabilities(CinderException):
+    message = _("Invalid connection capabilities. %(reason)s")
+
+
 class NoMoreTargets(CinderException):
     """No more available targets."""
     pass

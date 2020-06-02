@@ -87,10 +87,10 @@ az_cache_time_opt = cfg.IntOpt('az_cache_duration',
                                     'seconds')
 migrate_on_attach_opt = cfg.BoolOpt('allow_migration_on_attach',
                                     default=False,
-                                    help="A host might recognise a connector"
-                                         "as valid but it can't use it to"
-                                         "initialize a connection. This will"
-                                         "allow to migrate the volume to a"
+                                    help="A host might recognise a connector "
+                                         "as valid but it can't use it to "
+                                         "initialize a connection. This will "
+                                         "allow to migrate the volume to a "
                                          "valid host prior to attachment.")
 
 CONF = cfg.CONF
@@ -810,9 +810,9 @@ class API(base.Base):
             dest = self.scheduler_rpcapi.find_backend_for_connector(
                 ctxt, connector, request_spec)
         except exception.NoValidBackend:
-            LOG.exception("The current backend couldn't be used with"
-                          "the provided connector and couldn't find"
-                          "another backend to migrate the volume to.")
+            LOG.error("The connector was rejected by the backend. Could not "
+                      "find another backend compatible with the connector %s.",
+                      connector)
             return None
         backend = host_manager.BackendState(host=dest['host'],
                                             cluster_name=dest['cluster_name'],
@@ -846,6 +846,9 @@ class API(base.Base):
         except exception.ConnectorRejected:
             with excutils.save_and_reraise_exception() as exc_context:
                 if CONF.allow_migration_on_attach:
+                    LOG.info("The connector was rejected by the volume "
+                             "backend while initializing the connection. "
+                             "Attempting to migrate it.")
                     init_results = _migrate_and_initialize_connection()
                     exc_context.reraise = False
 
@@ -2252,6 +2255,9 @@ class API(base.Base):
         except exception.ConnectorRejected:
             with excutils.save_and_reraise_exception() as exc_context:
                 if CONF.allow_migration_on_attach:
+                    LOG.info("The connector was rejected by the volume "
+                             "backend while updating the attachments. "
+                             "Trying to migrate it.")
                     exc_context.reraise = False
                     self._migrate_by_connector(ctxt, volume_ref, connector)
                     connection_info =\

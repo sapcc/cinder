@@ -3115,7 +3115,7 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         call_times = {volume.id: -1}
 
         def _initialize_connection_side_effect(context, volume, connector):
-            call_times[volume.id] = call_times[volume.id] + 1
+            call_times[volume.id] += 1
             if call_times[volume.id] == 0:
                 # First time it rejects the connector
                 raise exception.ConnectorRejected(reason=None)

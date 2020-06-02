@@ -525,24 +525,6 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                           migration_policy='on-demand')
 
     @mock.patch('cinder.db.service_get_all')
-    def test_find_backend_for_connector_no_connection_capabilities(
-            self, _mock_service_get_all):
-        sched = fakes.FakeFilterScheduler()
-        sched.host_manager = fakes.FakeHostManager()
-        ctx = context.RequestContext('user', 'project', is_admin=True)
-
-        fakes.mock_host_manager_db_calls(_mock_service_get_all)
-        request_spec = {'volume_id': fake.VOLUME_ID,
-                        'volume_type': {'name': 'LVM_iSCSI'},
-                        'volume_properties': {'project_id': 1,
-                                              'size': 200}}
-        connector = {'connection_capabilities': []}
-        request_spec = objects.RequestSpec.from_primitives(request_spec)
-        backend = sched.find_backend_for_connector(ctx, connector,
-                                                   request_spec)
-        self.assertEqual('host1', utils.extract_host(backend['host']))
-
-    @mock.patch('cinder.db.service_get_all')
     def test_find_backend_for_connector_with_valid_connection_capabilities(
             self, _mock_service_get_all):
         sched = fakes.FakeFilterScheduler()
@@ -553,12 +535,36 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         request_spec = {'volume_id': fake.VOLUME_ID,
                         'volume_type': {'name': 'LVM_iSCSI'},
                         'volume_properties': {'project_id': 1,
-                                              'size': 150}}
-        connector = {'connection_capabilities': ['host:localhost']}
+                                              'size': 10}}
         request_spec = objects.RequestSpec.from_primitives(request_spec)
+
+        # host1 is the top weighed backend
+        connector = {'connection_capabilities': []}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host3', utils.extract_host(backend['host']))
+        self.assertEqual('host1', utils.extract_host(backend.host))
+
+        connector = {'connection_capabilities': ['host-1']}
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host1', utils.extract_host(backend.host))
+
+        connector = {'connection_capabilities': ['host-1', 'host1']}
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host1', utils.extract_host(backend.host))
+
+        # host3 has a lower weight but it matches the
+        # connection_capabilities exposed by the connector
+        connector = {'connection_capabilities': ['host-3']}
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host3', utils.extract_host(backend.host))
+
+        connector = {'connection_capabilities': ['host3', 'host-3']}
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host3', utils.extract_host(backend.host))
 
     @mock.patch('cinder.db.service_get_all')
     def test_find_backend_for_connector_with_invalid_connection_capabilities(
@@ -572,8 +578,14 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                         'volume_type': {'name': 'LVM_iSCSI'},
                         'volume_properties': {'project_id': 1,
                                               'size': 150}}
-        connector = {'connection_capabilities': ['host:another_host']}
         request_spec = objects.RequestSpec.from_primitives(request_spec)
+
+        connector = {'connection_capabilities': ['unknown_capability']}
         self.assertRaises(exception.NoValidBackend,
+                          sched.find_backend_for_connector,
+                          ctx, connector, request_spec)
+
+        connector = {}
+        self.assertRaises(exception.InvalidConnectionCapabilities,
                           sched.find_backend_for_connector,
                           ctx, connector, request_spec)
