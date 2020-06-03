@@ -119,7 +119,7 @@ class FilterScheduler(driver.Scheduler):
         if not weighed_backends:
             raise exception.NoValidBackend(reason=_("No weighed backends "
                                                     "available"))
-        connector_capabilities = set(connector.get(key))
+        connector_capabilities = set(connector[key])
 
         def _backend_matches_connector(bck):
             if key not in bck.obj.capabilities:
