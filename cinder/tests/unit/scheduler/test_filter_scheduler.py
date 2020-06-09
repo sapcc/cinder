@@ -617,3 +617,34 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         self.assertRaises(exception.InvalidConnectionCapabilities,
                           sched.find_backend_for_connector,
                           ctx, connector, request_spec)
+
+    @mock.patch('cinder.db.service_get_all')
+    def test_find_backend_for_connector_with_bigger_volume(
+            self, _mock_service_get_all):
+        sched = fakes.FakeFilterScheduler()
+        host_mgr = fakes.FakeHostManager()
+        host_mgr.service_states['host3']['connection_capabilities'] = [
+            'host-3']
+        host_mgr.service_states['host1']['connection_capabilities'] = [
+            'host-1']
+        sched.host_manager = host_mgr
+
+        ctx = context.RequestContext('user', 'project', is_admin=True)
+
+        fakes.mock_host_manager_db_calls(_mock_service_get_all)
+        request_spec = {'volume_id': fake.VOLUME_ID,
+                        'volume_type': {'name': 'LVM_iSCSI'},
+                        'volume_properties': {'project_id': 1,
+                                              'size': 300}}
+
+        # host3 won't fit 300 gb
+        connector = {'connection_capabilities': ['host-3']}
+        self.assertRaises(exception.NoValidBackend,
+                          sched.find_backend_for_connector,
+                          ctx, connector, request_spec)
+
+        # host1 will fit it
+        connector = {'connection_capabilities': []}
+        backend = sched.find_backend_for_connector(ctx, connector,
+                                                   request_spec)
+        self.assertEqual('host1', utils.extract_host(backend.host))
