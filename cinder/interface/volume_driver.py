@@ -163,6 +163,9 @@ class VolumeDriverCore(base.CinderInterface):
         * clone_across_pools (Boolean)
             Whether the backend supports cloning a volume across different
             pools. Defaults to False.
+        * connection_capabilities (list)
+            A list of capabilities that need to match the connector's
+            capabilities when a connection is being initialized.
 
         The returned dict may also contain a list, "pools", which has a similar
         dict for each pool being used with the backend.
