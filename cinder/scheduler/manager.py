@@ -327,9 +327,9 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         backend = self.driver.find_backend_for_connector(context,
                                                          connector,
                                                          request_spec)
-        return {'host': backend.obj.host,
-                'cluster_name': backend.obj.cluster_name,
-                'capabilities': backend.obj.capabilities}
+        return {'host': backend.host,
+                'cluster_name': backend.cluster_name,
+                'capabilities': backend.capabilities}
 
     def manage_existing(self, context, volume, request_spec,
                         filter_properties=None):
