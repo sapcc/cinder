@@ -2625,6 +2625,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                              new_volume['id'])
         if not backing:
             LOG.warning("Backing was not found after migration.")
+            return None
 
         self.volumeops.rename_backing(backing, volume['name'])
         self.volumeops.update_backing_uuid(backing, volume['id'])
