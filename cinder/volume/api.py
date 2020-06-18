@@ -1780,7 +1780,10 @@ class API(base.Base):
                         'volume_type': new_type,
                         'migration_policy': migration_policy,
                         'quota_reservations': reservations,
-                        'old_reservations': old_reservations}
+                        'old_reservations': old_reservations,
+                        'resource_properties': {
+                            'availability_zone': volume.availability_zone
+                        }}
 
         self.scheduler_rpcapi.retype(context, volume,
                                      request_spec=request_spec,
