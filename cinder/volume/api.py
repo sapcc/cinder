@@ -1791,7 +1791,10 @@ class API(base.Base):
                         'volume_type': new_type,
                         'migration_policy': migration_policy,
                         'quota_reservations': reservations,
-                        'old_reservations': old_reservations}
+                        'old_reservations': old_reservations,
+                        'resource_properties': {
+                            'availability_zone': volume.availability_zone
+                        }}
 
         type_azs = volume_utils.extract_availability_zones_from_volume_type(
             new_type)
