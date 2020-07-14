@@ -69,6 +69,10 @@ class MockImageExistsException(MockException):
     """Used as mock for rbd.ImageExists."""
 
 
+class MockOSErrorException(MockException):
+    """Used as mock for rbd.OSError."""
+
+
 class KeyObject(object):
     def get_encoded(arg):
         return "asdf".encode('utf-8')
@@ -927,10 +931,13 @@ class RBDTestCase(test.TestCase):
                 (self.mock_rbd.Image.return_value.protect_snap
                     .assert_called_once_with('.'.join(
                         (self.volume_b.name, 'clone_snap'))))
+                # We expect clone() to be called exactly once.
                 self.assertEqual(
                     1, self.mock_rbd.RBD.return_value.clone.call_count)
+                # Without flattening, only the source volume is opened,
+                # so only one call to close() should occur.
                 self.assertEqual(
-                    2, self.mock_rbd.Image.return_value.close.call_count)
+                    1, self.mock_rbd.Image.return_value.close.call_count)
                 self.assertTrue(mock_get_clone_depth.called)
                 mock_resize.assert_not_called()
                 mock_enable_repl.assert_not_called()
@@ -966,7 +973,7 @@ class RBDTestCase(test.TestCase):
         image.protect_snap.assert_called_once_with(name + '.clone_snap')
         self.assertEqual(1, self.mock_rbd.RBD.return_value.clone.call_count)
         self.assertEqual(
-            2, self.mock_rbd.Image.return_value.close.call_count)
+            1, self.mock_rbd.Image.return_value.close.call_count)
         mock_get_clone_depth.assert_called_once_with(
             self.mock_client().__enter__(), self.volume_a.name)
         mock_resize.assert_not_called()
@@ -996,7 +1003,7 @@ class RBDTestCase(test.TestCase):
                 self.assertEqual(
                     1, self.mock_rbd.RBD.return_value.clone.call_count)
                 self.assertEqual(
-                    2, self.mock_rbd.Image.return_value.close.call_count)
+                    1, self.mock_rbd.Image.return_value.close.call_count)
                 self.assertTrue(mock_get_clone_depth.called)
                 self.assertEqual(
                     1, mock_resize.call_count)
@@ -1053,7 +1060,7 @@ class RBDTestCase(test.TestCase):
 
                 # We expect the driver to close both volumes, so 2 is expected
                 self.assertEqual(
-                    3, self.mock_rbd.Image.return_value.close.call_count)
+                    2, self.mock_rbd.Image.return_value.close.call_count)
                 self.assertTrue(mock_get_clone_depth.called)
                 mock_enable_repl.assert_not_called()
 
@@ -2081,17 +2088,24 @@ class RBDTestCase(test.TestCase):
             return mock.Mock(return_value=mock.Mock(
                 size=mock.Mock(side_effect=(size_or_exc,))))
 
-        volumes = ['volume-1', 'non-existent', 'non-cinder-volume']
+        volumes = [
+            'volume-1',
+            'non-existent',
+            'non-existent',
+            'non-cinder-volume'
+        ]
 
         client = client_mock.return_value.__enter__.return_value
         rbdproxy_mock.return_value.list.return_value = volumes
 
         with mock.patch.object(self.driver, 'rbd',
-                               ImageNotFound=MockImageNotFoundException):
+                               ImageNotFound=MockImageNotFoundException,
+                               OSError=MockOSErrorException):
             volproxy_mock.side_effect = [
                 mock.MagicMock(**{'__enter__': FakeVolProxy(s)})
                 for s in (1.0 * units.Gi,
                           self.driver.rbd.ImageNotFound,
+                          self.driver.rbd.OSError,
                           2.0 * units.Gi)
             ]
             total_provision = self.driver._get_usage_info()

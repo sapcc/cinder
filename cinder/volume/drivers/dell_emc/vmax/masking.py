@@ -788,10 +788,9 @@ class VMAXMasking(object):
         :returns: initiator group name -- string or None
         """
         ig_name = None
-        init_list = self.rest.get_in_use_initiator_list_from_array(
-            serial_number)
         for initiator in initiator_names:
-            found_init = [init for init in init_list if initiator in init]
+            params = {'initiator_hba': initiator.lower()}
+            found_init = self.rest.get_initiator_list(serial_number, params)
             if found_init:
                 ig_name = self.rest.get_initiator_group_from_initiator(
                     serial_number, found_init[0])
@@ -1396,6 +1395,8 @@ class VMAXMasking(object):
             extra_specs)
         rep_enabled = self.utils.is_replication_enabled(extra_specs)
         rep_mode = extra_specs.get(utils.REP_MODE, None)
+        if self.rest.is_next_gen_array(serial_number):
+            extra_specs[utils.WORKLOAD] = 'NONE'
         storagegroup_name = self.get_or_create_default_storage_group(
             serial_number, extra_specs[utils.SRP], extra_specs[utils.SLO],
             extra_specs[utils.WORKLOAD], extra_specs, do_disable_compression,
@@ -1611,8 +1612,10 @@ class VMAXMasking(object):
         sg_list = self.rest.get_storage_group_list(
             serial_number, params={
                 'child': 'true', 'volumeId': device_id})
-        slo_wl_combo = self.utils.truncate_string(
-            extra_specs[utils.SLO] + extra_specs[utils.WORKLOAD], 10)
+        split_pool = extra_specs['pool_name'].split('+')
+        src_slo = split_pool[0]
+        src_wl = split_pool[1] if len(split_pool) == 4 else 'NONE'
+        slo_wl_combo = self.utils.truncate_string(src_slo + src_wl, 10)
         for sg in sg_list.get('storageGroupId', []):
             if slo_wl_combo in sg:
                 fast_source_sg_name = sg

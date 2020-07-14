@@ -67,6 +67,12 @@ class BackupNFSShareTestCase(test.TestCase):
         super(BackupNFSShareTestCase, self).setUp()
         self.ctxt = context.get_admin_context()
         self.mock_object(nfs, 'LOG')
+        # Note(yikun): It mocks out the backup notifier to avoid to leak
+        # notifications into other test.
+        notify_patcher = mock.patch(
+            'cinder.volume.utils.notify_about_backup_usage')
+        notify_patcher.start()
+        self.addCleanup(notify_patcher.stop)
 
     def test_check_configuration_no_backup_share(self):
         self.override_config('backup_share', None)
@@ -119,6 +125,7 @@ class BackupNFSShareTestCase(test.TestCase):
         if file_gid != FAKE_EGID:
             mock_execute_calls.append(
                 mock.call('chgrp',
+                          '-R',
                           FAKE_EGID,
                           path,
                           root_helper=driver._root_helper,
@@ -127,6 +134,7 @@ class BackupNFSShareTestCase(test.TestCase):
         if not (file_mode & stat.S_IWGRP):
             mock_execute_calls.append(
                 mock.call('chmod',
+                          '-R',
                           'g+w',
                           path,
                           root_helper=driver._root_helper,

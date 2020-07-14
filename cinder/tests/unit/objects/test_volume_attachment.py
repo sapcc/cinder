@@ -15,6 +15,7 @@
 import ddt
 import mock
 import six
+from sqlalchemy.orm import attributes
 
 from cinder import db
 from cinder import objects
@@ -29,8 +30,8 @@ class TestVolumeAttachment(test_objects.BaseObjectsTestCase):
 
     @mock.patch('cinder.db.sqlalchemy.api.volume_attachment_get')
     def test_get_by_id(self, volume_attachment_get):
-        db_attachment = fake_volume.fake_db_volume_attachment()
-        attachment_obj = fake_volume.fake_volume_attachment_obj(self.context)
+        db_attachment = fake_volume.volume_attachment_db_obj()
+        attachment_obj = fake_volume.volume_attachment_ovo(self.context)
         volume_attachment_get.return_value = db_attachment
         attachment = objects.VolumeAttachment.get_by_id(self.context,
                                                         fake.ATTACHMENT_ID)
@@ -47,9 +48,24 @@ class TestVolumeAttachment(test_objects.BaseObjectsTestCase):
         self.assertEqual(volume, r)
         volume_get_mock.assert_called_once_with(self.context, volume.id)
 
+    def test_from_db_object_no_volume(self):
+        original_get = attributes.InstrumentedAttribute.__get__
+
+        def my_get(get_self, instance, owner):
+            self.assertNotEqual('volume', get_self.key)
+            return original_get(get_self, instance, owner)
+
+        # Volume field is not loaded
+        attach = fake_volume.models.VolumeAttachment(id=fake.ATTACHMENT_ID,
+                                                     volume_id=fake.VOLUME_ID)
+        patch_str = 'sqlalchemy.orm.attributes.InstrumentedAttribute.__get__'
+        with mock.patch(patch_str, side_effect=my_get):
+            objects.VolumeAttachment._from_db_object(
+                self.context, objects.VolumeAttachment(), attach)
+
     @mock.patch('cinder.db.volume_attachment_update')
     def test_save(self, volume_attachment_update):
-        attachment = fake_volume.fake_volume_attachment_obj(self.context)
+        attachment = fake_volume.volume_attachment_ovo(self.context)
         attachment.attach_status = fields.VolumeAttachStatus.ATTACHING
         attachment.save()
         volume_attachment_update.assert_called_once_with(
@@ -58,11 +74,11 @@ class TestVolumeAttachment(test_objects.BaseObjectsTestCase):
 
     @mock.patch('cinder.db.sqlalchemy.api.volume_attachment_get')
     def test_refresh(self, attachment_get):
-        db_attachment1 = fake_volume.fake_db_volume_attachment()
-        attachment_obj1 = fake_volume.fake_volume_attachment_obj(self.context)
-        db_attachment2 = db_attachment1.copy()
-        db_attachment2['mountpoint'] = '/dev/sdc'
-        attachment_obj2 = fake_volume.fake_volume_attachment_obj(
+        db_attachment1 = fake_volume.volume_attachment_db_obj()
+        attachment_obj1 = fake_volume.volume_attachment_ovo(self.context)
+        db_attachment2 = fake_volume.volume_attachment_db_obj()
+        db_attachment2.mountpoint = '/dev/sdc'
+        attachment_obj2 = fake_volume.volume_attachment_ovo(
             self.context, mountpoint='/dev/sdc')
 
         # On the second volume_attachment_get, return the volume attachment
@@ -88,7 +104,7 @@ class TestVolumeAttachment(test_objects.BaseObjectsTestCase):
 
     @mock.patch('cinder.db.sqlalchemy.api.volume_attached')
     def test_volume_attached(self, volume_attached):
-        attachment = fake_volume.fake_volume_attachment_obj(self.context)
+        attachment = fake_volume.volume_attachment_ovo(self.context)
         updated_values = {'mountpoint': '/dev/sda',
                           'attach_status': fields.VolumeAttachStatus.ATTACHED,
                           'instance_uuid': fake.INSTANCE_ID}
@@ -167,33 +183,34 @@ class TestVolumeAttachment(test_objects.BaseObjectsTestCase):
 class TestVolumeAttachmentList(test_objects.BaseObjectsTestCase):
     @mock.patch('cinder.db.volume_attachment_get_all_by_volume_id')
     def test_get_all_by_volume_id(self, get_used_by_volume_id):
-        db_attachment = fake_volume.fake_db_volume_attachment()
+        db_attachment = fake_volume.volume_attachment_db_obj()
         get_used_by_volume_id.return_value = [db_attachment]
-        attachment_obj = fake_volume.fake_volume_attachment_obj(self.context)
+        attachment_obj = fake_volume.volume_attachment_ovo(self.context)
 
         attachments = objects.VolumeAttachmentList.get_all_by_volume_id(
             self.context, mock.sentinel.volume_id)
+
         self.assertEqual(1, len(attachments))
-        TestVolumeAttachment._compare(self, attachment_obj, attachments[0])
+        self._compare(self, attachment_obj, attachments[0])
 
     @mock.patch('cinder.db.volume_attachment_get_all_by_host')
     def test_get_all_by_host(self, get_by_host):
-        db_attachment = fake_volume.fake_db_volume_attachment()
-        attachment_obj = fake_volume.fake_volume_attachment_obj(self.context)
+        db_attachment = fake_volume.volume_attachment_db_obj()
+        attachment_obj = fake_volume.volume_attachment_ovo(self.context)
         get_by_host.return_value = [db_attachment]
 
         attachments = objects.VolumeAttachmentList.get_all_by_host(
             self.context, mock.sentinel.host)
         self.assertEqual(1, len(attachments))
-        TestVolumeAttachment._compare(self, attachment_obj, attachments[0])
+        self._compare(self, attachment_obj, attachments[0])
 
     @mock.patch('cinder.db.volume_attachment_get_all_by_instance_uuid')
     def test_get_all_by_instance_uuid(self, get_by_instance_uuid):
-        db_attachment = fake_volume.fake_db_volume_attachment()
+        db_attachment = fake_volume.volume_attachment_db_obj()
         get_by_instance_uuid.return_value = [db_attachment]
-        attachment_obj = fake_volume.fake_volume_attachment_obj(self.context)
+        attachment_obj = fake_volume.volume_attachment_ovo(self.context)
 
         attachments = objects.VolumeAttachmentList.get_all_by_instance_uuid(
             self.context, mock.sentinel.uuid)
         self.assertEqual(1, len(attachments))
-        TestVolumeAttachment._compare(self, attachment_obj, attachments[0])
+        self._compare(self, attachment_obj, attachments[0])

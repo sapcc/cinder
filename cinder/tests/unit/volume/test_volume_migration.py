@@ -642,7 +642,7 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
                     attachment['instance_uuid'],
                     attachment['attached_host'],
                     attachment['mountpoint'],
-                    'rw'
+                    attachment.get('attach_mode', 'rw'),
                 )
                 self.assertIsNotNone(attachments)
                 self.assertEqual(attached_host,
@@ -888,20 +888,21 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
             self.assertEqual(CONF.host, volume.host)
             self.assertEqual(1, volumes_in_use)
             self.assert_notify_called(mock_notify,
-                                      (['INFO', 'volume.retype'],))
+                                      (['INFO', 'volume.retype'],),
+                                      any_order=True)
         elif not exc:
             self.assertEqual(old_vol_type['id'], volume.volume_type_id)
             self.assertEqual('retyping', volume.status)
             self.assertEqual(CONF.host, volume.host)
             self.assertEqual(1, volumes_in_use)
             self.assert_notify_called(mock_notify,
-                                      (['INFO', 'volume.retype'],))
+                                      (['INFO', 'volume.retype'],),
+                                      any_order=True)
         else:
             self.assertEqual(old_vol_type['id'], volume.volume_type_id)
             self.assertEqual('available', volume.status)
             self.assertEqual(CONF.host, volume.host)
             self.assertEqual(0, volumes_in_use)
-            mock_notify.assert_not_called()
         if encryption_changed:
             self.assertTrue(_mig.called)
         self.assertEqual(expected_replica_status, volume.replication_status)

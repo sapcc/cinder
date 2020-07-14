@@ -727,6 +727,10 @@ class GlanceMetadataNotFound(NotFound):
     message = _("Glance metadata for volume/snapshot %(id)s cannot be found.")
 
 
+class ImageDownloadFailed(CinderException):
+    message = _("Failed to download image %(image_href)s, reason: %(reason)s")
+
+
 class ExportFailure(Invalid):
     message = _("Failed to export for volume: %(reason)s")
 
@@ -1381,3 +1385,8 @@ class NVMETTargetAddError(CinderException):
 
 class NVMETTargetDeleteError(CinderException):
     message = "Failed to delete subsystem: %(subsystem)s"
+
+
+class SnapshotLimitReached(CinderException):
+    message = _("Exceeded the configured limit of "
+                "%(set_limit)s snapshots per volume.")

@@ -23,7 +23,6 @@ import math
 import os
 import re
 import shutil
-import tempfile
 import time
 
 from oslo_config import cfg
@@ -37,6 +36,7 @@ from cinder import db
 from cinder import exception
 from cinder.i18n import _
 from cinder.image import image_utils
+from cinder import objects
 from cinder.objects import fields
 from cinder import utils
 from cinder.volume import configuration
@@ -740,6 +740,13 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
             msg = _("'active' must be present when writing snap_info.")
             raise exception.RemoteFSException(msg)
 
+        if not (os.path.exists(info_path) or os.name == 'nt'):
+            # We're not managing file permissions on Windows.
+            # Plus, 'truncate' is not available.
+            self._execute('truncate', "-s0", info_path,
+                          run_as_root=self._execute_as_root)
+            self._set_rw_permissions(info_path)
+
         with open(info_path, 'w') as f:
             json.dump(snap_info, f, indent=1, sort_keys=True)
 
@@ -789,7 +796,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
         # NFS snapshots
         #  It needs to run as root for volumes attached to instances, but
         #  does not when in secure mode.
-        self._execute('qemu-img', 'commit', path,
+        self._execute('qemu-img', 'commit', '-d', path,
                       run_as_root=self._execute_as_root)
         self._delete(path)
 
@@ -909,26 +916,6 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
     def _get_mount_point_base(self):
         return self.base
 
-    def _ensure_share_writable(self, path):
-        """Ensure that the Cinder user can write to the share.
-
-        If not, raise an exception.
-
-        :param path: path to test
-        :raises: RemoteFSException
-        :returns: None
-        """
-
-        prefix = '.cinder-write-test-' + str(os.getpid()) + '-'
-
-        try:
-            tempfile.NamedTemporaryFile(prefix=prefix, dir=path)
-        except OSError:
-            msg = _('Share at %(dir)s is not writable by the '
-                    'Cinder volume service. Snapshot operations will not be '
-                    'supported.') % {'dir': path}
-            raise exception.RemoteFSException(msg)
-
     def _copy_volume_to_image(self, context, volume, image_service,
                               image_meta):
         """Copy the volume to the specified image."""
@@ -1010,7 +997,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
     def _is_volume_attached(self, volume):
         return volume.attach_status == fields.VolumeAttachStatus.ATTACHED
 
-    def _create_cloned_volume(self, volume, src_vref):
+    def _create_cloned_volume(self, volume, src_vref, context):
         LOG.info('Cloning volume %(src)s to volume %(dst)s',
                  {'src': src_vref.id,
                   'dst': volume.id})
@@ -1026,7 +1013,6 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
         vol_attrs = ['provider_location', 'size', 'id', 'name', 'status',
                      'volume_type', 'metadata']
         Volume = collections.namedtuple('Volume', vol_attrs)
-
         volume_info = Volume(provider_location=src_vref.provider_location,
                              size=src_vref.size,
                              id=volume.id,
@@ -1037,25 +1023,34 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
 
         if (self._always_use_temp_snap_when_cloning or
                 self._snapshots_exist(src_vref)):
-            snap_attrs = ['volume_name', 'volume_size', 'name',
-                          'volume_id', 'id', 'volume']
-            Snapshot = collections.namedtuple('Snapshot', snap_attrs)
-
-            temp_snapshot = Snapshot(volume_name=volume_name,
-                                     volume_size=src_vref.size,
-                                     name='clone-snap-%s' % src_vref.id,
-                                     volume_id=src_vref.id,
-                                     id='tmp-snap-%s' % src_vref.id,
-                                     volume=src_vref)
+            kwargs = {
+                'volume_id': src_vref.id,
+                'user_id': context.user_id,
+                'project_id': context.project_id,
+                'status': fields.SnapshotStatus.CREATING,
+                'progress': '0%',
+                'volume_size': src_vref.size,
+                'display_name': 'tmp-snap-%s' % src_vref.id,
+                'display_description': None,
+                'volume_type_id': src_vref.volume_type_id,
+                'encryption_key_id': src_vref.encryption_key_id,
+            }
+            temp_snapshot = objects.Snapshot(context=context,
+                                             **kwargs)
+            temp_snapshot.create()
 
             self._create_snapshot(temp_snapshot)
             try:
                 self._copy_volume_from_snapshot(temp_snapshot,
                                                 volume_info,
                                                 volume.size)
-
+                # remove temp snapshot after the cloning is done
+                temp_snapshot.status = fields.SnapshotStatus.DELETING
+                temp_snapshot.context = context.elevated()
+                temp_snapshot.save()
             finally:
                 self._delete_snapshot(temp_snapshot)
+                temp_snapshot.destroy()
         else:
             self._copy_volume_image(self.local_path(src_vref),
                                     self.local_path(volume_info))
@@ -1109,7 +1104,6 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
         self._validate_state(volume_status, acceptable_states)
 
         vol_path = self._local_volume_dir(snapshot.volume)
-        self._ensure_share_writable(vol_path)
 
         # Determine the true snapshot file for this snapshot
         # based on the .info file
@@ -1446,8 +1440,6 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
     def _create_snapshot_online(self, snapshot, backing_filename,
                                 new_snap_path):
         # Perform online snapshot via Nova
-        context = snapshot._context
-
         self._do_create_snapshot(snapshot,
                                  backing_filename,
                                  new_snap_path)
@@ -1460,7 +1452,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
 
         try:
             result = self._nova.create_volume_snapshot(
-                context,
+                snapshot.obj_context,
                 snapshot.volume_id,
                 connection_info)
             LOG.debug('nova call result: %s', result)
@@ -1475,7 +1467,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver):
         increment = 1
         timeout = 600
         while True:
-            s = db.snapshot_get(context, snapshot.id)
+            s = db.snapshot_get(snapshot.obj_context, snapshot.id)
 
             LOG.debug('Status of snapshot %(id)s is now %(status)s',
                       {'id': snapshot['id'],
@@ -1638,7 +1630,8 @@ class RemoteFSSnapDriver(RemoteFSSnapDriverBase):
     def create_cloned_volume(self, volume, src_vref):
         """Creates a clone of the specified volume."""
 
-        return self._create_cloned_volume(volume, src_vref)
+        return self._create_cloned_volume(volume, src_vref,
+                                          src_vref.obj_context)
 
     @locked_volume_id_operation
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
@@ -1679,7 +1672,8 @@ class RemoteFSSnapDriverDistributed(RemoteFSSnapDriverBase):
     def create_cloned_volume(self, volume, src_vref):
         """Creates a clone of the specified volume."""
 
-        return self._create_cloned_volume(volume, src_vref)
+        return self._create_cloned_volume(volume, src_vref,
+                                          src_vref.obj_context)
 
     @coordination.synchronized('{self.driver_prefix}-{volume.id}')
     def copy_volume_to_image(self, context, volume, image_service, image_meta):

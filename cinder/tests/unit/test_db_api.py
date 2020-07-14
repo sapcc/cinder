@@ -494,6 +494,8 @@ class DBAPIServiceTestCase(BaseTest):
             self.ctxt, {'host': 'host1@lvm-driver1#lvm-driver1'})
         db.volume_create(
             self.ctxt, {'host': 'host1@lvm-driver1#lvm-driver1'})
+        # Entries with no host should be skipped
+        db.volume_create(self.ctxt, {'host': None})
 
         values = {
             'host': 'host1@lvm-driver1',
@@ -506,12 +508,14 @@ class DBAPIServiceTestCase(BaseTest):
         total, updated = db.volume_service_uuids_online_data_migration(
             self.ctxt, 2)
 
+        # total = number of volumes that have hosts and don't have a
+        # service_uuid
         self.assertEqual(3, total)
         self.assertEqual(2, updated)
 
-        # Now get the ,last one (intentionally setting max > expected)
+        # Now get the last one (intentionally setting max > expected)
         total, updated = db.volume_service_uuids_online_data_migration(
-            self.ctxt, 2)
+            self.ctxt, 99)
 
         self.assertEqual(1, total)
         self.assertEqual(1, updated)
@@ -763,6 +767,13 @@ class DBAPIVolumeTestCase(BaseTest):
             db.volume_destroy(self.ctxt, volume['id']))
         self.assertRaises(exception.VolumeNotFound, db.volume_get,
                           self.ctxt, volume['id'])
+
+    @mock.patch('cinder.db.sqlalchemy.api.model_query')
+    def test_volume_destroy_deletes_dependent_data(self, mock_model_query):
+        """Addresses LP Bug #1542169."""
+        db.volume_destroy(self.ctxt, fake.VOLUME_ID)
+        expected_call_count = 1 + len(sqlalchemy_api.VOLUME_DEPENDENT_MODELS)
+        self.assertEqual(expected_call_count, mock_model_query.call_count)
 
     def test_volume_get_all(self):
         volumes = [db.volume_create(self.ctxt,

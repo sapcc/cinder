@@ -95,8 +95,15 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
                         jsonutils.loads(value) if value else None)
             else:
                 attachment[name] = value
-        if 'volume' in expected_attrs:
-            db_volume = db_attachment.get('volume')
+        # NOTE: Check against the ORM instance's dictionary instead of using
+        # hasattr or get to avoid the lazy loading of the Volume on
+        # VolumeList.get_all.
+        # Getting a Volume loads its VolumeAttachmentList, which think they
+        # have the volume loaded, but they don't.  More detail on
+        # https://review.opendev.org/632549
+        # and its related bug report.
+        if 'volume' in expected_attrs and 'volume' in vars(db_attachment):
+            db_volume = db_attachment.volume
             if db_volume:
                 attachment.volume = objects.Volume._from_db_object(
                     context, objects.Volume(), db_volume)

@@ -687,14 +687,15 @@ class VolumeManager(manager.CleanableManager,
                 self._update_allocated_capacity(volume, decrement=True,
                                                 host=original_host)
 
-        shared_targets = (
-            1
-            if self.driver.capabilities.get('shared_targets', True)
-            else 0)
-        updates = {'service_uuid': self.service_uuid,
-                   'shared_targets': shared_targets}
-
-        volume.update(updates)
+        # Shared targets is only relevant for iSCSI connections.
+        # We default to True to be on the safe side.
+        volume.shared_targets = (
+            self.driver.capabilities.get('storage_protocol') == 'iSCSI' and
+            self.driver.capabilities.get('shared_targets', True))
+        # TODO(geguileo): service_uuid won't be enough on Active/Active
+        # deployments. There can be 2 services handling volumes from the same
+        # backend.
+        volume.service_uuid = self.service_uuid
         volume.save()
 
         LOG.info("Created volume successfully.", resource=volume)
@@ -851,9 +852,6 @@ class VolumeManager(manager.CleanableManager,
             except Exception:
                 LOG.exception("Failed to update usages deleting volume.",
                               resource=volume)
-
-        # Delete glance metadata if it exists
-        self.db.volume_glance_metadata_delete_by_volume(context, volume.id)
 
         volume.destroy()
 
@@ -1416,9 +1414,12 @@ class VolumeManager(manager.CleanableManager,
         reserve_opts = {'volumes': 1, 'gigabytes': volume.size}
         QUOTAS.add_volume_type_opts(ctx, reserve_opts, volume_type_id)
         reservations = QUOTAS.reserve(ctx, **reserve_opts)
+        # NOTE(yikun): Skip 'snapshot_id', 'source_volid' keys to avoid
+        # creating tmp img vol from wrong snapshot or wrong source vol.
+        skip = {'snapshot_id', 'source_volid'}
+        skip.update(self._VOLUME_CLONE_SKIP_PROPERTIES)
         try:
-            new_vol_values = {k: volume[k] for k in set(volume.keys()) -
-                              self._VOLUME_CLONE_SKIP_PROPERTIES}
+            new_vol_values = {k: volume[k] for k in set(volume.keys()) - skip}
             new_vol_values['volume_type_id'] = volume_type_id
             new_vol_values['attach_status'] = (
                 fields.VolumeAttachStatus.DETACHED)
@@ -1613,10 +1614,13 @@ class VolumeManager(manager.CleanableManager,
                 for option in tune_opts:
                     option_per_gb = '%s_per_gb' % option
                     option_per_gb_min = '%s_per_gb_min' % option
+                    option_max = '%s_max' % option
                     if option_per_gb in specs:
-                        minimum_value = specs.pop(option_per_gb_min, 0)
+                        minimum_value = int(specs.pop(option_per_gb_min, 0))
                         value = int(specs[option_per_gb]) * volume_size
-                        specs[option] = max(minimum_value, value)
+                        per_gb_value = max(minimum_value, value)
+                        max_value = int(specs.pop(option_max, per_gb_value))
+                        specs[option] = min(per_gb_value, max_value)
                         specs.pop(option_per_gb)
 
         qos_spec = dict(qos_specs=specs)
@@ -2313,7 +2317,7 @@ class VolumeManager(manager.CleanableManager,
                                      attachment.instance_uuid,
                                      attachment.attached_host,
                                      attachment.mountpoint,
-                                     'rw')
+                                     attachment.attach_mode or 'rw')
                 # At this point we now have done almost all of our swapping and
                 # state-changes.  The target volume is now marked back to
                 # "in-use" the destination/worker volume is now in deleting
@@ -2920,6 +2924,9 @@ class VolumeManager(manager.CleanableManager,
             if want_objects:
                 driver_entries = (objects.ManageableVolumeList.
                                   from_primitives(ctxt, driver_entries))
+        except AttributeError:
+            LOG.debug('Driver does not support listing manageable volumes.')
+            return []
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception("Listing manageable volumes failed, due "
@@ -3422,9 +3429,6 @@ class VolumeManager(manager.CleanableManager,
                               "failed to update usages.",
                               resource={'type': 'group',
                                         'id': group.id})
-
-            # Delete glance metadata if it exists
-            self.db.volume_glance_metadata_delete_by_volume(context, vol.id)
 
             vol.destroy()
 
@@ -4288,6 +4292,9 @@ class VolumeManager(manager.CleanableManager,
             if want_objects:
                 driver_entries = (objects.ManageableSnapshotList.
                                   from_primitives(ctxt, driver_entries))
+        except AttributeError:
+            LOG.debug('Driver does not support listing manageable snapshots.')
+            return []
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception("Listing manageable snapshots failed, due "

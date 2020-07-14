@@ -355,7 +355,7 @@ test_migrate_lun_error:
 
 test_verify_migration:
   lun1: &src_lun
-    _propertis:
+    _properties:
       <<: *lun_base_prop
   lun2: &dst_lun
     _properties:
@@ -1656,10 +1656,13 @@ test_do_create_cg_from_cgsnap:
       lun_id: 12
     _methods:
       attach_snap:
-
   lun: &src_lun_in_cg
     _methods:
       create_mount_point: *smp_from_src_lun
+  lun2: &new_lun
+    _properties:
+      poll: false
+      wwn: 'new_wwn'
   vnx:
     _properties:
     _methods:
@@ -1668,7 +1671,8 @@ test_do_create_cg_from_cgsnap:
         *snapshot_test_delete_snapshot]
       get_lun:
         _side_effect: [*src_lun_in_cg, *smp_from_src_lun,
-        *smp_from_src_lun, *lun_migrate, *src_lun, *dst_lun]
+        *smp_from_src_lun, *new_lun, *lun_migrate,
+        *src_lun, *new_lun]
       get_pool: *pool_test_create_lun
       get_migration_session: *session_verify
       create_cg: *cg_for_create
@@ -1681,7 +1685,8 @@ test_do_clone_cg:
       get_snap: *snapshot_test_delete_snapshot
       get_lun:
         _side_effect: [*src_lun_in_cg, *smp_from_src_lun,
-        *smp_from_src_lun, *lun_migrate, *src_lun, *dst_lun]
+        *smp_from_src_lun, *new_lun, *lun_migrate,
+        *src_lun, *new_lun]
       get_pool: *pool_test_create_lun
       get_migration_session: *session_verify
       create_cg: *cg_for_create
@@ -2067,6 +2072,8 @@ test_terminate_connection_cleanup_remove_sg:
       delete:
       disconnect_host:
       get_alu_hlu_map: {}
+      update:
+      with_poll: _context
 
 test_terminate_connection_cleanup_sg_absent:
   sg:
@@ -2080,9 +2087,11 @@ test_terminate_connection_cleanup_deregister:
       delete:
       disconnect_host:
       get_alu_hlu_map: {}
+      update:
+      with_poll: _context
   vnx:
     _methods:
-      remove_hba:
+      delete_hba:
 
 test_terminate_connection_cleanup_sg_is_not_empty:
   sg:

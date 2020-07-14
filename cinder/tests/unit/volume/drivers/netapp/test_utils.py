@@ -38,6 +38,7 @@ from cinder.volume import qos_specs
 from cinder.volume import volume_types
 
 
+@ddt.ddt
 class NetAppDriverUtilsTestCase(test.TestCase):
 
     @mock.patch.object(na_utils, 'LOG', mock.Mock())
@@ -118,35 +119,59 @@ class NetAppDriverUtilsTestCase(test.TestCase):
         self.assertAlmostEqual(na_utils.round_down(-5.567, '0'), -5)
 
     def test_iscsi_connection_properties(self):
-
         actual_properties = na_utils.get_iscsi_connection_properties(
             fake.ISCSI_FAKE_LUN_ID, fake.ISCSI_FAKE_VOLUME,
-            fake.ISCSI_FAKE_IQN, fake.ISCSI_FAKE_ADDRESS,
-            fake.ISCSI_FAKE_PORT)
+            [fake.ISCSI_FAKE_IQN, fake.ISCSI_FAKE_IQN2],
+            [fake.ISCSI_FAKE_ADDRESS_IPV4, fake.ISCSI_FAKE_ADDRESS2_IPV4],
+            [fake.ISCSI_FAKE_PORT, fake.ISCSI_FAKE_PORT])
 
         actual_properties_mapped = actual_properties['data']
 
         self.assertDictEqual(actual_properties_mapped,
-                             fake.FC_ISCSI_TARGET_INFO_DICT)
+                             fake.ISCSI_MP_TARGET_INFO_DICT)
+
+    def test_iscsi_connection_properties_single_iqn(self):
+        actual_properties = na_utils.get_iscsi_connection_properties(
+            fake.ISCSI_FAKE_LUN_ID, fake.ISCSI_FAKE_VOLUME,
+            fake.ISCSI_FAKE_IQN,
+            [fake.ISCSI_FAKE_ADDRESS_IPV4, fake.ISCSI_FAKE_ADDRESS2_IPV4],
+            [fake.ISCSI_FAKE_PORT, fake.ISCSI_FAKE_PORT])
+
+        actual_properties_mapped = actual_properties['data']
+        expected = fake.ISCSI_MP_TARGET_INFO_DICT.copy()
+        expected['target_iqns'][1] = expected['target_iqns'][0]
+
+        self.assertDictEqual(actual_properties_mapped,
+                             fake.ISCSI_MP_TARGET_INFO_DICT)
 
     def test_iscsi_connection_lun_id_type_str(self):
         FAKE_LUN_ID = '1'
 
         actual_properties = na_utils.get_iscsi_connection_properties(
             FAKE_LUN_ID, fake.ISCSI_FAKE_VOLUME, fake.ISCSI_FAKE_IQN,
-            fake.ISCSI_FAKE_ADDRESS, fake.ISCSI_FAKE_PORT)
+            [fake.ISCSI_FAKE_ADDRESS_IPV4], [fake.ISCSI_FAKE_PORT])
 
         actual_properties_mapped = actual_properties['data']
 
         self.assertIs(int, type(actual_properties_mapped['target_lun']))
+        self.assertDictEqual(actual_properties_mapped,
+                             fake.FC_ISCSI_TARGET_INFO_DICT)
 
     def test_iscsi_connection_lun_id_type_dict(self):
         FAKE_LUN_ID = {'id': 'fake_id'}
 
         self.assertRaises(TypeError, na_utils.get_iscsi_connection_properties,
                           FAKE_LUN_ID, fake.ISCSI_FAKE_VOLUME,
-                          fake.ISCSI_FAKE_IQN, fake.ISCSI_FAKE_ADDRESS,
-                          fake.ISCSI_FAKE_PORT)
+                          fake.ISCSI_FAKE_IQN, [fake.ISCSI_FAKE_ADDRESS_IPV4],
+                          [fake.ISCSI_FAKE_PORT])
+
+    def test_iscsi_connection_properties_ipv6(self):
+        actual_properties = na_utils.get_iscsi_connection_properties(
+            '1', fake.ISCSI_FAKE_VOLUME_NO_AUTH, fake.ISCSI_FAKE_IQN,
+            [fake.ISCSI_FAKE_ADDRESS_IPV6], [fake.ISCSI_FAKE_PORT])
+
+        self.assertDictEqual(actual_properties['data'],
+                             fake.FC_ISCSI_TARGET_INFO_DICT_IPV6)
 
     def test_get_volume_extra_specs(self):
         fake_extra_specs = {'fake_key': 'fake_value'}
@@ -537,6 +562,29 @@ class NetAppDriverUtilsTestCase(test.TestCase):
         result = na_utils.get_legacy_qos_policy(extra_specs)
 
         self.assertIsNone(result)
+
+    @ddt.data(("192.168.99.24:/fake/export/path", "192.168.99.24",
+               "/fake/export/path"),
+              ("127.0.0.1:/", "127.0.0.1", "/"),
+              ("[f180::30d9]:/path_to-export/3.1/this folder", "f180::30d9",
+               "/path_to-export/3.1/this folder"),
+              ("[::]:/", "::", "/"),
+              ("[2001:db8::1]:/fake_export", "2001:db8::1", "/fake_export"))
+    @ddt.unpack
+    def test_get_export_host_junction_path(self, share, host, junction_path):
+        result_host, result_path = na_utils.get_export_host_junction_path(
+            share)
+
+        self.assertEqual(host, result_host)
+        self.assertEqual(junction_path, result_path)
+
+    @ddt.data("192.14.21.0/wrong_export", "192.14.21.0:8080:/wrong_export"
+              "2001:db8::1:/wrong_export",
+              "[2001:db8::1:/wrong_export", "2001:db8::1]:/wrong_export")
+    def test_get_export_host_junction_path_with_invalid_exports(self, share):
+        self.assertRaises(exception.NetAppDriverException,
+                          na_utils.get_export_host_junction_path,
+                          share)
 
 
 class OpenStackInfoTestCase(test.TestCase):

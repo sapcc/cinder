@@ -622,7 +622,8 @@ def volume_service_uuids_online_data_migration(context, max_count):
 
     updated = 0
     query = model_query(context,
-                        models.Volume).filter_by(service_uuid=None)
+                        models.Volume).filter_by(service_uuid=None).\
+        filter(models.Volume.host.isnot(None))
     total = query.count()
     vol_refs = query.limit(max_count).all()
 
@@ -1609,6 +1610,7 @@ def volume_attached(context, attachment_id, instance_uuid, host_name,
 
 @handle_db_data_error
 @require_context
+@oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def volume_create(context, values):
     values['volume_metadata'] = _metadata_refs(values.get('metadata'),
                                                models.VolumeMetadata)
@@ -1710,35 +1712,33 @@ def volume_data_get_for_project(context, project_id,
                                         volume_type_id, host=host)
 
 
+VOLUME_DEPENDENT_MODELS = frozenset([models.VolumeMetadata,
+                                     models.VolumeAdminMetadata,
+                                     models.Transfer,
+                                     models.VolumeGlanceMetadata,
+                                     models.VolumeAttachment])
+
+
 @require_admin_context
 @oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def volume_destroy(context, volume_id):
     session = get_session()
     now = timeutils.utcnow()
+    updated_values = {'status': 'deleted',
+                      'deleted': True,
+                      'deleted_at': now,
+                      'updated_at': literal_column('updated_at'),
+                      'migration_status': None}
     with session.begin():
-        updated_values = {'status': 'deleted',
-                          'deleted': True,
-                          'deleted_at': now,
-                          'updated_at': literal_column('updated_at'),
-                          'migration_status': None}
         model_query(context, models.Volume, session=session).\
             filter_by(id=volume_id).\
             update(updated_values)
-        model_query(context, models.VolumeMetadata, session=session).\
-            filter_by(volume_id=volume_id).\
-            update({'deleted': True,
-                    'deleted_at': now,
-                    'updated_at': literal_column('updated_at')})
-        model_query(context, models.VolumeAdminMetadata, session=session).\
-            filter_by(volume_id=volume_id).\
-            update({'deleted': True,
-                    'deleted_at': now,
-                    'updated_at': literal_column('updated_at')})
-        model_query(context, models.Transfer, session=session).\
-            filter_by(volume_id=volume_id).\
-            update({'deleted': True,
-                    'deleted_at': now,
-                    'updated_at': literal_column('updated_at')})
+        for model in VOLUME_DEPENDENT_MODELS:
+            model_query(context, model, session=session).\
+                filter_by(volume_id=volume_id).\
+                update({'deleted': True,
+                        'deleted_at': now,
+                        'updated_at': literal_column('updated_at')})
     del updated_values['updated_at']
     return updated_values
 
@@ -4013,7 +4013,14 @@ def volume_types_get_by_name_or_id(context, volume_type_list):
         if not uuidutils.is_uuid_like(vol_t):
             vol_type = _volume_type_get_by_name(context, vol_t)
         else:
-            vol_type = _volume_type_get(context, vol_t)
+            try:
+                vol_type = _volume_type_get(context, vol_t)
+            except exception.VolumeTypeNotFound:
+                # check again if we get this volume type by uuid-like name
+                try:
+                    vol_type = _volume_type_get_by_name(context, vol_t)
+                except exception.VolumeTypeNotFoundByName:
+                    raise exception.VolumeTypeNotFound(volume_type_id=vol_t)
         req_volume_types.append(vol_type)
     return req_volume_types
 
@@ -4151,6 +4158,11 @@ def volume_type_destroy(context, id):
             filter_by(id=id).\
             update(updated_values)
         model_query(context, models.VolumeTypeExtraSpecs, session=session).\
+            filter_by(volume_type_id=id).\
+            update({'deleted': True,
+                    'deleted_at': utcnow,
+                    'updated_at': literal_column('updated_at')})
+        model_query(context, models.Encryption, session=session).\
             filter_by(volume_type_id=id).\
             update({'deleted': True,
                     'deleted_at': utcnow,
@@ -6928,6 +6940,7 @@ def _worker_set_updated_at_field(values):
     values['updated_at'] = updated_at
 
 
+@oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def worker_create(context, **values):
     """Create a worker entry from optional arguments."""
     _worker_set_updated_at_field(values)
@@ -6964,6 +6977,7 @@ def _orm_worker_update(worker, values):
         setattr(worker, key, value)
 
 
+@oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def worker_update(context, id, filters=None, orm_worker=None, **values):
     """Update a worker with given values."""
     filters = filters or {}
@@ -6982,6 +6996,7 @@ def worker_update(context, id, filters=None, orm_worker=None, **values):
     return result
 
 
+@oslo_db_api.wrap_db_retry(max_retries=5, retry_on_deadlock=True)
 def worker_claim_for_cleanup(context, claimer_id, orm_worker):
     """Claim a worker entry for cleanup."""
     # We set updated_at value so we are sure we update the DB entry even if the

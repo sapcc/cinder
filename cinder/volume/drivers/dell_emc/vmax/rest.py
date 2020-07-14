@@ -243,10 +243,10 @@ class VMAXRest(object):
         if status_code not in [STATUS_200, STATUS_201,
                                STATUS_202, STATUS_204]:
             exception_message = (
-                _('Error %(operation)s. The status code received '
-                  'is %(sc)s and the message is %(message)s.')
-                % {'operation': operation,
-                   'sc': status_code, 'message': message})
+                _("Error %(operation)s. The status code received is %(sc)s "
+                  "and the message is %(message)s.") % {
+                    'operation': operation, 'sc': status_code,
+                    'message': message})
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
 
@@ -265,12 +265,11 @@ class VMAXRest(object):
             rc, result, status, task = self.wait_for_job_complete(
                 job, extra_specs)
             if rc != 0:
-                exception_message = (_(
-                    "Error %(operation)s. Status code: %(sc)lu. "
-                    "Error: %(error)s. Status: %(status)s.")
-                    % {'operation': operation, 'sc': rc,
-                       'error': six.text_type(result),
-                       'status': status})
+                exception_message = (
+                    _("Error %(operation)s. Status code: %(sc)lu. Error: "
+                      "%(error)s. Status: %(status)s.") % {
+                        'operation': operation, 'sc': rc,
+                        'error': six.text_type(result), 'status': status})
                 LOG.error(exception_message)
                 raise exception.VolumeBackendAPIException(
                     data=exception_message)
@@ -469,11 +468,11 @@ class VMAXRest(object):
         :returns: slo_list -- list of service level names
         """
         slo_list = []
-        slo_dict = self.get_resource(array, SLOPROVISIONING, 'slo',
-                                     version='90')
+        slo_dict = self.get_resource(array, SLOPROVISIONING, 'slo')
         if slo_dict and slo_dict.get('sloId'):
-            if any(self.get_vmax_model(array) in x for x in
-                   utils.VMAX_AFA_MODELS):
+            if not self.is_next_gen_array(array) and (
+                    any(self.get_vmax_model(array) in x for x in
+                        utils.VMAX_AFA_MODELS)):
                 if 'Optimized' in slo_dict.get('sloId'):
                     slo_dict['sloId'].remove('Optimized')
             for slo in slo_dict['sloId']:
@@ -489,7 +488,9 @@ class VMAXRest(object):
         :returns: workload_setting -- list of workload names
         """
         workload_setting = []
-        if not self.is_next_gen_array(array):
+        if self.is_next_gen_array(array):
+            workload_setting.append('None')
+        else:
             wl_details = self.get_resource(
                 array, SLOPROVISIONING, 'workloadtype')
             if wl_details:
@@ -643,6 +644,8 @@ class VMAXRest(object):
                     "emulation": "FBA"})
 
         if slo:
+            if self.is_next_gen_array(array):
+                workload = 'NONE'
             slo_param = {"num_of_vols": 0,
                          "sloId": slo,
                          "workloadSelection": workload,
@@ -751,16 +754,21 @@ class VMAXRest(object):
         if vol_details:
             vol_identifier = vol_details.get('volume_identifier', None)
             LOG.debug('Element name = %(en)s, Vol identifier = %(vi)s, '
-                      'Device id = %(di)s, vol details = %(vd)s',
+                      'Device id = %(di)s.',
                       {'en': element_name, 'vi': vol_identifier,
-                       'di': device_id, 'vd': vol_details})
-            if vol_identifier == element_name:
-                found_device_id = device_id
-            elif name_id:
-                # This may be host-assisted migration case
-                element_name = self.utils.get_volume_element_name(name_id)
-                if vol_identifier == element_name:
+                       'di': device_id})
+            if vol_identifier:
+                if vol_identifier in element_name:
                     found_device_id = device_id
+                    if vol_identifier != element_name:
+                        LOG.debug("Device %(di)s is a legacy volume created "
+                                  "using SMI-S.",
+                                  {'di': device_id})
+                elif name_id:
+                    # This may be host-assisted migration case
+                    element_name = self.utils.get_volume_element_name(name_id)
+                    if vol_identifier == element_name:
+                        found_device_id = device_id
         return found_device_id
 
     def add_vol_to_sg(self, array, storagegroup_name, device_id, extra_specs):
@@ -875,12 +883,11 @@ class VMAXRest(object):
             if sg_value is None or input_value != int(sg_value):
                 property_dict[sg_key] = input_value
         else:
-            exception_message = (_(
-                "Invalid %(ds)s with value %(dt)s entered. "
-                "Valid values range from %(du)s %(dv)s to 100,000 %(dv)s") %
-                {'ds': input_key, 'dt': input_value, 'du': min_value,
-                 'dv': qos_unit
-                 })
+            exception_message = (
+                _("Invalid %(ds)s with value %(dt)s entered. Valid values "
+                  "range from %(du)s %(dv)s to 100,000 %(dv)s") % {
+                    'ds': input_key, 'dt': input_value, 'du': min_value,
+                    'dv': qos_unit})
             LOG.error(exception_message)
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
@@ -895,12 +902,11 @@ class VMAXRest(object):
             if distribution_type != sg_value:
                 property_dict["dynamicDistribution"] = distribution_type
         else:
-            exception_message = (_(
-                "Wrong Distribution type value %(dt)s entered. "
-                "Please enter one of: %(dl)s") %
-                {'dt': qos_extra_spec.get('DistributionType'),
-                 'dl': dynamic_list
-                 })
+            exception_message = (
+                _("Wrong Distribution type value %(dt)s entered. Please enter "
+                  "one of: %(dl)s") % {
+                    'dt': qos_extra_spec.get('DistributionType'),
+                    'dl': dynamic_list})
             LOG.error(exception_message)
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
@@ -936,6 +942,8 @@ class VMAXRest(object):
         :param rep_mode: flag to indicate replication mode
         :returns: the storage group dict (or None), the storage group name
         """
+        if self.is_next_gen_array(array):
+            workload = 'NONE'
         storagegroup_name = self.utils.get_default_storage_group_name(
             srp, slo, workload, do_disable_compression, is_re, rep_mode)
         storagegroup = self.get_storage_group(array, storagegroup_name)
@@ -1138,8 +1146,9 @@ class VMAXRest(object):
                       'for %(mv)s.', {'mv': maskingview})
         else:
             try:
-                host_lun_id = (connection_info['maskingViewConnection']
-                               [0]['host_lun_address'])
+                host_lun_id = (
+                    connection_info[
+                        'maskingViewConnection'][0]['host_lun_address'])
                 host_lun_id = int(host_lun_id, 16)
             except Exception as e:
                 LOG.error("Unable to retrieve connection information "
@@ -1338,17 +1347,6 @@ class VMAXRest(object):
         except KeyError:
             init_list = []
         return init_list
-
-    def get_in_use_initiator_list_from_array(self, array):
-        """Get the list of initiators which are in-use from the array.
-
-        Gets the list of initiators from the array which are in
-        hosts/ initiator groups.
-        :param array: the array serial number
-        :returns: init_list
-        """
-        params = {'in_a_host': 'true'}
-        return self.get_initiator_list(array, params)
 
     def get_initiator_group_from_initiator(self, array, initiator):
         """Given an initiator, get its corresponding initiator group, if any.
@@ -2028,6 +2026,7 @@ class VMAXRest(object):
         :param target_device: the target device id
         :param extra_specs: the extra specifications
         """
+
         def _wait_for_consistent_state():
             # Called at an interval until the state of the
             # rdf pair is 'consistent'.
@@ -2351,8 +2350,8 @@ class VMAXRest(object):
                 payload['suspend'] = {"force": "true"}
             elif action.lower() == 'establish':
                 metro_bias = (
-                    True if extra_specs.get(utils.METROBIAS)
-                    and extra_specs[utils.METROBIAS] is True else False)
+                    True if extra_specs.get(utils.METROBIAS) and extra_specs[
+                        utils.METROBIAS] is True else False)
                 payload['establish'] = {"metroBias": metro_bias,
                                         "full": 'false'}
             resource_name = ('%(sg_name)s/rdf_group/%(rdf_num)s'
