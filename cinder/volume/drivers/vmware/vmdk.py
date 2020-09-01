@@ -1646,12 +1646,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 image_adapter_type = properties['vmware_adaptertype']
 
             try:
-                    volumeops.VirtualDiskAdapterType.validate(image_adapter_type)
+                volumeops.VirtualDiskAdapterType.validate(image_adapter_type)
 
-                    self._fetch_stream_optimized_image(context, volume,
-                                                       image_service, image_id,
-                                                       image_meta['size'],
-                                                       image_adapter_type)
+                self._fetch_stream_optimized_image(context, volume,
+                                                   image_service, image_id,
+                                                   image_meta['size'],
+                                                   image_adapter_type)
             except (exceptions.VimException,
                     exceptions.VMwareDriverException):
                 with excutils.save_and_reraise_exception():
