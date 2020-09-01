@@ -101,6 +101,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         self._config.vmware_snapshot_format = self.SNAPSHOT_FORMAT
         self._config.vmware_lazy_create = True
         self._config.vmware_datastore_regex = None
+        self._config.reserved_percentage = 0
 
         self._db = mock.Mock()
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
@@ -108,16 +109,19 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         self._context = context.get_admin_context()
 
-    def test_get_volume_stats(self):
+    @mock.patch.object(VMDK_DRIVER, 'session')
+    def test_get_volume_stats(self, session):
+        retr_result_mock = mock.Mock(spec=['objects'])
+        retr_result_mock.objects = []
+        session.vim.RetrievePropertiesEx.return_value = retr_result_mock
         stats = self._driver.get_volume_stats()
 
         self.assertEqual('VMware', stats['vendor_name'])
         self.assertEqual(self._driver.VERSION, stats['driver_version'])
         self.assertEqual('vmdk', stats['storage_protocol'])
         self.assertEqual(0, stats['reserved_percentage'])
-        self.assertEqual('unknown', stats['total_capacity_gb'])
-        self.assertEqual('unknown', stats['free_capacity_gb'])
-        self.assertFalse(stats['shared_targets'])
+        self.assertEqual(0, stats['total_capacity_gb'])
+        self.assertEqual(0, stats['free_capacity_gb'])
 
     def _create_volume_dict(self,
                             vol_id=VOL_ID,
@@ -1702,12 +1706,11 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
     @mock.patch.object(VMDK_DRIVER, '_validate_vcenter_version')
     @mock.patch('oslo_vmware.pbm.get_pbm_wsdl_location')
     @mock.patch.object(VMDK_DRIVER, '_register_extension')
-    @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps')
     @mock.patch('cinder.volume.drivers.vmware.datastore.DatastoreSelector')
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch.object(VMDK_DRIVER, 'session')
     def _test_do_setup(
-            self, session, vops, ds_sel_cls, vops_cls, register_extension,
+            self, session, vops, ds_sel_cls, register_extension,
             get_pbm_wsdl_loc, validate_vc_version, get_vc_version,
             create_session, re_compile, validate_params, enable_pbm=True,
             ds_regex_pat=None, invalid_regex=False):
@@ -1753,12 +1756,6 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                 mock_session.pbm_wsdl_loc_set.assert_called_once_with(pbm_wsdl)
             self.assertEqual(enable_pbm, self._driver._storage_policy_enabled)
             register_extension.assert_called_once()
-            vops_cls.assert_called_once_with(
-                session,
-                self._driver.configuration.vmware_max_objects_retrieval,
-                vmdk.EXTENSION_KEY,
-                vmdk.EXTENSION_TYPE)
-            self.assertEqual(vops_cls.return_value, self._driver._volumeops)
             ds_sel_cls.assert_called_once_with(
                 vops,
                 session,
@@ -2170,6 +2167,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                                                    None,
                                                    volumeops.FULL_CLONE_TYPE,
                                                    datastore,
+                                                   device_changes=None,
                                                    disk_type=disk_type,
                                                    host=host,
                                                    resource_pool=rp,
@@ -2280,6 +2278,11 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         vol_dev_uuid = mock.sentinel.vol_dev_uuid
         get_volume_device_uuid.return_value = vol_dev_uuid
 
+        dev_change_disk_remove = mock.sentinel.dev_change_disk_remove
+        vops._create_device_change_for_disk_removal.return_value = (
+            dev_change_disk_remove
+        )
+
         tmp_name = mock.sentinel.tmp_name
         generate_uuid.return_value = tmp_name
 
@@ -2305,7 +2308,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         vops.clone_backing.assert_called_once_with(
             tmp_name, instance, None, volumeops.FULL_CLONE_TYPE, datastore,
             host=host, resource_pool=rp, folder=folder,
-            disks_to_clone=[vol_dev_uuid])
+            device_changes=dev_change_disk_remove)
 
     @mock.patch.object(VMDK_DRIVER, '_get_disk_type')
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
