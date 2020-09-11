@@ -165,7 +165,7 @@ vmdk_opts = [
                      'attached, uploaded to image service or during backup.'),
     cfg.StrOpt('vmware_datastore_regex',
                help='Regular expression pattern to match the name of '
-                    'datastores where backend volumes are created.')
+                    'datastores where backend volumes are created.'),
     cfg.BoolOpt('vmware_online_resize',
                 default=True,
                 help='If true, enables volume resize in in-use state'),

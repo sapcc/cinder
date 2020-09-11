@@ -20,7 +20,7 @@ other hosts and perform cross vCenter operations.
 """
 from cinder import rpc
 from cinder.volume.rpcapi import VolumeAPI
-from cinder.volume import utils
+from cinder.volume import volume_utils
 from oslo_vmware import vim_util
 
 import oslo_messaging as messaging
@@ -33,7 +33,7 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
     BINARY = VolumeAPI.BINARY
 
     def _get_cctxt(self, host=None, version=None, **kwargs):
-        kwargs['server'] = utils.extract_host(host)
+        kwargs['server'] = volume_utils.extract_host(host)
         return super(VmdkDriverRemoteApi, self)._get_cctxt(version=version,
                                                            **kwargs)
 
