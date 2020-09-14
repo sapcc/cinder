@@ -583,34 +583,34 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         connector = {'connection_capabilities': []}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host1', utils.extract_host(backend.host))
+        self.assertEqual('host1', volume_utils.extract_host(backend.host))
 
         connector = {'connection_capabilities': ['common']}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host1', utils.extract_host(backend.host))
+        self.assertEqual('host1', volume_utils.extract_host(backend.host))
 
         connector = {'connection_capabilities': ['host-1']}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host1', utils.extract_host(backend.host))
+        self.assertEqual('host1', volume_utils.extract_host(backend.host))
 
         connector = {'connection_capabilities': ['host-1', 'host1']}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host1', utils.extract_host(backend.host))
+        self.assertEqual('host1', volume_utils.extract_host(backend.host))
 
         # host3 has a lower weight but it matches the
         # connection_capabilities exposed by the connector
         connector = {'connection_capabilities': ['host-3']}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host3', utils.extract_host(backend.host))
+        self.assertEqual('host3', volume_utils.extract_host(backend.host))
 
         connector = {'connection_capabilities': ['host3', 'host-3']}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host3', utils.extract_host(backend.host))
+        self.assertEqual('host3', volume_utils.extract_host(backend.host))
 
     @mock.patch('cinder.db.service_get_all')
     def test_find_backend_for_connector_with_invalid_connection_capabilities(
@@ -683,4 +683,4 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         connector = {'connection_capabilities': []}
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
-        self.assertEqual('host1', utils.extract_host(backend.host))
+        self.assertEqual('host1', volume_utils.extract_host(backend.host))
