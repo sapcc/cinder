@@ -171,6 +171,20 @@ vmdk_opts = [
                 'volumes to that DS and move the volumes away manually. '
                 'Not disabling this would mean cinder moves the volumes '
                 'around, which can take a long time and leads to timeouts.'),
+    cfg.BoolOpt('vmware_select_random_best_datastore',
+                default=False,
+                help='If True, driver will randomize the picking of '
+                'best datastore from best possible datastores '
+                'during volume backing creation.  Best possible datastores '
+                'are most connected hosts and most free space.'),
+    cfg.IntOpt('vmware_random_datastore_range',
+               default=None,
+               help='If vmware_select_random_best_datastore is enabled '
+               'this enables subselecting a range of datastores to pick from '
+               'after they have been sorted.  ie.  If there are 10 '
+               'datastores, and vmware_random_datastore_range is set to 5 '
+               'Then it will filter in 5 datastores prior to randomizing '
+               'the datastores to pick from.'),
 ]
 
 CONF = cfg.CONF
@@ -327,9 +341,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     def ds_sel(self):
         if not self._ds_sel:
             max_objects = self.configuration.vmware_max_objects_retrieval
+            random_ds = self.configuration.vmware_select_random_best_datastore
+            random_ds_range = self.configuration.vmware_random_datastore_range
             self._ds_sel = hub.DatastoreSelector(self.volumeops,
                                                  self.session,
-                                                 max_objects)
+                                                 max_objects,
+                                                 random_ds,
+                                                 random_ds_range)
         return self._ds_sel
 
     def _validate_params(self):
@@ -675,7 +693,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 LOG.error("There are no valid hosts available in "
                           "configured cluster(s): %s.", self._clusters)
                 raise vmdk_exceptions.NoValidHostException()
-
         best_candidate = self.ds_sel.select_datastore(req, hosts=hosts)
         if not best_candidate:
             LOG.error("There is no valid datastore satisfying "
