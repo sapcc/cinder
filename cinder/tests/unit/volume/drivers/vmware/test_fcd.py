@@ -64,6 +64,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self._config.vmware_host_port = self.PORT
         self._config.vmware_image_transfer_timeout_secs = self.IMG_TX_TIMEOUT
         self._config.vmware_max_objects_retrieval = self.MAX_OBJECTS
+        self._config.vmware_storage_profile = None
         self._config.reserved_percentage = 0
         self._driver = fcd.VMwareVStorageObjectDriver(
             configuration=self._config)
