@@ -391,9 +391,19 @@ class VolumeTypeInUse(CinderException):
                 "volumes present with the type.")
 
 
-class VolumeTypeDefault(CinderException):
-    message = _("The volume type %(volume_type_name)s "
-                "is the default volume type and cannot be deleted.")
+class VolumeTypeDeletionError(Invalid):
+    message = _("The volume type %(volume_type_id)s is the only currently "
+                "defined volume type and cannot be deleted.")
+
+
+class VolumeTypeDefaultDeletionError(Invalid):
+    message = _("The volume type %(volume_type_id)s is the default volume "
+                "type and cannot be deleted.")
+
+
+class VolumeTypeDefaultMisconfiguredError(CinderException):
+    message = _("The request cannot be fulfilled as the default volume type "
+                "%(volume_type_name)s cannot be found.")
 
 
 class GroupTypeNotFound(NotFound):
@@ -622,6 +632,10 @@ class NoValidBackend(CinderException):
     message = _("No valid backend was found. %(reason)s")
 
 
+class InvalidConnectionCapabilities(CinderException):
+    message = _("Invalid connection capabilities. %(reason)s")
+
+
 class NoMoreTargets(CinderException):
     """No more available targets."""
     pass
@@ -717,6 +731,10 @@ class FailedCmdWithDump(VolumeDriverException):
 
 class InvalidConnectorException(VolumeDriverException):
     message = _("Connector doesn't have required information: %(missing)s")
+
+
+class ConnectorRejected(VolumeDriverException):
+    message = _("Connector can't be used with this driver anymore. %(reason)s")
 
 
 class GlanceMetadataExists(Invalid):

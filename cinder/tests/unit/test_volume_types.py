@@ -227,6 +227,30 @@ class VolumeTypeTestCase(test.TestCase):
         self.assertEqual(conf_fixture.def_vol_type,
                          default_vol_type.get('name'))
 
+    def test_get_default_volume_type_not_found(self):
+        """Ensure setting non-existent default type raises error."""
+        self.flags(default_volume_type='fake_type')
+        self.assertRaises(exception.VolumeTypeDefaultMisconfiguredError,
+                          volume_types.get_default_volume_type)
+
+    def test_delete_default_volume_type(self):
+        """Ensures default volume type cannot be deleted."""
+        default = volume_types.create(self.ctxt, 'default_type')
+
+        self.flags(default_volume_type='default_type')
+        self.assertRaises(exception.VolumeTypeDefaultDeletionError,
+                          volume_types.destroy, self.ctxt, default['id'])
+
+    def test_delete_when_default_volume_type_not_found(self):
+        """Ensures volume types cannot be deleted until valid default is set.
+
+        """
+        default = volume_types.create(self.ctxt, 'default_type')
+
+        self.flags(default_volume_type='fake_default')
+        self.assertRaises(exception.VolumeTypeDefaultMisconfiguredError,
+                          volume_types.destroy, self.ctxt, default['id'])
+
     def test_default_volume_type_missing_in_db(self):
         """Test default volume type is missing in database.
 
@@ -249,6 +273,9 @@ class VolumeTypeTestCase(test.TestCase):
 
     def test_non_existent_vol_type_shouldnt_delete(self):
         """Ensures that volume type creation fails with invalid args."""
+        # create a dummy type as DB requires at least 1 type to perform the
+        # delete operation
+        volume_types.create(self.ctxt, self.vol_type1_name)
         self.assertRaises(exception.VolumeTypeNotFound,
                           volume_types.destroy, self.ctxt, "sfsfsdfdfs")
 
@@ -634,3 +661,52 @@ class VolumeTypeTestCase(test.TestCase):
             'volume_type_project.test_suffix',
             {'volume_type_id': volume_type_id,
              'project_id': project_id})
+
+    def test_provision_filter_on_size(self):
+        volume_types.create(self.ctxt, "type1",
+                            {"key1": "val1", "key2": "val2"})
+        volume_types.create(self.ctxt, "type2",
+                            {volume_types.MIN_SIZE_KEY: "12",
+                             "key3": "val3"})
+        volume_types.create(self.ctxt, "type3",
+                            {volume_types.MAX_SIZE_KEY: "99",
+                             "key4": "val4"})
+        volume_types.create(self.ctxt, "type4",
+                            {volume_types.MIN_SIZE_KEY: "24",
+                             volume_types.MAX_SIZE_KEY: "99",
+                             "key4": "val4"})
+
+        # Make sure we don't fail if there is no volume type
+        volume_types.provision_filter_on_size(self.ctxt, None, "11")
+
+        # Make sure we don't raise if there are no min/max set
+        type1 = volume_types.get_by_name_or_id(self.ctxt, 'type1')
+        volume_types.provision_filter_on_size(self.ctxt, type1, "11")
+
+        # verify minimum size requirements
+        type2 = volume_types.get_by_name_or_id(self.ctxt, 'type2')
+        self.assertRaises(exception.InvalidInput,
+                          volume_types.provision_filter_on_size,
+                          self.ctxt, type2, "11")
+        volume_types.provision_filter_on_size(self.ctxt, type2, "12")
+        volume_types.provision_filter_on_size(self.ctxt, type2, "100")
+
+        # verify max size requirements
+        type3 = volume_types.get_by_name_or_id(self.ctxt, 'type3')
+        self.assertRaises(exception.InvalidInput,
+                          volume_types.provision_filter_on_size,
+                          self.ctxt, type3, "100")
+        volume_types.provision_filter_on_size(self.ctxt, type3, "99")
+        volume_types.provision_filter_on_size(self.ctxt, type3, "1")
+
+        # verify min and max
+        type4 = volume_types.get_by_name_or_id(self.ctxt, 'type4')
+        self.assertRaises(exception.InvalidInput,
+                          volume_types.provision_filter_on_size,
+                          self.ctxt, type4, "20")
+        self.assertRaises(exception.InvalidInput,
+                          volume_types.provision_filter_on_size,
+                          self.ctxt, type4, "130")
+        volume_types.provision_filter_on_size(self.ctxt, type4, "24")
+        volume_types.provision_filter_on_size(self.ctxt, type4, "99")
+        volume_types.provision_filter_on_size(self.ctxt, type4, "30")

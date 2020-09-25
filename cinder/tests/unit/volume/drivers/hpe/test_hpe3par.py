@@ -19,6 +19,7 @@ import copy
 import mock
 
 import ddt
+from oslo_config import cfg
 from oslo_utils import units
 from oslo_utils import uuidutils
 
@@ -38,6 +39,8 @@ from cinder.volume import volume_types
 from cinder.volume import volume_utils
 
 hpeexceptions = hpe3parclient.hpeexceptions
+
+CONF = cfg.CONF
 
 
 HPE3PAR_CPG = 'OpenStackCPG'
@@ -752,6 +755,7 @@ class HPE3PARBaseDriver(test.TestCase):
         configuration.image_volume_cache_enabled = False
         configuration.replication_device = None
         configuration.hpe3par_target_nsp = None
+        configuration.unique_fqdn_network = True
         return configuration
 
     @mock.patch(
@@ -5164,12 +5168,51 @@ class TestHPE3PARDriverBase(HPE3PARBaseDriver):
                               self.driver.unmanage_snapshot,
                               snapshot=snapshot)
 
-    def test__safe_hostname(self):
-        long_hostname = "abc123abc123abc123abc123abc123abc123"
+    @ddt.data(True, False)
+    def test__safe_hostname(self, in_shared):
+        config = self._set_unique_fqdn_override(True, in_shared)
+        my_connector = self.connector.copy()
+        my_connector['host'] = "abc123abc123abc123abc123abc123abc123"
         fixed_hostname = "abc123abc123abc123abc123abc123a"
-        common = hpecommon.HPE3PARCommon(None)
-        safe_host = common._safe_hostname(long_hostname)
-        self.assertEqual(fixed_hostname, safe_host)
+        mock_client = self.setup_driver()
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+            common = self.driver._login()
+            safe_host = common._safe_hostname(my_connector, config)
+            self.assertEqual(fixed_hostname, safe_host)
+
+    @ddt.data(True, False)
+    def test__safe_hostname_unique(self, in_shared):
+        mock_client = self.setup_driver()
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+            common = self.driver._login()
+
+            config = self._set_unique_fqdn_override(False, in_shared)
+            my_connector = self.connector.copy()
+            my_connector['host'] = "abc123abc123abc123abc123abc123abc123"
+            my_connector['initiator'] = 'iqn.1993-08.org.debian:01:222:12345'
+            ret_name = '54321-222-10-naibed.gro.80-3991'
+            safe_host = common._safe_hostname(my_connector, config)
+            self.assertEqual(ret_name, safe_host)
+
+    @ddt.data(True, False)
+    def test__safe_hostname_unique_without_initiator(self, in_shared):
+        fixed_hostname = "abc123abc123abc123abc123abc123a"
+        mock_client = self.setup_driver()
+        with mock.patch.object(hpecommon.HPE3PARCommon,
+                               '_create_client') as mock_create_client:
+            mock_create_client.return_value = mock_client
+            common = self.driver._login()
+
+            conf = self._set_unique_fqdn_override(False, in_shared)
+            my_connector = self.connector.copy()
+            del(my_connector['initiator'])
+            my_connector['host'] = "abc123abc123abc123abc123abc123abc123"
+            safe_host = common._safe_hostname(my_connector, conf)
+            self.assertEqual(fixed_hostname, safe_host)
 
     @mock.patch('cinder.volume.drivers.hpe.hpe_3par_common.HPE3PARCommon.'
                 'is_volume_group_snap_type')

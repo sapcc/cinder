@@ -17,6 +17,7 @@ import re
 
 import ddt
 import mock
+from oslo_config import cfg
 from oslo_utils import units
 import time
 
@@ -33,6 +34,8 @@ from cinder.volume.drivers.kaminario import kaminario_common
 from cinder.volume.drivers.kaminario import kaminario_fc
 from cinder.volume.drivers.kaminario import kaminario_iscsi
 from cinder.volume import volume_utils
+
+CONF = cfg.CONF
 
 CONNECTOR = {'initiator': 'iqn.1993-08.org.debian:01:12aa12aa12aa',
              'ip': '192.168.2.5', 'platform': 'x86_64', 'host': 'test-k2',
@@ -121,6 +124,7 @@ class Replication(object):
     rpo = 500
 
 
+@ddt.ddt
 class TestKaminarioCommon(test.TestCase):
     driver = None
     conf = None
@@ -141,8 +145,8 @@ class TestKaminarioCommon(test.TestCase):
         self.conf = mock.Mock(spec=configuration.Configuration)
         self.conf.kaminario_dedup_type_name = "dedup"
         self.conf.volume_dd_blocksize = 2
-        self.conf.unique_fqdn_network = True
         self.conf.disable_discovery = False
+        self.conf.unique_fqdn_network = True
 
     def _setup_driver(self):
         self.driver = (kaminario_iscsi.
@@ -523,8 +527,10 @@ class TestKaminarioCommon(test.TestCase):
         result = self.driver.get_initiator_host_name(CONNECTOR)
         self.assertEqual(CONNECTOR['host'], result)
 
-    def test_get_initiator_host_name_unique(self):
-        self.driver.configuration.unique_fqdn_network = False
+    @ddt.data(True, False)
+    def test_get_initiator_host_name_unique(self, in_shared):
+        cfg = self._set_unique_fqdn_override(False, in_shared)
+        self.mock_object(self.driver, 'configuration', cfg)
         result = self.driver.get_initiator_host_name(CONNECTOR)
         expected = re.sub('[:.]', '_', CONNECTOR['initiator'][::-1][:32])
         self.assertEqual(expected, result)
@@ -592,6 +598,7 @@ class TestKaminarioISCSI(TestKaminarioCommon):
         self.assertIsNone(result)
 
 
+@ddt.ddt
 class TestKaminarioFC(TestKaminarioCommon):
 
     def _setup_driver(self):
@@ -624,10 +631,12 @@ class TestKaminarioFC(TestKaminarioCommon):
         result = self.driver.terminate_connection(self.vol, None)
         self.assertIn('data', result)
 
-    def test_get_initiator_host_name_unique(self):
+    @ddt.data(True, False)
+    def test_get_initiator_host_name_unique(self, in_shared):
+        cfg = self._set_unique_fqdn_override(False, in_shared)
+        self.mock_object(self.driver, 'configuration', cfg)
         connector = CONNECTOR.copy()
         del connector['initiator']
-        self.driver.configuration.unique_fqdn_network = False
         result = self.driver.get_initiator_host_name(connector)
         expected = re.sub('[:.]', '_', connector['wwnns'][0][::-1][:32])
         self.assertEqual(expected, result)

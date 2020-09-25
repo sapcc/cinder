@@ -36,6 +36,12 @@ LINKED_CLONE_TYPE = 'linked'
 FULL_CLONE_TYPE = 'full'
 
 BACKING_UUID_KEY = 'instanceUuid'
+MIN_VIRTUAL_DISK_SIZE_KB = 4 * units.Ki
+VM_GUEST_ID = 'otherGuest'
+VM_NUM_CPUS = 1
+VM_MEMORY_MB = 128
+VMX_VERSION = 'vmx-08'
+CONTROLLER_DEVICE_BUS_NUMBER = 0
 
 
 def split_datastore_path(datastore_path):
@@ -375,6 +381,15 @@ class VMwareVolumeOps(object):
         self._session.wait_for_task(task)
         LOG.info("Deleted the VM backing: %s.", backing)
 
+    def reload_backing(self, backing):
+        """Reload the backing.
+
+        :param backing: Managed object reference to the backing
+        """
+        LOG.debug("Reloading the VM backing: %s.", backing)
+        self._session.invoke_api(self._session.vim, 'Reload', backing)
+        LOG.info("Reloaded the VM backing: %s.", backing)
+
     # TODO(kartikaditya) Keep the methods not specific to volume in
     # a different file
     def get_host(self, instance):
@@ -623,6 +638,61 @@ class VMwareVolumeOps(object):
                  "%(size)s GB.",
                  {'path': path, 'size': requested_size_in_gb})
 
+    def extend_virtual_disk_online(self, requested_size_in_gb, path, vm_ref):
+        """Extend the virtual disk online to the requested size.
+
+        :param requested_size_in_gb: Size of the volume in GB
+        :param path: Datastore path of the virtual disk to extend
+        :param vm_ref: Reference to the VM instance
+        """
+        LOG.debug("Extending virtual disk: %(path)s to %(size)s GB.",
+                  {'path': path, 'size': requested_size_in_gb})
+        # VMWare API needs the capacity unit to be in KB, so convert the
+        # capacity unit from GB to KB.
+        cf = self._session.vim.client.factory
+        size_in_kb = requested_size_in_gb * units.Mi
+        config_spec = cf.create('ns0:VirtualMachineConfigSpec')
+        disk = None
+        devices = self._session.invoke_api(vim_util,
+                                           'get_object_property',
+                                           self._session.vim,
+                                           vm_ref,
+                                           'config.hardware.device')
+        for device in devices['VirtualDevice']:
+            if device.__class__.__name__ == "VirtualDisk" and \
+                    device.backing.fileName == path:
+                disk = device
+                break
+        else:
+            msg = str.format("Error during online-resize of disk: %(path)s to "
+                             "%(size)s GB. Can't find the attachment",
+                             {'path': path, 'size': requested_size_in_gb})
+            raise exceptions.VimException(msg)
+
+        disk.capacityInKB = size_in_kb
+        delattr(disk, 'capacityInBytes')
+        delattr(disk, 'deviceInfo')
+        device_change = []
+        devspec = cf.create('ns0:VirtualDeviceConfigSpec')
+        devspec.operation = 'edit'
+        devspec.device = disk
+        device_change.append(devspec)
+        config_spec.deviceChange = device_change
+        task = self._session.invoke_api(self._session.vim,
+                                        "ReconfigVM_Task",
+                                        vm_ref,
+                                        spec=config_spec)
+        self._session.wait_for_task(task)
+        LOG.info("Successfully extended virtual disk: %(path)s to "
+                 "%(size)s GB.",
+                 {'path': path, 'size': requested_size_in_gb})
+
+    @staticmethod
+    def get_controller_device_shared_bus(controller_type):
+        if ControllerType.is_scsi_controller(controller_type):
+            return 'noSharing'
+        return None
+
     def _create_controller_config_spec(self, adapter_type):
         """Returns config spec for adding a disk controller."""
         cf = self._session.vim.client.factory
@@ -630,29 +700,55 @@ class VMwareVolumeOps(object):
         controller_type = ControllerType.get_controller_type(adapter_type)
         controller_device = cf.create('ns0:%s' % controller_type)
         controller_device.key = -100
-        controller_device.busNumber = 0
-        if ControllerType.is_scsi_controller(controller_type):
-            controller_device.sharedBus = 'noSharing'
+        controller_device.busNumber = CONTROLLER_DEVICE_BUS_NUMBER
+        shared_bus = self.get_controller_device_shared_bus(controller_type)
+        if shared_bus:
+            controller_device.sharedBus = shared_bus
 
         controller_spec = cf.create('ns0:VirtualDeviceConfigSpec')
         controller_spec.operation = 'add'
         controller_spec.device = controller_device
         return controller_spec
 
+    @staticmethod
+    def get_disk_eagerly_scrub(disk_type):
+        if disk_type == VirtualDiskType.EAGER_ZEROED_THICK:
+            return True
+        return False
+
+    @staticmethod
+    def get_disk_thin_provisioned(disk_type):
+        if disk_type == VirtualDiskType.THIN:
+            return True
+        return False
+
     def _create_disk_backing(self, disk_type, vmdk_ds_file_path):
         """Creates file backing for virtual disk."""
         cf = self._session.vim.client.factory
         disk_device_bkng = cf.create('ns0:VirtualDiskFlatVer2BackingInfo')
 
-        if disk_type == VirtualDiskType.EAGER_ZEROED_THICK:
+        eagerly_scrub = self.get_disk_eagerly_scrub(disk_type)
+        thin_provisioned = self.get_disk_thin_provisioned(disk_type)
+
+        if eagerly_scrub:
             disk_device_bkng.eagerlyScrub = True
-        elif disk_type == VirtualDiskType.THIN:
+        elif thin_provisioned:
             disk_device_bkng.thinProvisioned = True
 
         disk_device_bkng.fileName = vmdk_ds_file_path or ''
         disk_device_bkng.diskMode = 'persistent'
 
         return disk_device_bkng
+
+    @staticmethod
+    def get_disk_capacity_in_kb(size_kb):
+        return max(MIN_VIRTUAL_DISK_SIZE_KB, int(size_kb))
+
+    @staticmethod
+    def get_disk_device_key(controller_key):
+        if controller_key < 0:
+            return controller_key - 1
+        return -101
 
     def _create_virtual_disk_config_spec(self, size_kb, disk_type,
                                          controller_key, profile_id,
@@ -661,12 +757,9 @@ class VMwareVolumeOps(object):
         cf = self._session.vim.client.factory
 
         disk_device = cf.create('ns0:VirtualDisk')
-        # disk size should be at least 1024KB
-        disk_device.capacityInKB = max(units.Ki, int(size_kb))
-        if controller_key < 0:
-            disk_device.key = controller_key - 1
-        else:
-            disk_device.key = -101
+        # disk size should be at least 4MB for VASA provider
+        disk_device.capacityInKB = self.get_disk_capacity_in_kb(size_kb)
+        disk_device.key = self.get_disk_device_key(controller_key)
         disk_device.unitNumber = 0
         disk_device.controllerKey = controller_key
         disk_device.backing = self._create_disk_backing(disk_type,
@@ -684,6 +777,18 @@ class VMwareVolumeOps(object):
 
         return disk_spec
 
+    def get_controller_key_and_spec(self, adapter_type):
+        controller_spec = None
+        if adapter_type == 'ide':
+            # For IDE disks, use one of the default IDE controllers (with keys
+            # 200 and 201) created as part of backing VM creation.
+            controller_key = 200
+        else:
+            controller_spec = self._create_controller_config_spec(adapter_type)
+            controller_key = controller_spec.device.key
+
+        return controller_key, controller_spec
+
     def _create_specs_for_disk_add(self, size_kb, disk_type, adapter_type,
                                    profile_id, vmdk_ds_file_path=None):
         """Create controller and disk config specs for adding a new disk.
@@ -697,14 +802,8 @@ class VMwareVolumeOps(object):
                                   not created for the virtual disk.
         :return: list containing controller and disk config specs
         """
-        controller_spec = None
-        if adapter_type == 'ide':
-            # For IDE disks, use one of the default IDE controllers (with keys
-            # 200 and 201) created as part of backing VM creation.
-            controller_key = 200
-        else:
-            controller_spec = self._create_controller_config_spec(adapter_type)
-            controller_key = controller_spec.device.key
+        (controller_key, controller_spec) = \
+            self.get_controller_key_and_spec(adapter_type)
 
         disk_spec = self._create_virtual_disk_config_spec(size_kb,
                                                           disk_type,
@@ -736,6 +835,13 @@ class VMwareVolumeOps(object):
         managed_by.type = self._extension_type
         return managed_by
 
+    @staticmethod
+    def get_vm_path_name(ds_name):
+        return '[%s]' % ds_name
+
+    def get_vmx_version(self):
+        return self._vmx_version or VMX_VERSION
+
     def _get_create_spec_disk_less(self, name, ds_name, profileId=None,
                                    extra_config=None):
         """Return spec for creating disk-less backing.
@@ -749,19 +855,19 @@ class VMwareVolumeOps(object):
         """
         cf = self._session.vim.client.factory
         vm_file_info = cf.create('ns0:VirtualMachineFileInfo')
-        vm_file_info.vmPathName = '[%s]' % ds_name
+        vm_file_info.vmPathName = self.get_vm_path_name(ds_name)
 
         create_spec = cf.create('ns0:VirtualMachineConfigSpec')
         create_spec.name = name
-        create_spec.guestId = 'otherGuest'
-        create_spec.numCPUs = 1
-        create_spec.memoryMB = 128
+        create_spec.guestId = VM_GUEST_ID
+        create_spec.numCPUs = VM_NUM_CPUS
+        create_spec.memoryMB = VM_MEMORY_MB
         create_spec.files = vm_file_info
         # Set the default hardware version to a compatible version supported by
         # vSphere 5.0. This will ensure that the backing VM can be migrated
         # without any incompatibility issues in a mixed cluster of ESX hosts
         # with versions 5.0 or above.
-        create_spec.version = self._vmx_version or "vmx-08"
+        create_spec.version = self.get_vmx_version()
 
         if profileId:
             vmProfile = cf.create('ns0:VirtualMachineDefinedProfileSpec')
@@ -909,7 +1015,8 @@ class VMwareVolumeOps(object):
         return disk_locator
 
     def _get_relocate_spec(self, datastore, resource_pool, host,
-                           disk_move_type, disk_type=None, disk_device=None):
+                           disk_move_type, disk_type=None, disk_device=None,
+                           service=None):
         """Return spec for relocating volume backing.
 
         :param datastore: Reference to the datastore
@@ -933,11 +1040,29 @@ class VMwareVolumeOps(object):
                                                                    disk_device)
             relocate_spec.disk = [disk_locator]
 
+        if service is not None:
+            relocate_spec.service = self._get_service_locator_spec(service)
+
         LOG.debug("Spec for relocating the backing: %s.", relocate_spec)
         return relocate_spec
 
+    def _get_service_locator_spec(self, service):
+        cf = self._session.vim.client.factory
+        service_locator = cf.create("ns0:ServiceLocator")
+        service_locator.instanceUuid = service['instance_uuid']
+        service_locator.sslThumbprint = service['ssl_thumbprint']
+        service_locator.url = service['url']
+
+        credential = cf.create("ns0:ServiceLocatorNamePassword")
+        credential.password = service['credential']['password']
+        credential.username = service['credential']['username']
+        service_locator.credential = credential
+
+        return service_locator
+
     def relocate_backing(
-            self, backing, datastore, resource_pool, host, disk_type=None):
+            self, backing, datastore, resource_pool, host, disk_type=None,
+            service=None):
         """Relocates backing to the input datastore and resource pool.
 
         The implementation uses moveAllDiskBackingsAndAllowSharing disk move
@@ -948,6 +1073,7 @@ class VMwareVolumeOps(object):
         :param resource_pool: Reference to the resource pool
         :param host: Reference to the host
         :param disk_type: destination disk type
+        :param service: destination service (for cross vCenter)
         """
         LOG.debug("Relocating backing: %(backing)s to datastore: %(ds)s "
                   "and resource pool: %(rp)s with destination disk type: "
@@ -959,6 +1085,10 @@ class VMwareVolumeOps(object):
 
         # Relocate the volume backing
         disk_move_type = 'moveAllDiskBackingsAndAllowSharing'
+        # For migration to other vCenter service the disk_move_type needs to be
+        # moveAllDiskBackingsAndDisallowSharing
+        if service is not None:
+            disk_move_type = 'moveAllDiskBackingsAndDisallowSharing'
 
         disk_device = None
         if disk_type is not None:
@@ -966,7 +1096,7 @@ class VMwareVolumeOps(object):
 
         relocate_spec = self._get_relocate_spec(datastore, resource_pool, host,
                                                 disk_move_type, disk_type,
-                                                disk_device)
+                                                disk_device, service=service)
 
         task = self._session.invoke_api(self._session.vim, 'RelocateVM_Task',
                                         backing, spec=relocate_spec)
@@ -1114,7 +1244,7 @@ class VMwareVolumeOps(object):
 
     def _get_clone_spec(self, datastore, disk_move_type, snapshot, backing,
                         disk_type, host=None, resource_pool=None,
-                        extra_config=None, disks_to_clone=None):
+                        extra_config=None, device_changes=None):
         """Get the clone spec.
 
         :param datastore: Reference to datastore
@@ -1126,7 +1256,7 @@ class VMwareVolumeOps(object):
         :param resource_pool: Target resource pool
         :param extra_config: Key-value pairs to be written to backing's
                              extra-config
-        :param disks_to_clone: UUIDs of disks to clone
+        :param device_changes: Device changes to be applied during cloning
         :return: Clone spec
         """
         if disk_type is not None:
@@ -1154,10 +1284,8 @@ class VMwareVolumeOps(object):
             config_spec.extraConfig = self._get_extra_config_option_values(
                 extra_config)
 
-        if disks_to_clone:
-            config_spec.deviceChange = (
-                self._create_device_change_for_disk_removal(
-                    backing, disks_to_clone))
+        if device_changes:
+            config_spec.deviceChange = device_changes
 
         LOG.debug("Spec for cloning the backing: %s.", clone_spec)
         return clone_spec
@@ -1168,13 +1296,40 @@ class VMwareVolumeOps(object):
         device_change = []
         for device in disk_devices:
             if device.backing.uuid not in disks_to_clone:
-                device_change.append(self._create_spec_for_disk_remove(device))
+                spec = self._create_spec_for_device_remove(device)
+                device_change.append(spec)
+
+        return device_change
+
+    def _get_vif_devices(self, vm):
+        vif_devices = []
+        hardware_devices = self._session.invoke_api(vim_util,
+                                                    'get_object_property',
+                                                    self._session.vim,
+                                                    vm,
+                                                    'config.hardware.device')
+
+        if hardware_devices.__class__.__name__ == "ArrayOfVirtualDevice":
+            hardware_devices = hardware_devices.VirtualDevice
+
+        for device in hardware_devices:
+            if hasattr(device, 'macAddress'):
+                vif_devices.append(device)
+
+        return vif_devices
+
+    def _create_device_change_for_vif_removal(self, backing):
+        devices = self._get_vif_devices(backing)
+
+        device_change = []
+        for device in devices:
+            device_change.append(self._create_spec_for_device_remove(device))
 
         return device_change
 
     def clone_backing(self, name, backing, snapshot, clone_type, datastore,
                       disk_type=None, host=None, resource_pool=None,
-                      extra_config=None, folder=None, disks_to_clone=None):
+                      extra_config=None, folder=None, device_changes=None):
         """Clone backing.
 
         If the clone_type is 'full', then a full clone of the source volume
@@ -1192,7 +1347,7 @@ class VMwareVolumeOps(object):
         :param extra_config: Key-value pairs to be written to backing's
                              extra-config
         :param folder: The location of the clone
-        :param disks_to_clone: UUIDs of disks to clone
+        :param device_changes: Device changes to be applied during cloning
         """
         LOG.debug("Creating a clone of backing: %(back)s, named: %(name)s, "
                   "clone type: %(type)s from snapshot: %(snap)s on "
@@ -1213,7 +1368,7 @@ class VMwareVolumeOps(object):
         clone_spec = self._get_clone_spec(
             datastore, disk_move_type, snapshot, backing, disk_type, host=host,
             resource_pool=resource_pool, extra_config=extra_config,
-            disks_to_clone=disks_to_clone)
+            device_changes=device_changes)
 
         task = self._session.invoke_api(self._session.vim, 'CloneVM_Task',
                                         backing, folder=folder, name=name,
@@ -1291,11 +1446,21 @@ class VMwareVolumeOps(object):
         self._reconfigure_backing(backing, reconfig_spec)
         LOG.debug("Backing VM: %s reconfigured with new disk.", backing)
 
-    def _create_spec_for_disk_remove(self, disk_device):
+    def _create_spec_for_device_remove(self, disk_device):
         cf = self._session.vim.client.factory
         disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
         disk_spec.operation = 'remove'
         disk_spec.device = disk_device
+        return disk_spec
+
+    def _create_spec_for_disk_expand(self, disk_device, new_size_in_kb):
+        cf = self._session.vim.client.factory
+        disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
+        disk_spec.operation = 'edit'
+        disk_spec.device = disk_device
+        disk_spec.device.capacityInKB = new_size_in_kb
+        disk_spec.device.capacityInBytes = (
+            disk_spec.device.capacityInKB * units.Ki)
         return disk_spec
 
     def detach_disk_from_backing(self, backing, disk_device):
@@ -1307,7 +1472,7 @@ class VMwareVolumeOps(object):
 
         cf = self._session.vim.client.factory
         reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
-        spec = self._create_spec_for_disk_remove(disk_device)
+        spec = self._create_spec_for_device_remove(disk_device)
         reconfig_spec.deviceChange = [spec]
         self._reconfigure_backing(backing, reconfig_spec)
 

@@ -35,6 +35,7 @@ from cinder import objects
 from cinder.objects import fields
 from cinder import utils
 from cinder.volume import configuration
+from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume import volume_utils
 
@@ -51,14 +52,6 @@ kaminario_opts = [
                 default=False,
                 help="K2 driver will calculate max_oversubscription_ratio "
                      "on setting this option as True."),
-    cfg.BoolOpt('unique_fqdn_network',
-                default=True,
-                help="Whether or not our private network has unique FQDN on "
-                     "each initiator or not.  For example networks with QA "
-                     "systems usually have multiple servers/VMs with the same "
-                     "FQDN.  When true this will create host entries on K2 "
-                     "using the FQDN, when false it will use the reversed "
-                     "IQN/WWNN."),
     cfg.BoolOpt('disable_discovery',
                 default=False,
                 help="Disabling iSCSI discovery (sendtargets) for multipath "
@@ -137,7 +130,7 @@ class KaminarioCinderDriver(cinder.volume.driver.ISCSIDriver):
 
     @staticmethod
     def get_driver_options():
-        return kaminario_opts
+        return kaminario_opts + driver.fqdn_opts
 
     @utils.trace
     def check_for_setup_error(self):

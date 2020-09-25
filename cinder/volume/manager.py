@@ -258,6 +258,8 @@ class VolumeManager(manager.CleanableManager,
                 requests.packages.urllib3.exceptions.InsecurePlatformWarning)
 
         self.key_manager = key_manager.API(CONF)
+        # A driver can feed additional RPC endpoints into this list
+        driver_additional_endpoints = []
         self.driver = importutils.import_object(
             volume_driver,
             configuration=self.configuration,
@@ -265,7 +267,9 @@ class VolumeManager(manager.CleanableManager,
             host=self.host,
             cluster_name=self.cluster,
             is_vol_db_empty=vol_db_empty,
-            active_backend_id=curr_active_backend_id)
+            active_backend_id=curr_active_backend_id,
+            additional_endpoints=driver_additional_endpoints)
+        self.additional_endpoints.extend(driver_additional_endpoints)
 
         if self.cluster and not self.driver.SUPPORTS_ACTIVE_ACTIVE:
             msg = _('Active-Active configuration is not currently supported '
@@ -1844,6 +1848,9 @@ class VolumeManager(manager.CleanableManager,
 
         try:
             conn_info = self.driver.initialize_connection(volume, connector)
+        except exception.ConnectorRejected:
+            with excutils.save_and_reraise_exception():
+                LOG.info("The connector was rejected by the volume driver.")
         except Exception as err:
             err_msg = (_("Driver initialize connection failed "
                          "(error: %(err)s).") % {'err': six.text_type(err)})
@@ -2250,7 +2257,9 @@ class VolumeManager(manager.CleanableManager,
         # Copy the source volume to the destination volume
         try:
             attachments = volume.volume_attachment
-            if not attachments:
+            # A volume might have attachments created, but if it is reserved
+            # it means it's being migrated prior to the attachment completion.
+            if not attachments or volume.status == 'reserved':
                 # Pre- and post-copy driver-specific actions
                 self.driver.before_volume_copy(ctxt, volume, new_volume,
                                                remote='dest')
@@ -4488,6 +4497,9 @@ class VolumeManager(manager.CleanableManager,
 
         try:
             conn_info = self.driver.initialize_connection(volume, connector)
+        except exception.ConnectorRejected:
+            with excutils.save_and_reraise_exception():
+                LOG.info("The connector was rejected by the volume driver.")
         except Exception as err:
             err_msg = (_("Driver initialize connection failed "
                          "(error: %(err)s).") % {'err': six.text_type(err)})

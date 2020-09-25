@@ -1313,6 +1313,39 @@ class RBDTestCase(test.TestCase):
                                     mock_image_service, None]
                             self.driver.copy_image_to_volume(*args)
 
+    @mock.patch('cinder.volume.drivers.rbd.fileutils.delete_if_exists')
+    @mock.patch('cinder.volume.volume_utils.check_encryption_provider',
+                return_value={'encryption_key_id': fake.ENCRYPTION_KEY_ID})
+    @mock.patch('cinder.image.image_utils.convert_image')
+    def _copy_image_encrypted(self, mock_convert, mock_encrypt_key,
+                              mock_temp_delete):
+        key_mgr = fake_keymgr.fake_api()
+        self.mock_object(castellan.key_manager, 'API', return_value=key_mgr)
+        key_id = key_mgr.store(self.context, KeyObject())
+        self.volume_a.encryption_key_id = key_id
+
+        enc_info = {'encryption_key_id': key_id,
+                    'cipher': 'aes-xts-essiv',
+                    'key_size': 256}
+        with mock.patch('cinder.volume.volume_utils.check_encryption_provider',
+                        return_value=enc_info), \
+                mock.patch('cinder.volume.drivers.rbd.open'), \
+                mock.patch('os.rename'):
+            with mock.patch.object(tempfile, 'NamedTemporaryFile'):
+                with mock.patch.object(os.path, 'exists') as mock_exists:
+                    mock_exists.return_value = True
+                    with mock.patch.object(image_utils, 'fetch_to_raw'):
+                        with mock.patch.object(self.driver, 'delete_volume'):
+                            with mock.patch.object(self.driver, '_resize'):
+                                mock_image_service = mock.MagicMock()
+                                args = [self.context, self.volume_a,
+                                        mock_image_service, None]
+                                self.driver.copy_image_to_encrypted_volume(
+                                    *args)
+                                mock_temp_delete.assert_called()
+                                self.assertEqual(1,
+                                                 mock_temp_delete.call_count)
+
     @common_mocks
     def test_copy_image_no_volume_tmp(self):
         self.cfg.image_conversion_dir = None
@@ -1322,6 +1355,11 @@ class RBDTestCase(test.TestCase):
     def test_copy_image_volume_tmp(self):
         self.cfg.image_conversion_dir = '/var/run/cinder/tmp'
         self._copy_image()
+
+    @common_mocks
+    def test_copy_image_volume_tmp_encrypted(self):
+        self.cfg.image_conversion_dir = '/var/run/cinder/tmp'
+        self._copy_image_encrypted()
 
     @ddt.data(True, False)
     @common_mocks
@@ -2308,7 +2346,7 @@ class RBDTestCase(test.TestCase):
         self.assertEqual(3.00, total_provision)
 
     def test_migrate_volume_bad_volume_status(self):
-        self.volume_a.status = 'in-use'
+        self.volume_a.status = 'backingup'
         ret = self.driver.migrate_volume(context, self.volume_a, None)
         self.assertEqual((False, None), ret)
 
@@ -2370,12 +2408,44 @@ class RBDTestCase(test.TestCase):
 
     @mock.patch('os_brick.initiator.linuxrbd.rbd')
     @mock.patch('os_brick.initiator.linuxrbd.RBDClient')
-    @mock.patch('cinder.volume.drivers.rbd.RBDVolumeProxy')
-    def test_migrate_volume(self, mock_proxy, mock_client, mock_rbd):
+    def test_migrate_volume_same_pool(self, mock_client, mock_rbd):
         host = {
             'capabilities': {
                 'storage_protocol': 'ceph',
                 'location_info': 'nondefault:None:abc:None:rbd'}}
+
+        mock_client().__enter__().client.get_fsid.return_value = 'abc'
+
+        with mock.patch.object(self.driver, '_get_fsid') as mock_get_fsid:
+            mock_get_fsid.return_value = 'abc'
+            ret = self.driver.migrate_volume(context, self.volume_a, host)
+            self.assertEqual((True, None), ret)
+
+    @mock.patch('os_brick.initiator.linuxrbd.rbd')
+    @mock.patch('os_brick.initiator.linuxrbd.RBDClient')
+    def test_migrate_volume_insue_different_pool(self, mock_client, mock_rbd):
+        self.volume_a.status = 'in-use'
+        host = {
+            'capabilities': {
+                'storage_protocol': 'ceph',
+                'location_info': 'nondefault:None:abc:None:rbd2'}}
+
+        mock_client().__enter__().client.get_fsid.return_value = 'abc'
+
+        with mock.patch.object(self.driver, '_get_fsid') as mock_get_fsid:
+            mock_get_fsid.return_value = 'abc'
+            ret = self.driver.migrate_volume(context, self.volume_a, host)
+            self.assertEqual((False, None), ret)
+
+    @mock.patch('os_brick.initiator.linuxrbd.rbd')
+    @mock.patch('os_brick.initiator.linuxrbd.RBDClient')
+    @mock.patch('cinder.volume.drivers.rbd.RBDVolumeProxy')
+    def test_migrate_volume_different_pool(self, mock_proxy, mock_client,
+                                           mock_rbcd):
+        host = {
+            'capabilities': {
+                'storage_protocol': 'ceph',
+                'location_info': 'nondefault:None:abc:None:rbd2'}}
 
         mock_client().__enter__().client.get_fsid.return_value = 'abc'
 

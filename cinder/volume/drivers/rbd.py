@@ -1550,13 +1550,16 @@ class RBDDriver(driver.CloneableImageVD, driver.MigrateVD,
 
             # Convert the raw image to luks
             dest_image_path = src_image_path + '.luks'
-            image_utils.convert_image(src_image_path, dest_image_path,
-                                      'luks', src_format='raw',
-                                      cipher_spec=cipher_spec,
-                                      passphrase_file=pass_file.name)
+            try:
+                image_utils.convert_image(src_image_path, dest_image_path,
+                                          'luks', src_format='raw',
+                                          cipher_spec=cipher_spec,
+                                          passphrase_file=pass_file.name)
 
-            # Replace the original image with the now encrypted image
-            os.rename(dest_image_path, src_image_path)
+                # Replace the original image with the now encrypted image
+                os.rename(dest_image_path, src_image_path)
+            finally:
+                fileutils.delete_if_exists(dest_image_path)
 
     def _copy_image_to_volume(self, context, volume, image_service, image_id,
                               encrypted=False):
@@ -1792,9 +1795,11 @@ class RBDDriver(driver.CloneableImageVD, driver.MigrateVD,
 
         refuse_to_migrate = (False, None)
 
-        if volume.status not in ('available', 'retyping', 'maintenance'):
-            LOG.debug('Only available volumes can be migrated using backend '
-                      'assisted migration. Falling back to generic migration.')
+        if volume.status not in ('available', 'retyping', 'maintenance',
+                                 'in-use'):
+            LOG.debug('Only available or in-use volumes can be migrated using '
+                      'backend assisted migration. Falling back to generic '
+                      'migration.')
             return refuse_to_migrate
 
         if (host['capabilities']['storage_protocol'] != 'ceph'):
@@ -1831,6 +1836,16 @@ class RBDDriver(driver.CloneableImageVD, driver.MigrateVD,
                         target.client.get_fsid())):
                 LOG.info('Migration between clusters is not supported. '
                          'Falling back to generic migration.')
+                return refuse_to_migrate
+
+            if rbd_pool == self.configuration.rbd_pool:
+                LOG.debug('Migration in the same pool, just need to update '
+                          "volume's host value to destination host.")
+                return (True, None)
+
+            if volume.status == 'in-use':
+                LOG.debug('Migration in-use volume between different pools. '
+                          'Falling back to generic migration.')
                 return refuse_to_migrate
 
             with RBDVolumeProxy(self, volume.name, read_only=True) as source:
