@@ -6,4 +6,4 @@ pip install -U pip && \
 pip install tox "six>=1.14.0" && \
 git clone -b stable/train-m3 --single-branch https://github.com/sapcc/cinder.git --depth=1 && \
 cd cinder && \
-tox -e py27,py3,pep8
+tox -e pep8,py3
