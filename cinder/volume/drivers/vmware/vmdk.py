@@ -2200,8 +2200,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # recreate session and initialize volumeops and ds_sel
         # TODO(vbala) remove properties: session, volumeops and ds_sel
         max_objects = self.configuration.vmware_max_objects_retrieval
+        random_ds = self.configuration.vmware_select_random_best_datastore
+        random_ds_range = self.configuration.vmware_random_datastore_range
         self._ds_sel = hub.DatastoreSelector(
-            self.volumeops, self.session, max_objects)
+            self.volumeops, self.session, max_objects,
+            random_ds, random_ds_range)
 
         # Get clusters to be used for backing VM creation.
         cluster_names = self.configuration.vmware_cluster_name
