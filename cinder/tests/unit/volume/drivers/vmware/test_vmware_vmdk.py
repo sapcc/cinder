@@ -103,6 +103,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         self._config.reserved_percentage = 0
         self._config.vmware_profile_check_on_attach = True
         self._config.vmware_select_random_best_datastore = False
+        self._config.vmware_random_datastore_range = None
 
         self._db = mock.Mock()
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
@@ -1770,7 +1771,9 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         ds_sel_cls.assert_called_once_with(
             vops,
             session,
-            self._driver.configuration.vmware_max_objects_retrieval)
+            self._driver.configuration.vmware_max_objects_retrieval,
+            self._driver.configuration.vmware_select_random_best_datastore,
+            self._driver.configuration.vmware_random_datastore_range)
         self.assertEqual(ds_sel_cls.return_value, self._driver._ds_sel)
         vops.get_cluster_refs.assert_called_once_with(
             self._driver.configuration.vmware_cluster_name)
