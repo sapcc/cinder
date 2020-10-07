@@ -106,6 +106,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         self._config.reserved_percentage = 0
         self._config.vmware_profile_check_on_attach = True
         self._config.vmware_select_random_best_datastore = False
+        self._config.vmware_random_datastore_range = None
 
         self._db = mock.Mock()
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
