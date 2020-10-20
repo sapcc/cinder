@@ -345,26 +345,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
     @property
     def volumeops(self):
-        if not self._volumeops:
-            max_objects = self.configuration.vmware_max_objects_retrieval
-            self._volumeops = volumeops.VMwareVolumeOps(self.session,
-                                                        max_objects,
-                                                        EXTENSION_KEY,
-                                                        EXTENSION_TYPE
-                                                        )
         return self._volumeops
 
     @property
     def ds_sel(self):
-        if not self._ds_sel:
-            max_objects = self.configuration.vmware_max_objects_retrieval
-            random_ds = self.configuration.vmware_select_random_best_datastore
-            random_ds_range = self.configuration.vmware_random_datastore_range
-            self._ds_sel = hub.DatastoreSelector(self.volumeops,
-                                                 self.session,
-                                                 max_objects,
-                                                 random_ds,
-                                                 random_ds_range)
         return self._ds_sel
 
     def _validate_params(self):
@@ -2278,6 +2262,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         max_objects = self.configuration.vmware_max_objects_retrieval
         random_ds = self.configuration.vmware_select_random_best_datastore
         random_ds_range = self.configuration.vmware_random_datastore_range
+        self._volumeops = volumeops.VMwareVolumeOps(
+            self.session, max_objects, EXTENSION_KEY, EXTENSION_TYPE)
         self._ds_sel = hub.DatastoreSelector(
             self.volumeops, self.session, max_objects,
             ds_regex=self._ds_regex,
