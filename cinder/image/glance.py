@@ -346,7 +346,7 @@ class GlanceImageService(object):
         return self._translate_from_glance(context, recv_service_image_meta)
 
     def update(self, context, image_id,
-               image_meta, data=None, purge_props=True):
+               image_meta, data=None, purge_props=False):
         """Modify the given image with the new data."""
         # For v2, _translate_to_glance stores custom properties in image meta
         # directly. We need the custom properties to identify properties to

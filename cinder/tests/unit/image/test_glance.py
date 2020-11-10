@@ -397,7 +397,8 @@ class TestGlanceImageService(test.TestCase):
         show.return_value = {'properties': {'k2': 'v2'}}
         translate_from_glance.return_value = image_meta.copy()
 
-        ret = service.update(self.context, image_id, image_meta)
+        ret = service.update(self.context, image_id, image_meta,
+                             purge_props=True)
         self.assertDictEqual(image_meta, ret)
         client.call.assert_called_once_with(
             self.context, 'update', image_id, k1='v1', remove_props=['k2'])
