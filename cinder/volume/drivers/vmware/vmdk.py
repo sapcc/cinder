@@ -334,7 +334,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._clusters = None
         self._dc_cache = {}
         self._ds_regex = None
-        self.additional_endpoints.append([
+        self.additional_endpoints.extend([
             remote_api.VmdkDriverRemoteService(self)
         ])
         self._remote_api = remote_api.VmdkDriverRemoteApi()
