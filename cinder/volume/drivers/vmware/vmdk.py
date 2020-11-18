@@ -379,7 +379,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param refresh: Whether to get refreshed information
         """
 
-        if not self._stats:
+        if not self._stats or refresh:
             self._stats = self._get_volume_stats()
         return self._stats
 
