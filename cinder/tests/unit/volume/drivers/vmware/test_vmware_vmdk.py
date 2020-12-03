@@ -2052,6 +2052,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         self.assertEqual(mock_data, data)
 
+
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch.object(VMDK_DRIVER, '_select_ds_for_volume')
     @mock.patch.object(VMDK_DRIVER, '_get_extra_config')
@@ -2123,6 +2124,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         data = self._driver._get_connection_import_data(volume)
 
         self.assertEqual(mock_data, data)
+
 
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch('oslo_vmware.vim_util.get_moref')
