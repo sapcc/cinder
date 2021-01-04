@@ -4,6 +4,9 @@
 redis
 jaeger-client
 
+# needed for pure storage driver
+purestorage
+
 -e git+https://github.com/sapcc/python-agentliveness.git#egg=agentliveness
 -e git+https://github.com/sapcc/raven-python.git@ccloud#egg=raven
 -e git+https://github.com/sapcc/openstack-watcher-middleware.git#egg=watcher-middleware
