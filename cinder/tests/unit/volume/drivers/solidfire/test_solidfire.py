@@ -179,10 +179,7 @@ class SolidFireVolumeTestCase(test.TestCase):
                               'name': self.fake_sfsnap_name,
                               'volumeID': 6}]
 
-    def fake_init_cluster_pairs(*args, **kwargs):
-        return None
-
-    def fake_issue_api_request(obj, method, params, version='1.0',
+    def fake_issue_api_request(self, method, params, version='1.0',
                                endpoint=None):
         if method is 'GetClusterCapacity':
             data = {}
@@ -385,7 +382,7 @@ class SolidFireVolumeTestCase(test.TestCase):
             # Crap, unimplemented API call in Fake
             return None
 
-    def fake_issue_api_request_fails(obj, method,
+    def fake_issue_api_request_fails(self, method,
                                      params, version='1.0',
                                      endpoint=None):
         response = {'error': {'code': 000,
@@ -401,7 +398,7 @@ class SolidFireVolumeTestCase(test.TestCase):
                 'maxIOPS': 1000,
                 'burstIOPS': 1000}
 
-    def fake_volume_get(obj, key, default=None):
+    def fake_volume_get(self, key, default=None):
         return {'qos': 'fast'}
 
     def fake_update_cluster_status(self):
@@ -1018,7 +1015,7 @@ class SolidFireVolumeTestCase(test.TestCase):
                               return_value=fake_no_volumes):
             sfv.delete_snapshot(testsnap)
 
-    def fake_ext_qos_issue_api_request(obj, method, params, version='1.0',
+    def fake_ext_qos_issue_api_request(self, method, params, version='1.0',
                                        endpoint=None):
         EXPECTED_SIZE = 2 << 30  # 2147483648 size + increase
 
@@ -1030,12 +1027,12 @@ class SolidFireVolumeTestCase(test.TestCase):
             if params.get('totalSize', None) != EXPECTED_SIZE:
                 msg = ('Error (%s) encountered during '
                        'SolidFire API call.' % response['error']['name'])
-                raise exception.SolidFireAPIException(message=msg)
+                raise solidfire.SolidFireAPIException(message=msg)
 
             if params.get('qos', None) != SolidFireVolumeTestCase.EXPECTED_QOS:
                 msg = ('Error (%s) encountered during '
                        'SolidFire API call.' % response['error']['name'])
-                raise exception.SolidFireAPIException(message=msg)
+                raise solidfire.SolidFireAPIException(message=msg)
 
             return {'result': {}, 'id': 1}
 
@@ -1182,7 +1179,9 @@ class SolidFireVolumeTestCase(test.TestCase):
         sfv.active_cluster['svip'] = self.svip
 
         mock_issue_api_request.reset_mock()
+        # pylint: disable=assignment-from-no-return
         updates = sfv.extend_volume(vol, vol.size + 10)
+        # pylint: enable=assignment-from-no-return
         self.assertIsNone(updates)
 
         modify_params = {
@@ -1322,6 +1321,36 @@ class SolidFireVolumeTestCase(test.TestCase):
                                        diff, host)
         self.assertTrue(migrated)
         self.assertEqual({}, updates)
+
+    @data(None, 'Success', 'Error', 'target:{}'.format(f_uuid[0]))
+    @mock.patch.object(solidfire.SolidFireDriver, '_get_sf_volume')
+    @mock.patch.object(solidfire.SolidFireDriver, '_get_sfaccount')
+    def test_attach_volume(self, mig_status, mock_get_sfaccount,
+                           mock_get_sf_volume):
+
+        mock_get_sfaccount.return_value = self.fake_sfaccount
+        i_uuid = 'fake_instance_uuid'
+        ctx = context.get_admin_context()
+        type_fields = {}
+        vol_type = fake_volume.fake_volume_type_obj(ctx, **type_fields)
+        utc_now = timeutils.utcnow().isoformat()
+        vol_fields = {
+            'id': f_uuid[0],
+            'created_at': utc_now,
+            'volume_type': vol_type,
+            'volume_type_id': vol_type.id,
+            'migration_status': mig_status,
+        }
+        vol = fake_volume.fake_volume_obj(ctx, **vol_fields)
+        sf_vol = self.fake_sfvol
+        mock_get_sf_volume.return_value = sf_vol
+
+        sfv = solidfire.SolidFireDriver(configuration=self.configuration)
+        sfv.attach_volume(ctx, vol, i_uuid, 'fake_host', '/dev/sdf')
+        self.assertEqual(sf_vol['attributes']['attached_to'],
+                         i_uuid)
+        mock_get_sfaccount.assert_called()
+        mock_get_sf_volume.assert_called()
 
     def test_retype_with_qos_spec(self):
         test_type = {'name': 'sf-1',
@@ -1732,7 +1761,14 @@ class SolidFireVolumeTestCase(test.TestCase):
                             'username': 'prefix-testprjid'}]
 
         def _fake_do_v_create(project_id, params):
-            return project_id, params
+            cvol = {
+                'name': 'UUID-a720b3c0-d1f0-11e1-9b23-0800200c9a66',
+                'attributes': {
+                    'uuid': 'a720b3c0-d1f0-11e1-9b23-0800200c9a66',
+                    'migration_uuid': 'b830b3c0-d1f0-11e1-9b23-1900200c9a77'
+                }
+            }
+            return cvol
 
         sfv = solidfire.SolidFireDriver(configuration=self.configuration)
         with mock.patch.object(sfv,
@@ -1745,7 +1781,7 @@ class SolidFireVolumeTestCase(test.TestCase):
                                   '_do_volume_create',
                                   side_effect=_fake_do_v_create):
 
-            project_id, sf_vol_object = sfv.create_volume(testvol)
+            sf_vol_object = sfv.create_volume(testvol)
             self.assertEqual('a720b3c0-d1f0-11e1-9b23-0800200c9a66',
                              sf_vol_object['attributes']['uuid'])
             self.assertEqual('b830b3c0-d1f0-11e1-9b23-1900200c9a77',
@@ -1797,7 +1833,7 @@ class SolidFireVolumeTestCase(test.TestCase):
         def _fake_issue_api_req(method, params, version=0):
             if 'ListActiveVolumes' in method:
                 return {'result': {'volumes': sf_vols}}
-            if 'ListSnapshots'in method:
+            if 'ListSnapshots' in method:
                 return {'result': {'snapshots': sf_snaps}}
 
         with mock.patch.object(sfv, '_issue_api_request',

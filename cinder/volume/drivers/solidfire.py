@@ -28,7 +28,6 @@ from oslo_utils import excutils
 from oslo_utils import timeutils
 from oslo_utils import units
 import requests
-from requests.packages.urllib3 import exceptions
 import six
 
 from cinder import context
@@ -592,7 +591,9 @@ class SolidFireDriver(san.SanISCSIDriver):
         payload = {'method': method, 'params': params}
         url = '%s/json-rpc/%s/' % (endpoint['url'], version)
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", exceptions.InsecureRequestWarning)
+            warnings.simplefilter(
+                "ignore",
+                requests.packages.urllib3.exceptions.InsecureRequestWarning)
             req = requests.post(url,
                                 data=json.dumps(payload),
                                 auth=(endpoint['login'], endpoint['passwd']),
@@ -1323,7 +1324,7 @@ class SolidFireDriver(san.SanISCSIDriver):
     def _retrieve_qos_setting(self, volume, extended_size=0):
         qos = {}
         if (self.configuration.sf_allow_tenant_qos and
-                volume.get('volume_metadata')is not None):
+                volume.get('volume_metadata') is not None):
             qos = self._set_qos_presets(volume)
 
         ctxt = context.get_admin_context()
@@ -2076,7 +2077,14 @@ class SolidFireDriver(san.SanISCSIDriver):
         sfaccount = self._get_sfaccount(volume['project_id'])
         params = {'accountID': sfaccount['accountID']}
 
-        sf_vol = self._get_sf_volume(volume['id'], params)
+        # In a retype of an attached volume scenario, the volume id will be
+        # as a target on 'migration_status', otherwise it'd be None.
+        migration_status = volume.get('migration_status')
+        if migration_status and 'target' in migration_status:
+            __, vol_id = migration_status.split(':')
+        else:
+            vol_id = volume['id']
+        sf_vol = self._get_sf_volume(vol_id, params)
         if sf_vol is None:
             LOG.error("Volume ID %s was not found on "
                       "the SolidFire Cluster while attempting "
@@ -2485,13 +2493,11 @@ class SolidFireDriver(san.SanISCSIDriver):
                     LOG.debug("Updates for volume: %(id)s %(updates)s",
                               {'id': v.id, 'updates': vol_updates})
 
-                except Exception as e:
+                except Exception:
                     volume_updates.append({'volume_id': v['id'],
                                            'updates': {'status': 'error', }})
-                    LOG.error("Error trying to failover volume %s", v.id)
-                    msg = e.message if hasattr(e, 'message') else e
-                    LOG.exception(msg)
-
+                    LOG.exception("Error trying to failover volume %s.",
+                                  v['id'])
             else:
                 volume_updates.append({'volume_id': v['id'],
                                        'updates': {'status': 'error', }})

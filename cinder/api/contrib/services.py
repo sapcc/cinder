@@ -202,18 +202,21 @@ class ServiceController(wsgi.Controller):
 
         log_req = objects.LogLevel(context, prefix=prefix)
 
-        if constants.API_BINARY in binaries:
-            levels = utils.get_log_levels(prefix)
-            result.append({'host': CONF.host,
-                           'binary': constants.API_BINARY,
-                           'levels': levels})
+        # Avoid showing constants if 'server' is set.
+        server_filter = body.get('server')
+        if not server_filter or server_filter == CONF.host:
+            if constants.API_BINARY in binaries:
+                levels = utils.get_log_levels(prefix)
+                result.append({'host': CONF.host,
+                               'binary': constants.API_BINARY,
+                               'levels': levels})
         for service in services:
             levels = self.rpc_apis[service.binary].get_log_levels(context,
                                                                   service,
                                                                   log_req)
             result.append({'host': service.host,
                            'binary': service.binary,
-                           'levels': {l.prefix: l.level for l in levels}})
+                           'levels': {le.prefix: le.level for le in levels}})
 
         return {'log_levels': result}
 

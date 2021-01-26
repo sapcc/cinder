@@ -82,7 +82,9 @@ RBD_OPTS = [
                default=5,
                help='Maximum number of nested volume clones that are '
                     'taken before a flatten occurs. Set to 0 to disable '
-                    'cloning.'),
+                    'cloning. Note: lowering this value will not affect '
+                    'existing volumes whose clone depth exceeds the new '
+                    'value.'),
     cfg.IntOpt('rbd_store_chunk_size', default=4,
                help='Volumes will be chunked into objects of this size '
                     '(in megabytes).'),
@@ -636,12 +638,6 @@ class RBDDriver(driver.CloneableImageVD, driver.MigrateVD,
         if not parent:
             return depth
 
-        # If clone depth was reached, flatten should have occurred so if it has
-        # been exceeded then something has gone wrong.
-        if depth > self.configuration.rbd_max_clone_depth:
-            raise Exception(_("clone depth exceeds limit of %s") %
-                            (self.configuration.rbd_max_clone_depth))
-
         return self._get_clone_depth(client, parent, depth + 1)
 
     def _extend_if_required(self, volume, src_vref):
@@ -711,16 +707,18 @@ class RBDDriver(driver.CloneableImageVD, driver.MigrateVD,
             depth = self._get_clone_depth(client, src_name)
             # If dest volume is a clone and rbd_max_clone_depth reached,
             # flatten the dest after cloning. Zero rbd_max_clone_depth means
-            # infinite is allowed.
+            # volumes are always flattened.
             if depth >= self.configuration.rbd_max_clone_depth:
                 LOG.info("maximum clone depth (%d) has been reached - "
                          "flattening dest volume",
                          self.configuration.rbd_max_clone_depth)
-                dest_volume = self.rbd.Image(client.ioctx, dest_name)
+
+                # Flatten destination volume
                 try:
-                    # Flatten destination volume
-                    LOG.debug("flattening dest volume %s", dest_name)
-                    dest_volume.flatten()
+                    with RBDVolumeProxy(self, dest_name, client=client,
+                                        ioctx=client.ioctx) as dest_volume:
+                        LOG.debug("flattening dest volume %s", dest_name)
+                        dest_volume.flatten()
                 except Exception as e:
                     msg = (_("Failed to flatten volume %(volume)s with "
                              "error: %(error)s.") %
@@ -729,8 +727,6 @@ class RBDDriver(driver.CloneableImageVD, driver.MigrateVD,
                     LOG.exception(msg)
                     src_volume.close()
                     raise exception.VolumeBackendAPIException(data=msg)
-                finally:
-                    dest_volume.close()
 
                 try:
                     # remove temporary snap

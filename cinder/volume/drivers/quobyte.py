@@ -649,8 +649,8 @@ class QuobyteDriver(remotefs_drv.RemoteFSSnapDriverDistributed):
     def _mount_quobyte(self, quobyte_volume, mount_path, ensure=False):
         """Mount Quobyte volume to mount path."""
         mounted = False
-        for l in QuobyteDriver.read_proc_mount():
-            if l.split()[1] == mount_path:
+        for line in QuobyteDriver.read_proc_mount():
+            if line.split()[1] == mount_path:
                 mounted = True
                 break
 
