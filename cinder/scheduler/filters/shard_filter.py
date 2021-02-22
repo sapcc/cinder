@@ -48,8 +48,8 @@ class ShardFilter(filters.BaseBackendFilter):
     in. This filter filters out any backend that's not configured for the shard
     of a project.
 
-    Alternatively the project may have the "sharding_enabled" tag set, which
-    enables the project for backends in all shards.
+    Alternatively the project may have the "resourcepools_enabled" tag set,
+    which enables the project for backends in all shards.
     """
 
     # project shards do not change within a request
@@ -59,7 +59,7 @@ class ShardFilter(filters.BaseBackendFilter):
     _PROJECT_SHARD_CACHE_RETENTION_TIME = 10 * 60
     _SHARD_PREFIX = 'vc-'
     _CAPABILITY_NAME = 'vcenter-shard'
-    _ALL_SHARDS = "sharding_enabled"
+    _ALL_SHARDS = 'resourcepools_enabled'
 
     def _get_keystone_adapter(self):
         """Return a keystone adapter
