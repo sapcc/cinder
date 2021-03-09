@@ -69,7 +69,7 @@ def remove_invalid_filter_options(context, filters,
 _visible_admin_metadata_keys = ['readonly', 'attached_mode']
 
 
-def add_visible_admin_metadata(volume):
+def add_visible_admin_metadata(volume, all_admin_metadata=False):
     """Add user-visible admin metadata to regular metadata.
 
     Extracts the admin metadata keys that are to be made visible to
@@ -82,16 +82,17 @@ def add_visible_admin_metadata(volume):
         if isinstance(volume['volume_admin_metadata'], dict):
             volume_admin_metadata = volume['volume_admin_metadata']
             for key in volume_admin_metadata:
-                if key in _visible_admin_metadata_keys:
+                if key in _visible_admin_metadata_keys or all_admin_metadata:
                     visible_admin_meta[key] = volume_admin_metadata[key]
         else:
             for item in volume['volume_admin_metadata']:
-                if item['key'] in _visible_admin_metadata_keys:
+                if (item['key'] in _visible_admin_metadata_keys or
+                        all_admin_metadata):
                     visible_admin_meta[item['key']] = item['value']
     # avoid circular ref when volume is a Volume instance
     elif (volume.get('admin_metadata') and
             isinstance(volume.get('admin_metadata'), dict)):
-        for key in _visible_admin_metadata_keys:
+        for key in _visible_admin_metadata_keys or all_admin_metadata:
             if key in volume['admin_metadata'].keys():
                 visible_admin_meta[key] = volume['admin_metadata'][key]
 

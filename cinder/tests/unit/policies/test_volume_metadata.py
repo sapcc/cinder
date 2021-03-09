@@ -193,3 +193,31 @@ class VolumePolicyTests(test_base.CinderPolicyTests):
         response = self._get_request_response(non_owner_context, path, 'PUT',
                                               body=body)
         self.assertEqual(http_client.FORBIDDEN, response.status_int)
+
+    @mock.patch.object(volume_api.API, 'get')
+    def test_admin_can_get_admin_metadata(self, mock_volume):
+        admin_context = self.admin_context
+        user_context = self.user_context
+
+        admin_metadata = {"k": "v"}
+
+        volume = self._create_fake_volume(user_context,
+                                          admin_metadata=admin_metadata)
+        mock_volume.return_value = volume
+        path = '/v3/%(project_id)s/volumes/%(volume_id)s' % {
+            'project_id': user_context.project_id, 'volume_id': volume.id
+        }
+
+        response = self._get_request_response(user_context, path, 'GET')
+
+        self.assertEqual(http_client.OK, response.status_int)
+        self.assertEqual(response.json_body['volume']['id'], volume.id)
+
+        res_meta = response.json_body['volume']['metadata']
+        self.assertEqual({}, res_meta)
+
+        response = self._get_request_response(admin_context, path, 'GET')
+        self.assertEqual(http_client.OK, response.status_int)
+        res_meta = response.json_body['volume']['metadata']
+        self.assertIn('k', res_meta)
+        self.assertEqual('v', res_meta['k'])

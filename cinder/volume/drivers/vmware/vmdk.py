@@ -310,7 +310,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # 3.4.2.99.1 - VMware implementation of volume migration
     # 3.4.2.99.2 - Added soft sharding volume migration, fixed a small issue
     #          in check_for_setup_error where storage_profile not set.
-    VERSION = '3.4.2.99.2'
+    # 3.4.2.99.3 - Added model_update to ensure_export and save the vmware
+    #          vcenter uuid and datastore name and storage profile
+    #          associated with a volume.  This will help us update the host
+    #          once we expose a datastore as a pool.
+    VERSION = '3.4.2.99.3'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "VMware_CI"
@@ -521,7 +525,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if self.configuration.vmware_lazy_create:
             self._verify_volume_creation(volume)
         else:
-            self._create_backing(volume)
+            backing = self._create_backing(volume)
+            return self._volume_provider_metadata(volume, backing=backing)
 
     def _delete_volume(self, volume):
         """Delete the volume backing if it is present.
@@ -612,6 +617,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         return {EXTRA_CONFIG_VOLUME_ID_KEY: volume['id'],
                 volumeops.BACKING_UUID_KEY: volume['id']}
 
+    @utils.trace
     def _create_backing(self, volume, host=None, create_params=None):
         """Create volume backing under the given host.
 
@@ -880,6 +886,44 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
         # Check that connection_capabilities match
         # This ensures the connector is bound to the same vCenter service
+        backing = self.volumeops.get_backing(volume.name, volume.id)
+        return self._get_connection_info(volume, backing, connector)
+
+    @utils.trace
+    def initialize_connection(self, volume, connector):
+        """Allow connection to connector and return connection info.
+
+        The implementation returns the following information:
+
+        .. code-block:: default
+
+            {
+                'driver_volume_type': 'vmdk',
+                'data': {'volume': $VOLUME_MOREF_VALUE,
+                         'volume_id': $VOLUME_ID
+                        }
+            }
+
+        :param volume: Volume object
+        :param connector: Connector information
+        :return: Return connection information
+        """
+        return self._initialize_connection(volume, connector)
+
+    @utils.trace
+    def terminate_connection(self, volume, connector, force=False, **kwargs):
+        # Checking if the connection was used to restore from a backup. In
+        # that case, the VMDK connector in os-brick created a new backing
+        # which will replace the initial one. Here we set the proper name
+        # and backing uuid for the new backing, because os-brick doesn't do it.
+        if (connector and 'platform' in connector and 'os_type' in connector
+                and self._is_volume_subject_to_import_vapp(volume)):
+            backing = self.volumeops.get_backing_by_uuid(volume['id'])
+
+            self.volumeops.rename_backing(backing, volume['name'])
+            self.volumeops.update_backing_disk_uuid(backing, volume['id'])
+
+    def create_export(self, context, volume, connector):
         if 'connection_capabilities' in connector:
             missing = set(self._get_connection_capabilities()) -\
                 set(connector['connection_capabilities'])
@@ -918,47 +962,34 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 # Create backing
                 backing = self._create_backing(volume)
 
-        return self._get_connection_info(volume, backing, connector)
+        return self._volume_provider_metadata(volume, backing=backing)
 
     @utils.trace
-    def initialize_connection(self, volume, connector):
-        """Allow connection to connector and return connection info.
+    def _volume_provider_metadata(self, volume, backing=None):
+        if not backing:
+            backing = self.volumeops.get_backing(volume.name, volume.id)
 
-        The implementation returns the following information:
-
-        .. code-block:: default
-
-            {
-                'driver_volume_type': 'vmdk',
-                'data': {'volume': $VOLUME_MOREF_VALUE,
-                         'volume_id': $VOLUME_ID
-                        }
+        ds = self.volumeops.get_datastore(backing)
+        summary = self.volumeops.get_summary(ds)
+        profile = self._get_storage_profile(volume)
+        vcenter_uuid = (
+            self.session.vim.service_content.about.instanceUuid
+        )
+        model_update = {
+            'admin_metadata': {
+                'vmware_vcenter_id': vcenter_uuid,
+                'vmware_ds_name': summary.name,
+                'vmware_profile_name': profile,
             }
+        }
 
-        :param volume: Volume object
-        :param connector: Connector information
-        :return: Return connection information
-        """
-        return self._initialize_connection(volume, connector)
+        return model_update
 
     @utils.trace
-    def terminate_connection(self, volume, connector, force=False, **kwargs):
-        # Checking if the connection was used to restore from a backup. In
-        # that case, the VMDK connector in os-brick created a new backing
-        # which will replace the initial one. Here we set the proper name
-        # and backing uuid for the new backing, because os-brick doesn't do it.
-        if (connector and 'platform' in connector and 'os_type' in connector
-                and self._is_volume_subject_to_import_vapp(volume)):
-            backing = self.volumeops.get_backing_by_uuid(volume['id'])
-
-            self.volumeops.rename_backing(backing, volume['name'])
-            self.volumeops.update_backing_disk_uuid(backing, volume['id'])
-
-    def create_export(self, context, volume, connector):
-        pass
-
     def ensure_export(self, context, volume):
-        pass
+        """Called at volume startup."""
+        if not volume.get('volume_admin_metadata'):
+            return self._volume_provider_metadata(volume)
 
     def remove_export(self, context, volume):
         pass

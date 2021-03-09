@@ -23,6 +23,7 @@ DELETE_POLICY = "volume:delete_volume_metadata"
 UPDATE_POLICY = "volume:update_volume_metadata"
 IMAGE_METADATA_POLICY = "volume_extension:volume_image_metadata"
 UPDATE_ADMIN_METADATA_POLICY = "volume:update_volume_admin_metadata"
+GET_ADMIN_METADATA_POLICY = "volume:get_admin_metadata"
 
 
 BASE_POLICY_NAME = 'volume:volume_metadata:%s'
@@ -116,6 +117,20 @@ volume_metadata_policies = [
                 'method': 'POST',
                 'path': '/volumes/{volume_id}/action (os-attach)'
             }
+        ]),
+    policy.DocumentedRuleDefault(
+        name=GET_ADMIN_METADATA_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="get all volume admin metadata.",
+        operations=[
+            {
+                'method': 'GET',
+                'path': '/volumes/detail'
+            },
+            {
+                'method': 'GET',
+                'path': '/volumes/{volume_id}'
+            },
         ]),
 ]
 

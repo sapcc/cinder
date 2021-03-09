@@ -538,13 +538,23 @@ class VolumeManager(manager.CleanableManager,
 
                         try:
                             if volume['status'] in ['in-use']:
-                                self.driver.ensure_export(ctxt, volume)
+                                model_update = self.driver.ensure_export(
+                                    ctxt, volume)
                         except Exception:
                             LOG.exception("Failed to re-export volume, "
                                           "setting to ERROR.",
                                           resource=volume)
                             volume.conditional_update({'status': 'error'},
                                                       {'status': 'in-use'})
+
+                        try:
+                            if model_update:
+                                volume.update(model_update)
+                                volume.save()
+                        except Exception as ex:
+                            LOG.exception("Model update failed.",
+                                          resource=volume)
+
                 # All other cleanups are processed by parent class -
                 # CleanableManager
 

@@ -35,6 +35,7 @@ from cinder import group as group_api
 from cinder.i18n import _
 from cinder.image import glance
 from cinder import objects
+from cinder.policies import volume_metadata as metadata_policy
 from cinder.policies import volumes as policy
 from cinder import utils
 
@@ -135,8 +136,12 @@ class VolumeController(volumes_v2.VolumeController):
             total_count = self.volume_api.calculate_resource_count(
                 context, 'volume', filters)
 
+        all_admin_metadata = context.authorize(
+            metadata_policy.GET_ADMIN_METADATA_POLICY, fatal=False)
+
         for volume in volumes:
-            api_utils.add_visible_admin_metadata(volume)
+            api_utils.add_visible_admin_metadata(
+                volume, all_admin_metadata=all_admin_metadata)
 
         req.cache_db_volumes(volumes.objects)
 

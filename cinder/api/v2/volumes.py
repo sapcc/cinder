@@ -37,6 +37,7 @@ from cinder import group as group_api
 from cinder.i18n import _
 from cinder.image import glance
 from cinder import objects
+from cinder.policies import volume_metadata as metadata_policy
 from cinder import utils
 from cinder import volume as cinder_volume
 from cinder.volume import volume_utils
@@ -65,7 +66,11 @@ class VolumeController(wsgi.Controller):
         vol = self.volume_api.get(context, id, viewable_admin_meta=True)
         req.cache_db_volume(vol)
 
-        api_utils.add_visible_admin_metadata(vol)
+        all_admin_metadata = context.authorize(
+            metadata_policy.GET_ADMIN_METADATA_POLICY, fatal=False)
+
+        api_utils.add_visible_admin_metadata(
+            vol, all_admin_metadata=all_admin_metadata)
 
         return self._view_builder.detail(req, vol)
 
@@ -123,8 +128,12 @@ class VolumeController(wsgi.Controller):
                                           viewable_admin_meta=True,
                                           offset=offset)
 
+        all_admin_metadata = context.authorize(
+            metadata_policy.GET_ADMIN_METADATA_POLICY, fatal=False)
+
         for volume in volumes:
-            api_utils.add_visible_admin_metadata(volume)
+            api_utils.add_visible_admin_metadata(
+                volume, all_admin_metadata=all_admin_metadata)
 
         req.cache_db_volumes(volumes.objects)
 
@@ -310,7 +319,11 @@ class VolumeController(wsgi.Controller):
 
         volume.update(update_dict)
 
-        api_utils.add_visible_admin_metadata(volume)
+        all_admin_metadata = context.authorize(
+            metadata_policy.GET_ADMIN_METADATA_POLICY, fatal=False)
+
+        api_utils.add_visible_admin_metadata(
+            volume, all_admin_metadata=all_admin_metadata)
 
         volume_utils.notify_about_volume_usage(context, volume,
                                                'update.end')
