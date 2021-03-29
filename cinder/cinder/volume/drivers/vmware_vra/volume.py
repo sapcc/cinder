@@ -1,8 +1,7 @@
 from cinder import interface
 from cinder.volume import driver
 from cinder.volume import configuration
-import synchronization as sync
-from VraRestClient import VraRestClient
+from cinder.volume.drivers.vmware_vra import volumeops
 
 from oslo_log import log as logging
 from oslo_config import cfg
@@ -27,6 +26,7 @@ vmdk_opts = [
 CONF = cfg.CONF
 CONF.register_opts(vmdk_opts, group=configuration.SHARED_CONF_GROUP)
 
+
 @interface.volumedriver
 class Volume(driver.VolumeDriver):
 
@@ -36,12 +36,9 @@ class Volume(driver.VolumeDriver):
         self.vra_host = self.configuration.vmware_host_ip
         self.vra_username = self.configuration.vmware_host_username
         self.vra_password = self.configuration.vmware_host_password
-
-        self.api_scheduler = sync.Scheduler(rate=2,
-                                            limit=1)
-        self.vraClient = VraRestClient(self.api_scheduler, "https://" + self.vra_host,
-                                       self.vra_username, self.vra_password, "System Domain")
-
+        self.volumeops = volumeops.VraVolumeOps(self.vra_host,
+                                                self.vra_username,
+                                                self.vra_password)
 
     def manage_existing(self, volume, existing_ref):
         pass
@@ -53,7 +50,7 @@ class Volume(driver.VolumeDriver):
         pass
 
     def create_volume(self, volume):
-        LOG.debug("Creating Volume...")
+        self.volumeops.create_volume(volume)
 
     def create_volume_from_snaphot(self, snapshot):
         pass
