@@ -2,43 +2,20 @@ from cinder import interface
 from cinder.volume import driver
 from cinder.volume import configuration
 from cinder.volume.drivers.vmware_vra import volumeops
+from config import volume_config
 
 from oslo_log import log as logging
 from oslo_config import cfg
 
 LOG = logging.getLogger(__name__)
 
-vmdk_opts = [
-    cfg.StrOpt('vmware_host_ip',
-               help='IP address for connecting to VMware vRA server.'),
-    cfg.PortOpt('vmware_host_port',
-                default=443,
-                help='Port number for connecting to VMware vRA server.'),
-    cfg.StrOpt('vmware_host_username',
-               help='Username for authenticating with VMware vRA '
-                    'server.'),
-    cfg.StrOpt('vmware_host_password',
-               help='Password for authenticating with VMware vRA '
-                    'server.',
-               secret=True),
-]
-
-CONF = cfg.CONF
-CONF.register_opts(vmdk_opts, group=configuration.SHARED_CONF_GROUP)
-
-
 @interface.volumedriver
 class Volume(driver.VolumeDriver):
 
     def __init__(self, *args, **kwargs):
         super(Volume, self).__init__(*args, **kwargs)
-        self.configuration.append_config_values(vmdk_opts)
-        self.vra_host = self.configuration.vmware_host_ip
-        self.vra_username = self.configuration.vmware_host_username
-        self.vra_password = self.configuration.vmware_host_password
-        self.volumeops = volumeops.VraVolumeOps(self.vra_host,
-                                                self.vra_username,
-                                                self.vra_password)
+        self.configuration.append_config_values(volume_config.vmdk_opts)
+        self.volumeops = volumeops.VraVolumeOps()
 
     def manage_existing(self, volume, existing_ref):
         pass
@@ -52,8 +29,8 @@ class Volume(driver.VolumeDriver):
     def create_volume(self, volume):
         self.volumeops.create_volume(volume)
 
-    def create_volume_from_snaphot(self, snapshot):
-        pass
+    def create_volume_from_snapshot(self, volume, snapshot):
+        print('CREATE VOLUME FROM SNAPHSOT')
 
     def create_cloned_volume(self, volume, src_vref):
         pass
@@ -69,10 +46,10 @@ class Volume(driver.VolumeDriver):
         pass
 
     def create_export(self, context, volume, connector):
-        raise NotImplementedError()
+        pass
 
     def ensure_export(self, context, volume):
-        raise NotImplementedError()
+        pass
 
     def remove_export(self, context, volume):
         raise NotImplementedError()
