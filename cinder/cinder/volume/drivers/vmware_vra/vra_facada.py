@@ -138,12 +138,11 @@ class Volume(Resource):
         :return:
         """
 
-
         volume_payload = {
             "capacityInGB": self.volume.size,
             "name": self.volume.id,
             "projectId": project_id,
-            "description": "Volume create",
+            "description": self.volume.display_description,
             "persistent": True,
             "tags": [
                 {
