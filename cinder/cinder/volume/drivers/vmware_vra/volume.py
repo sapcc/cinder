@@ -32,7 +32,7 @@ class Volume(driver.VolumeDriver):
 
     def create_volume_from_snapshot(self, volume, snapshot):
         LOG.debug("volume: {}, snapshot: {}".format(volume, snapshot))
-        print('CREATE VOLUME FROM SNAPHSOT')
+        self.volumeops.create_volume_from_snapshot(volume, snapshot)
 
     def create_cloned_volume(self, volume, src_vref):
         LOG.debug("volume: {}, src_vref: {}".format(volume, src_vref))
@@ -61,6 +61,7 @@ class Volume(driver.VolumeDriver):
     def create_snapshot(self, snapshot):
         """Creates a snapshot."""
         LOG.debug("snapshot: {}".format(snapshot))
+        self.volumeops.create_snapshot(snapshot)
 
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
