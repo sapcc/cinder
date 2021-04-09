@@ -10,7 +10,6 @@ CONF = cfg.CONF
 class VMwareVolumeDriver(volume.Volume):
 
     def __init__(self, *args, **kwargs):
-        LOG.debug(50 * "-" + "VMwareVolumeDriver initialized" + 50 * "-")
         super(VMwareVolumeDriver, self).__init__(*args, **kwargs)
 
     def accept_transfer(self, context, volume, new_user, new_project):
@@ -24,7 +23,15 @@ class VMwareVolumeDriver(volume.Volume):
                           connected to.
         :returns conn_info: A dictionary of connection information.
         """
-        return
+
+        connection_info = {'driver_volume_type': 'vmdk'}
+        connection_info['data'] = {
+            'volume': volume.name,
+            'volume_id': volume.id,
+            'name': volume.name
+        }
+
+        return connection_info
 
     def terminate_connection(self, volume, connector, **kwargs):
         """Disallow connection from connector.
@@ -44,3 +51,5 @@ class VMwareVolumeDriver(volume.Volume):
     def get_volume_stats(self, refresh=False):
         pass
 
+    def remove_export(self, context, volume):
+        pass
