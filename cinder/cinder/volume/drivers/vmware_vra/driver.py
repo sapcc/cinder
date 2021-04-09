@@ -13,7 +13,7 @@ class VMwareVolumeDriver(volume.Volume):
         super(VMwareVolumeDriver, self).__init__(*args, **kwargs)
 
     def accept_transfer(self, context, volume, new_user, new_project):
-        pass
+        LOG.debug("volume: {}, new_user: {}, new_project: {}".format(volume, new_user, new_project))
 
     def initialize_connection(self, volume, connector):
         """Allow connection to connector and return connection info.
@@ -40,6 +40,7 @@ class VMwareVolumeDriver(volume.Volume):
         :param connector: A dictionary describing the connection with details
                           about the initiator. Can be None.
         """
+        LOG.debug("volume: {}, connector: {}".format(volume, connector))
         return
 
     def get_driver_options(self):
@@ -52,4 +53,4 @@ class VMwareVolumeDriver(volume.Volume):
         pass
 
     def remove_export(self, context, volume):
-        pass
+        LOG.debug("volume: {}".format(volume))
