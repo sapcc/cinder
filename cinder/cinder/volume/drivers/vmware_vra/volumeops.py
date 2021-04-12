@@ -43,7 +43,7 @@ class VraVolumeOps(object):
                  format(snapshot))
 
         vol = self.vra.volume
-        vra_volume = vol.fetch_by_id(snapshot.volume_id)
+        vra_volume = vol.fetch(snapshot.volume_id)
 
         snapshot_obj = self.vra.snapshot
         snapshot_obj.load(snapshot)
@@ -71,7 +71,7 @@ class VraVolumeOps(object):
         snapshot_obj = self.vra.snapshot
         snapshot_obj.load(snapshot)
 
-        vra_existing_volume = vol.fetch_by_id(snapshot.volume_id)
+        vra_existing_volume = vol.fetch(snapshot.volume_id)
         vra_snapshots = snapshot_obj.all(vra_existing_volume['id'])
 
         vra_snapshot = None

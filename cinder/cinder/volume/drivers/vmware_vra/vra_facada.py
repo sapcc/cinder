@@ -140,7 +140,7 @@ class Volume(Resource):
         """
         pass
 
-    def fetch_by_id(self, volume_id):
+    def fetch(self, volume_id):
         """
         Get Block device from vRA
         """
