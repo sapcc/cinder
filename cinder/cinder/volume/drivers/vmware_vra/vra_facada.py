@@ -163,7 +163,7 @@ class VraFacada(object):
 
     def __init__(self):
         vra_config = vra_client.VraClientConfig()
-        c = cfg.CONF.vsphere
+        c = cfg.CONF.VRA
 
         #TO-DO Maybe we can move this config init outside
         vra_config.host = c.host
