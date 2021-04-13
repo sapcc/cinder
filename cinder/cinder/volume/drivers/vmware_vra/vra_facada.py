@@ -204,6 +204,28 @@ class Volume(Resource):
         deployment_id = deployment[0]['deploymentId']
         self.track_deployment(deployment_id)
 
+    def clone_volume(self, src_vref, project_id, catalog_item_id):
+        path = constants.CATALOG_ITEM_REQUEST.replace("{catalog_item_id}",
+                                                      catalog_item_id)
+        volume_payload = {
+            "bulkRequestCount": 1,
+            "deploymentName": self.volume.display_name,
+            "inputs": {
+                "name": self.volume.display_name,
+                "existingName": src_vref.id,
+            },
+            "projectId": project_id
+        }
+
+        response = self.client.post(
+            path=path,
+            json=volume_payload
+        )
+
+        deployment = json.loads(response.content)
+        deployment_id = deployment[0]['deploymentId']
+        self.track_deployment(deployment_id)
+
 
 class CatalogItem(Resource):
     """

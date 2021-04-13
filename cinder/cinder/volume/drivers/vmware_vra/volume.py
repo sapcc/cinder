@@ -36,6 +36,7 @@ class Volume(driver.VolumeDriver):
 
     def create_cloned_volume(self, volume, src_vref):
         LOG.debug("volume: {}, src_vref: {}".format(volume, src_vref))
+        self.volumeops.clone_volume(volume, src_vref)
 
     def delete_volume(self, volume):
         LOG.debug("volume: {}".format(volume))

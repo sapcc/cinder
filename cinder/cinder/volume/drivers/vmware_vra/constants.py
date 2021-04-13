@@ -25,3 +25,4 @@ DEPLOYMENT_REQUEST_API = "/deployment/api/deployments/{depId}/requests"
 
 #Catalog item names
 CATALOG_CREATE_VOLUME_FROM_SNAPSHOT = "Create Volume from Snapshot"
+CATALOG_CREATE_VOLUME_CLONE = "Clone Volume"
