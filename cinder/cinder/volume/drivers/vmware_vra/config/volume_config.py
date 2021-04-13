@@ -18,7 +18,6 @@ vmdk_opts = [
     cfg.IntOpt('connection_query_limit', default=2000, help="vRA client query limit."),
     cfg.BoolOpt('connection_certificate_check', default=True, help="vRA client validate certificate."),
     cfg.BoolOpt('spoof_guard', default=False, help="Enforce spoofguard."),
-    cfg.ListOpt('cloud_zone', default=[], help="vRA Cloud Zone ID associated with this agent"),
 ]
 
 CONF = cfg.CONF
