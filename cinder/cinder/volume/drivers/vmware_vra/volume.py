@@ -40,6 +40,7 @@ class Volume(driver.VolumeDriver):
 
     def delete_volume(self, volume):
         LOG.debug("volume: {}".format(volume))
+        self.volumeops.delete_volume(volume)
 
     def clone_image(self, context, volume, image_location,
                     image_meta, image_service):

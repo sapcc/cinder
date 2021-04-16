@@ -82,6 +82,14 @@ class Resource(object):
         content = json.loads(response.content)
         self.track(content['id'])
 
+    def delete_and_track(self, path):
+        response = self.client.delete(
+            path=path
+        )
+
+        content = json.loads(response.content)
+        self.track(content['id'])
+
     def get_request_handler(self, path):
         r = self.client.get(
             path=path
@@ -134,12 +142,6 @@ class Volume(Resource):
     def __init__(self, client):
         super(Volume, self).__init__(client)
 
-    def fetch(self):
-        """
-        Get Block device from vRA
-        """
-        pass
-
     def fetch(self, volume_id):
         """
         Get Block device from vRA
@@ -151,7 +153,6 @@ class Volume(Resource):
 
     def load(self, volume_payload):
         self.volume = volume_payload
-        print(self.volume)
 
     def create(self, project_id):
         """
@@ -225,6 +226,12 @@ class Volume(Resource):
         deployment = json.loads(response.content)
         deployment_id = deployment[0]['deploymentId']
         self.track_deployment(deployment_id)
+
+    def delete(self):
+        vra_volume = self.fetch(self.volume.id)
+        path = constants.DELETE_VOLUME_API.replace("{id}",
+                                                   vra_volume['id'])
+        self.delete_and_track(path)
 
 
 class CatalogItem(Resource):

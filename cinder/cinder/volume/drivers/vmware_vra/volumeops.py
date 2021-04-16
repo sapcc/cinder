@@ -97,3 +97,8 @@ class VraVolumeOps(object):
         if vra_snapshot is None:
             raise Exception("vRA snapshot not found")
         vol.create_volume_from_snapshot(catalog_item['id'], vra_snapshot['id'], project_id, snapshot.volume_id)
+
+    def delete_volume(self, volume):
+        vol = self.vra.volume
+        vol.load(volume)
+        vol.delete()
