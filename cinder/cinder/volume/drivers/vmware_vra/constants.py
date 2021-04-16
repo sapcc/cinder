@@ -15,6 +15,7 @@ BLOCK_DEVICE_API = "/iaas/api/block-devices/"
 CREATE_VOLUME_SNAPSHOT_API = "/iaas/api/block-devices/{id}/operations/snapshots"
 GET_VOLUME_SNAPSHOT_API = "/iaas/api/block-devices/{volume_id}/snapshots/{snapshot_id}"
 GET_ALL_SNAPSHOTS_API = "/iaas/api/block-devices/{volume_id}/snapshots"
+DELETE_VOLUME_API = "/iaas/api/block-devices/{id}?purge=true&forceDelete=true"
 
 #Catalog
 CATALOG_ITEM_API = "/catalog/api/items/"
