@@ -50,7 +50,22 @@ class VraVolumeOps(object):
         snapshot_obj.create(vra_volume['id'])
 
     def clone_volume(self, volume, src_vref):
-        pass
+        """
+        Create vRA volume clone
+
+        :param volume: New openstack volume being created
+        :param src_vref: Source openstack volume to clone
+        :return:
+        """
+        vol = self.vra.volume
+        vol.load(volume)
+
+        project = self.vra.project
+        project_id = project.fetch(volume.project_id)
+
+        catalog = self.vra.catalog_item
+        catalog_item = catalog.fetch(constants.CATALOG_CREATE_VOLUME_CLONE)[0]
+        vol.clone_volume(src_vref, project_id, catalog_item['id'])
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """
