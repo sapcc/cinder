@@ -68,6 +68,7 @@ class Volume(driver.VolumeDriver):
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
         LOG.debug("snapshot: {}".format(snapshot))
+        self.volumeops.delete_volume_snapshot(snapshot)
 
     def revert_to_snapshot(self, context, volume, snapshot):
         LOG.debug("volume:{}, snapshot: {}".format(volume, snapshot))

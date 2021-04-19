@@ -305,6 +305,14 @@ class Snapshot(Resource):
         snapshot_path = path.replace("{snapshot_id}", snaphost_id)
         return self.get_request_handler(snapshot_path)[0]
 
+    def delete(self, volume_id, snaphost_id):
+        """
+        Delete volume snapshot
+        """
+        path = constants.GET_VOLUME_SNAPSHOT_API.replace("{volume_id}", volume_id)
+        snapshot_path = path.replace("{snapshot_id}", snaphost_id)
+        self.delete_and_track(snapshot_path)
+
 
 class VraFacada(object):
 
