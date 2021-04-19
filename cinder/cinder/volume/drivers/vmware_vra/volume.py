@@ -49,6 +49,7 @@ class Volume(driver.VolumeDriver):
 
     def extend_volume(self, volume, new_size):
         LOG.debug("volume: {}, new_size:{}".format(volume, new_size))
+        self.volumeops.extend_volume(volume, new_size)
 
     def create_export(self, context, volume, connector):
         LOG.debug("volume: {}, connector: {}".format(volume, connector))

@@ -233,6 +233,15 @@ class Volume(Resource):
                                                    vra_volume['id'])
         self.delete_and_track(path)
 
+    def extend(self, new_size):
+        vra_volume = self.fetch(self.volume.id)
+        path = constants.EXTEND_VOLUME_API.replace("{id}",
+                                                   vra_volume['id'])
+        extend_path = path.replace("{capacityInGB}",
+                                                   str(new_size))
+
+        self.save_and_track(extend_path, "")
+
 
 class CatalogItem(Resource):
     """
