@@ -86,19 +86,32 @@ class VraVolumeOps(object):
         snapshot_obj = self.vra.snapshot
         snapshot_obj.load(snapshot)
 
-        vra_existing_volume = vol.fetch(snapshot.volume_id)
-        vra_snapshots = snapshot_obj.all(vra_existing_volume['id'])
-
-        vra_snapshot = None
-        for vra_snapshot in vra_snapshots:
-            if vra_snapshot['name'] == snapshot.id:
-                vra_snapshot = snapshot
-
-        if vra_snapshot is None:
-            raise Exception("vRA snapshot not found")
-        vol.create_volume_from_snapshot(catalog_item['id'], vra_snapshot['id'], project_id, snapshot.volume_id)
+        vol.create_volume_from_snapshot(catalog_item['id'], snapshot.id, project_id, snapshot.volume_id)
 
     def delete_volume(self, volume):
         vol = self.vra.volume
         vol.load(volume)
         vol.delete()
+
+    def delete_volume_snapshot(self, snapshot):
+        vol = self.vra.volume
+        vra_existing_volume = vol.fetch(snapshot.volume_id)
+
+        snapshot_obj = self.vra.snapshot
+        snapshot_obj.load(snapshot)
+
+        vra_snapshots = snapshot_obj.all(vra_existing_volume['id'])
+
+        vra_snapshot = self.__filter_snapshot(vra_snapshots, snapshot)
+        snapshot_obj.delete(vra_existing_volume['id'], vra_snapshot['id'])
+
+    def __filter_snapshot(self, vra_snapshots, snapshot):
+        filtered_snapshot = None
+        for vra_snapshot in vra_snapshots:
+            if vra_snapshot['name'] == snapshot.id:
+                filtered_snapshot = vra_snapshot
+
+        if filtered_snapshot is None:
+            raise Exception("vRA snapshot not found")
+
+        return filtered_snapshot
