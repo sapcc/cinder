@@ -115,3 +115,14 @@ class VraVolumeOps(object):
             raise Exception("vRA snapshot not found")
 
         return filtered_snapshot
+
+    def delete_volume(self, volume):
+        vol = self.vra.volume
+        vol.load(volume)
+        vol.delete()
+
+    def extend_volume(self, volume, new_size):
+        vol = self.vra.volume
+        vol.load(volume)
+
+        vol.extend(new_size)
