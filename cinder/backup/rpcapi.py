@@ -46,9 +46,10 @@ class BackupAPI(rpc.RPCAPI):
 
         2.0 - Remove 1.x compatibility
         2.1 - Adds set_log_levels and get_log_levels
+        2.2 - Adds continue_backup call
     """
 
-    RPC_API_VERSION = '2.1'
+    RPC_API_VERSION = '2.2'
     RPC_DEFAULT_VERSION = '2.0'
     TOPIC = constants.BACKUP_TOPIC
     BINARY = 'cinder-backup'
@@ -57,6 +58,12 @@ class BackupAPI(rpc.RPCAPI):
         LOG.debug("create_backup in rpcapi backup_id %s", backup.id)
         cctxt = self._get_cctxt(server=backup.host)
         cctxt.cast(ctxt, 'create_backup', backup=backup)
+
+    def continue_backup(self, ctxt, backup, backup_device):
+        LOG.debug("continue_backup in rpcapi backup_id %s", backup.id)
+        cctxt = self._get_cctxt(server=backup.host)
+        cctxt.cast(ctxt, 'continue_backup', backup=backup,
+                   backup_device=backup_device)
 
     def restore_backup(self, ctxt, volume_host, backup, volume_id):
         LOG.debug("restore_backup in rpcapi backup_id %s", backup.id)
