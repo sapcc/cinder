@@ -1,0 +1,7 @@
+---
+deprecations:
+  - |
+    The configuration option ``sf_allow_template_caching`` for the
+    SolidFire driver has been removed. Use ``image_volume_cache`` enabled
+    equals ``True`` for a better template image cache that is managed from
+    Cinder.
