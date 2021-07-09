@@ -28,7 +28,7 @@ import oslo_messaging as messaging
 
 class VmdkDriverRemoteApi(rpc.RPCAPI):
     RPC_API_VERSION = VolumeAPI.RPC_API_VERSION
-    RPC_DEFAULT_VERSION = RPC_API_VERSION
+    RPC_DEFAULT_VERSION = VolumeAPI.RPC_DEFAULT_VERSION
     TOPIC = VolumeAPI.TOPIC
     BINARY = VolumeAPI.BINARY
 

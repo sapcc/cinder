@@ -337,7 +337,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self.additional_endpoints.extend([
             remote_api.VmdkDriverRemoteService(self)
         ])
-        self._remote_api = remote_api.VmdkDriverRemoteApi()
 
     @staticmethod
     def get_driver_options():
@@ -2645,10 +2644,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                      {'volume_name': volume.name, 'dest_host': dest_host})
             return (True, None)
 
-        service_locator = self._remote_api.get_service_locator_info(context,
-                                                                    dest_host)
-        ds_info = self._remote_api.select_ds_for_volume(context, dest_host,
-                                                        volume)
+        dest_api = remote_api.VmdkDriverRemoteApi()
+
+        service_locator = dest_api.get_service_locator_info(context, dest_host)
+        ds_info = dest_api.select_ds_for_volume(context, dest_host, volume)
+
         host_ref = vim_util.get_moref(ds_info['host'], 'HostSystem')
         rp_ref = vim_util.get_moref(ds_info['resource_pool'], 'ResourcePool')
         ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
@@ -2656,7 +2656,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self.volumeops.relocate_backing(backing, ds_ref, rp_ref, host_ref,
                                         service=service_locator)
         try:
-            self._remote_api.move_volume_backing_to_folder(
+            dest_api.move_volume_backing_to_folder(
                 context, dest_host, volume, ds_info['folder'])
         except Exception:
             # At this point the backing has been migrated to the new host.

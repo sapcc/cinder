@@ -3444,12 +3444,18 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         vops.revert_to_snapshot.assert_called_once_with(backing,
                                                         snapshot.name)
 
+    @mock.patch('cinder.volume.drivers.vmware.remote.VmdkDriverRemoteApi.'
+                'move_volume_backing_to_folder')
+    @mock.patch('cinder.volume.drivers.vmware.remote.VmdkDriverRemoteApi.'
+                'select_ds_for_volume')
+    @mock.patch('cinder.volume.drivers.vmware.remote.VmdkDriverRemoteApi.'
+                'get_service_locator_info')
     @mock.patch.object(VMDK_DRIVER, 'volumeops')
     @mock.patch('oslo_vmware.vim_util.get_moref')
-    def test_migrate_volume(self, get_moref, vops, backing=None,
-                            raises_error=False, capabilities=None):
-        r_api = mock.Mock()
-        self._driver._remote_api = r_api
+    def test_migrate_volume(self, get_moref, vops, get_service_locator,
+                            select_ds_for_volume, move_volume_backing,
+                            backing=None, raises_error=False,
+                            capabilities=None):
         volume = self._create_volume_obj()
         vops.get_backing.return_value = backing
         if capabilities is None:
@@ -3467,11 +3473,11 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             mock.sentinel.rp_ref,
             mock.sentinel.ds_ref
         ]
-        r_api.get_service_locator_info.return_value = \
+        get_service_locator.return_value = \
             mock.sentinel.service_locator
-        r_api.select_ds_for_volume.return_value = ds_info
+        select_ds_for_volume.return_value = ds_info
         if raises_error:
-            r_api.move_volume_backing_to_folder.side_effect = Exception
+            move_volume_backing.side_effect = Exception
 
         ret_val = self._driver.migrate_volume(mock.sentinel.context, volume,
                                               host)
@@ -3479,10 +3485,10 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         dest_host = host['host']
 
         def _assertions_migration_not_called():
-            r_api.get_service_locator_info.assert_not_called()
-            r_api.select_ds_for_volume.assert_not_called()
+            get_service_locator.assert_not_called()
+            select_ds_for_volume.assert_not_called()
             vops.relocate_backing.assert_not_called()
-            r_api.move_volume_backing_to_folder.assert_not_called()
+            move_volume_backing.assert_not_called()
             get_moref.assert_not_called()
 
         def _assertions_for_no_backing():
@@ -3496,10 +3502,10 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         def _assertions_for_migration():
             vops.get_backing.assert_called_once_with(volume.name, volume.id)
-            r_api.get_service_locator_info.assert_called_once_with(
+            get_service_locator.assert_called_once_with(
                 mock.sentinel.context, dest_host)
 
-            r_api.select_ds_for_volume.assert_called_once_with(
+            select_ds_for_volume.assert_called_once_with(
                 mock.sentinel.context, dest_host, volume)
 
             get_moref.assert_has_calls([
@@ -3511,7 +3517,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                 backing, mock.sentinel.ds_ref, mock.sentinel.rp_ref,
                 mock.sentinel.host_ref, service=mock.sentinel.service_locator)
 
-            r_api.move_volume_backing_to_folder.assert_called_once_with(
+            move_volume_backing.assert_called_once_with(
                 mock.sentinel.context, dest_host, volume, ds_info['folder'])
 
             if raises_error:
