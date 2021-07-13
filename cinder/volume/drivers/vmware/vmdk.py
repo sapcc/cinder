@@ -761,7 +761,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             'volume': backing.value,
             'volume_id': volume.id,
             'name': volume.name,
-            'profile_id': self._get_storage_profile_id(volume)
+            'profile_id': self._get_storage_profile_id(volume),
+            'volume_host': volume.host
         }
 
         # vmdk connector in os-brick needs additional connection info.

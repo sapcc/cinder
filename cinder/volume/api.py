@@ -805,8 +805,27 @@ class API(base.Base):
                      'because it is in maintenance.', resource=volume)
             msg = _("The volume cannot be detached in maintenance mode.")
             raise exception.InvalidVolume(reason=msg)
+
+        # SAP Special case for live migration.  We have to detach on the
+        # correct cinder host that the volume used to be owned by.
+        host= None
+        try:
+            attachment = objects.VolumeAttachment.get_by_id(context,
+                                                            attachment_id)
+            if "volume_host" in attachment.connection_info["data"]:
+                # make sure the host is the same as it currently is
+                if (volume.service_topic_queue !=
+                        attachment.connection_info["data"]["volume_host"]):
+                    host = attachment.connection_info["data"]["volume_host"]
+
+        except exception.VolumeAttachmentNotFound:
+            LOG.info("Volume detach called, but volume not attached.")
+            # we need to make sure the volume status is set correctly
+            volume.finish_detach(attachment_id)
+
         detach_results = self.volume_rpcapi.detach_volume(context, volume,
-                                                          attachment_id)
+                                                          attachment_id,
+                                                          host=host)
         LOG.info("Detach volume completed successfully.",
                  resource=volume)
         return detach_results
