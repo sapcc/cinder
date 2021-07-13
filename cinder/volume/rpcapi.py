@@ -208,11 +208,13 @@ class VolumeAPI(rpc.RPCAPI):
             msg_args.pop('volume')
         return cctxt.call(ctxt, 'attach_volume', **msg_args)
 
-    def detach_volume(self, ctxt, volume, attachment_id):
+    def detach_volume(self, ctxt, volume, attachment_id, host=None):
         msg_args = {'volume_id': volume.id,
                     'attachment_id': attachment_id,
                     'volume': volume}
-        cctxt = self._get_cctxt(volume.service_topic_queue, ('3.4', '3.0'))
+        if not host:
+            host = volume.service_topic_queue
+        cctxt = self._get_cctxt(host, ('3.4', '3.0'))
         if not self.client.can_send_version('3.4'):
             msg_args.pop('volume')
         return cctxt.call(ctxt, 'detach_volume', **msg_args)
