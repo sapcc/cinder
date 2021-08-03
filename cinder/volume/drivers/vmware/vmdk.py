@@ -468,17 +468,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 self.session.vim.service_content.propertyCollector,
                 specSet=[filter_spec],
                 options=options)
-            while True:
-                for ds in result.objects:
+            with vim_util.WithRetrieval(self.session.vim, result) as objects:
+                for ds in objects:
                     summary = ds.propSet[0].val
                     global_capacity += summary.capacity
                     global_free += summary.freeSpace
-                if getattr(result, 'token', None):
-                    result = self.session.vim.ContinueRetrievePropertiesEx(
-                        self.session.vim.service_content.propertyCollector,
-                        result.token)
-                else:
-                    break
+
         location_info = '%(driver_name)s:%(vcenter)s' % {
             'driver_name': LOCATION_DRIVER_NAME,
             'vcenter': self.session.vim.service_content.about.instanceUuid}
