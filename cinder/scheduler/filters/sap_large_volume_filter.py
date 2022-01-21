@@ -1,4 +1,5 @@
 # Copyright (c) 2020 SAP SE
+#
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -11,14 +12,12 @@
 #    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
-#    under the License
+#    under the License.
 
 from oslo_config import cfg
 from oslo_log import log as logging
 
 from cinder.scheduler import filters
-from cinder.service_auth import SERVICE_USER_GROUP
-from cinder import utils as cinder_utils
 
 
 LOG = logging.getLogger(__name__)
@@ -34,7 +33,7 @@ class SAPLargeVolumeFilter(filters.BaseBackendFilter):
         volume_size = req_spec["volume"]["size"]
 
         if 'vvol' in host.lower() and volume_size > 2000:
-            LOG.warning("Cannot allow volumes larger than 2000 on vVol.")
+            LOG.info("Cannot allow volumes larger than 2000 GiB on vVol.")
             return False
         else:
             return True
