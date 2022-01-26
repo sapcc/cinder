@@ -2404,7 +2404,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         return provider_info
 
-    @utils.trace
     def _get_datastores_for_profiles(self):
         datastores = {}
         for profile in self._storage_profiles:
