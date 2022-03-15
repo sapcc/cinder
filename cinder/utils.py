@@ -656,13 +656,13 @@ def build_or_str(elements, str_format=None):
     return elements
 
 
-def calculate_capacity_factors(total_capacity: float,
-                               free_capacity: float,
-                               provisioned_capacity: float,
-                               thin_provisioning_support: bool,
-                               max_over_subscription_ratio: float,
-                               reserved_percentage: float,
-                               thin: bool) -> dict:
+def calculate_capacity_factors(total_capacity,
+                               free_capacity,
+                               provisioned_capacity,
+                               thin_provisioning_support,
+                               max_over_subscription_ratio,
+                               reserved_percentage,
+                               thin):
     """Create the various capacity factors of the a particular backend.
 
     Based off of definition of terms
@@ -693,7 +693,8 @@ def calculate_capacity_factors(total_capacity: float,
     For thick: the reported free_capacity can be less than the calculated
     Capacity, so we use free_capacity - reserved_capacity.
 
-    free_percent - the percentage of the total_available_capacity is left over
+    free_percent - the percentage of the virtual_free and
+    total_available_capacity is left over
     provisioned_ratio - The ratio of provisioned storage to
     total_available_capacity
     """
@@ -701,21 +702,24 @@ def calculate_capacity_factors(total_capacity: float,
     total = float(total_capacity)
     reserved = float(reserved_percentage) / 100
     reserved_capacity = math.floor(total * reserved)
-    total_avail = total - reserved_capacity
+    total_reserved_available = total - reserved_capacity
 
     if thin and thin_provisioning_support:
-        total_available_capacity = total_avail * max_over_subscription_ratio
+        total_available_capacity = (
+            total_reserved_available * max_over_subscription_ratio
+        )
         calculated_free = total_available_capacity - provisioned_capacity
         virtual_free = calculated_free
         provisioned_type = 'thin'
     else:
         # Calculate how much free space is left after taking into
         # account the reserved space.
-        total_available_capacity = total_avail
+        total_available_capacity = total_reserved_available
         calculated_free = total_available_capacity - provisioned_capacity
-        virtual_free = free_capacity - reserved_capacity
-        if calculated_free < virtual_free:
-            virtual_free = calculated_free
+        virtual_free = calculated_free
+        # reported_free_reserved = free_capacity - reserved_capacity
+        if free_capacity < calculated_free:
+            virtual_free = free_capacity
         provisioned_type = 'thick'
 
     if total_available_capacity:
@@ -725,20 +729,28 @@ def calculate_capacity_factors(total_capacity: float,
         provisioned_ratio = 0
         free_percent = 0
 
-    return {
+    def _limit(x):
+        """Limit our floating points to 3 decimal places."""
+        return float("{:.2f}".format(x))
+
+    factors = {
         "total_capacity": total,
         "free_capacity": free_capacity,
         "reserved_capacity": reserved_capacity,
-        "total_reserved_available_capacity": int(total - reserved_capacity),
-        "max_over_subscription_ratio": max_over_subscription_ratio,
-        "total_available_capacity": int(total_available_capacity),
-        "provisioned_capacity": provisioned_capacity,
-        "calculated_free_capacity": int(calculated_free),
-        "virtual_free_capacity": int(virtual_free),
-        "free_percent": free_percent,
-        "provisioned_ratio": provisioned_ratio,
-        "provisioned_type": provisioned_type
+        "total_reserved_available_capacity": _limit(total_reserved_available),
+        "max_over_subscription_ratio": (
+            max_over_subscription_ratio if provisioned_type == 'thin' else None
+        ),
+        "total_available_capacity": _limit(total_available_capacity),
+        "provisioned_capacity": _limit(provisioned_capacity),
+        "calculated_free_capacity": _limit(calculated_free),
+        "virtual_free_capacity": _limit(virtual_free),
+        "free_percent": _limit(free_percent),
+        "provisioned_ratio": _limit(provisioned_ratio),
+        "provisioned_type": provisioned_type,
     }
+
+    return factors
 
 
 def calculate_virtual_free_capacity(total_capacity,
