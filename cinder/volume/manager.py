@@ -1106,9 +1106,11 @@ class VolumeManager(manager.CleanableManager,
             temp_vol = self.driver._create_temp_volume_from_snapshot(
                 ctxt, volume, snapshot, volume_options=v_options,
                 status=fields.VolumeStatus.IN_USE)
+            self._update_allocated_capacity(temp_vol)
             self._copy_volume_data(ctxt, temp_vol, volume)
             self.driver_delete_volume(temp_vol)
             temp_vol.destroy()
+            self._update_allocated_capacity(temp_vol, decrement=True)
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception(
@@ -2661,6 +2663,7 @@ class VolumeManager(manager.CleanableManager,
 
         model_update = None
         moved = False
+        rpcapi = volume_rpcapi.VolumeAPI()
 
         status_update = None
         if volume.status in ('retyping', 'maintenance'):
@@ -2676,6 +2679,15 @@ class VolumeManager(manager.CleanableManager,
                 self._can_use_driver_migration(diff)):
             try:
                 LOG.debug("Issue driver.migrate_volume.", resource=volume)
+                # Update the remote host's allocated_capacity_gb first
+                # Because the migration can take a while, and the scheduler
+                # needs to account for the space consumed.
+                LOG.debug("Update remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': host['host']},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'])
                 moved, model_update = self.driver.migrate_volume(ctxt,
                                                                  volume,
                                                                  host)
@@ -2694,9 +2706,19 @@ class VolumeManager(manager.CleanableManager,
                         updates.update(model_update)
                     if new_type_id:
                         updates['volume_type_id'] = new_type_id
+                    original_host = volume.host
                     volume.update(updates)
                     volume.save()
+                    self._update_allocated_capacity(volume, decrement=True,
+                                                    host=original_host)
             except Exception:
+                LOG.debug("Decrement remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': host['host']},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'],
+                                                       decrement=True)
                 with excutils.save_and_reraise_exception():
                     updates = {'migration_status': 'error'}
                     if status_update:
@@ -2705,8 +2727,24 @@ class VolumeManager(manager.CleanableManager,
                     volume.save()
         if not moved:
             try:
+                original_host = volume.host
+                LOG.debug("Update remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': volume.host},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'])
                 self._migrate_volume_generic(ctxt, volume, host, new_type_id)
+                self._update_allocated_capacity(volume, decrement=True,
+                                                host=original_host)
             except Exception:
+                LOG.debug("Decrement remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': host['host']},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'],
+                                                       decrement=True)
                 with excutils.save_and_reraise_exception():
                     updates = {'migration_status': 'error'}
                     if status_update:
@@ -3030,11 +3068,7 @@ class VolumeManager(manager.CleanableManager,
                 'volume_backend_name') or volume_utils.extract_host(
                     volume.host, 'pool', True)
 
-        try:
-            self.stats['pools'][pool]['allocated_capacity_gb'] += size_increase
-        except KeyError:
-            self.stats['pools'][pool] = dict(
-                allocated_capacity_gb=size_increase)
+        self._update_allocated_capacity(volume, size=size_increase)
 
         self._notify_about_volume_usage(
             context, volume, "resize.end",
@@ -3229,7 +3263,7 @@ class VolumeManager(manager.CleanableManager,
         vol_ref = self._run_manage_existing_flow_engine(
             ctxt, volume, ref)
 
-        self._update_stats_for_managed(vol_ref)
+        self._update_allocated_capacity(vol_ref)
 
         LOG.info("Manage existing volume completed successfully.",
                  resource=vol_ref)
@@ -3741,10 +3775,12 @@ class VolumeManager(manager.CleanableManager,
 
         self.db.volume_update(context, vol['id'], update)
 
+    @volume_utils.trace
     def _update_allocated_capacity(self,
                                    vol: objects.Volume,
                                    decrement: bool = False,
-                                   host: Optional[str] = None) -> None:
+                                   host: Optional[str] = None,
+                                   size=None) -> None:
         # Update allocated capacity in volume stats
         host = host or vol['host']
         pool = volume_utils.extract_host(host, 'pool')
@@ -3755,12 +3791,46 @@ class VolumeManager(manager.CleanableManager,
                                                                     'pool',
                                                                     True)
 
-        vol_size = -vol['size'] if decrement else vol['size']
+        # if a size was passed in, we use that to increment/decrement
+        # instead of the size in the volume.
+        # This is for extend
+        if size:
+            vol_size = -size if decrement else size
+        else:
+            vol_size = -vol['size'] if decrement else vol['size']
+
         try:
-            self.stats['pools'][pool]['allocated_capacity_gb'] += vol_size
+            curr_size = self.stats['pools'][pool]['allocated_capacity_gb']
         except KeyError:
             self.stats['pools'][pool] = dict(
-                allocated_capacity_gb=max(vol_size, 0))
+                allocated_capacity_gb=0)
+            curr_size = 0
+
+        msg = "Decrementing " if decrement else "Incrementing "
+        msg += ("allocated_capacity_gb host %(host)s (%(curr_size)s) by "
+                "%(vol_size)s ")
+        LOG.debug(
+            msg,
+            {'host': host,
+             'curr_size': self.stats['pools'][pool]['allocated_capacity_gb'],
+             'vol_size': vol_size}, resource=vol)
+
+        self.stats['pools'][pool]['allocated_capacity_gb'] += vol_size
+
+        pool_info = self.stats['pools'][pool]
+        if pool_info['allocated_capacity_gb'] < 0:
+            # Remove this once we find out why
+            new_size = pool_info['allocated_capacity_gb']
+            LOG.warning("allocated_capacity_gb now=%(new_size)s"
+                        " prev=%(prev_size)s "
+                        "for pool %(pool)s is negative,"
+                        "after being altered by %(vol_size)s size. Reset to 0",
+                        {'new_size': new_size,
+                         'prev_size': curr_size,
+                         'pool': pool,
+                         'vol_size': vol_size},
+                        resource=vol)
+            self.stats['pools'][pool]['allocated_capacity_gb'] = 0
 
     def delete_group(self,
                      context: context.RequestContext,
@@ -3879,7 +3949,7 @@ class VolumeManager(manager.CleanableManager,
             if reservations:
                 QUOTAS.commit(context, reservations, project_id=project_id)
 
-            self.stats['allocated_capacity_gb'] -= vol.size
+            self._update_allocated_capacity(vol, decrement=True)
 
         if grpreservations:
             GROUP_QUOTAS.commit(context, grpreservations,
@@ -4430,6 +4500,12 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_group_snapshot_usage(context, group_snapshot,
                                                 "delete.end",
                                                 snapshots)
+
+    @volume_utils.trace
+    def update_migrated_volume_capacity(self, ctxt, volume, host,
+                                        decrement=False):
+        """Update allocated_capacity_gb for the migrated volume host."""
+        self._update_allocated_capacity(volume, host=host, decrement=decrement)
 
     def update_migrated_volume(self,
                                ctxt: context.RequestContext,
