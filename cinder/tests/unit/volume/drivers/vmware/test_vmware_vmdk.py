@@ -108,6 +108,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         self._config.vmware_select_random_best_datastore = False
         self._config.vmware_random_datastore_range = None
         self._config.vmware_datastores_as_pools = False
+        self._config.allow_pulling_images_from_url = False
 
         self._db = mock.Mock()
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
@@ -1253,7 +1254,8 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             vm_folder=folder,
             vm_import_spec=import_spec,
             image_size=image_size,
-            http_method='POST')
+            http_method='POST',
+            allow_pull_from_url=False)
         if download_error:
             self.assertFalse(vops.update_backing_disk_uuid.called)
             vops.delete_backing.assert_called_once_with(backing)
