@@ -2505,9 +2505,10 @@ class VolumeManager(manager.CleanableManager,
                 # needs to account for the space consumed.
                 LOG.debug("Update remote allocated_capacity_gb for "
                           "host %(host)s",
-                          {'host': volume.host},
+                          {'host': host},
                           resource=volume)
-                rpcapi.update_migrated_volume_capacity(ctxt, volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'])
                 moved, model_update = self.driver.migrate_volume(ctxt,
                                                                  volume,
                                                                  host)
@@ -2532,9 +2533,10 @@ class VolumeManager(manager.CleanableManager,
             except Exception:
                 LOG.debug("Decrement remote allocated_capacity_gb for "
                           "host %(host)s",
-                          {'host': volume.host},
+                          {'host': host['host']},
                           resource=volume)
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'],
                                                        decrement=True)
                 with excutils.save_and_reraise_exception():
                     updates = {'migration_status': 'error'}
@@ -2549,16 +2551,18 @@ class VolumeManager(manager.CleanableManager,
                           "host %(host)s",
                           {'host': volume.host},
                           resource=volume)
-                rpcapi.update_migrated_volume_capacity(ctxt, volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'])
                 self._migrate_volume_generic(ctxt, volume, host, new_type_id)
                 self._update_allocated_capacity(volume, decrement=True,
                                                 host=original_host)
             except Exception:
                 LOG.debug("Decrement remote allocated_capacity_gb for "
                           "host %(host)s",
-                          {'host': volume.host},
+                          {'host': host['host']},
                           resource=volume)
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'],
                                                        decrement=True)
                 with excutils.save_and_reraise_exception():
                     updates = {'migration_status': 'error'}
@@ -4147,9 +4151,10 @@ class VolumeManager(manager.CleanableManager,
                                                 snapshots)
 
     @utils.trace
-    def update_migrated_volume_capacity(self, ctxt, volume, decrement=False):
+    def update_migrated_volume_capacity(self, ctxt, volume, host=None,
+                                        decrement=False):
         """Update allocated_capacity_gb for the migrated volume host."""
-        self._update_allocated_capacity(volume, decrement=decrement)
+        self._update_allocated_capacity(volume, host=host, decrement=decrement)
 
     def update_migrated_volume(self, ctxt, volume, new_volume, volume_status):
         """Finalize migration process on backend device."""
