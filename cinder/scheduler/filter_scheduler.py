@@ -111,6 +111,28 @@ class FilterScheduler(driver.Scheduler):
                                          filter_properties,
                                          allow_reschedule=True)
 
+    def find_backend_for_extend(self, context, request_spec,
+                                filter_properties):
+        volume_properties = request_spec['volume_properties']
+
+        # CapacityFilter needs to filter by the full size
+        filter_p = filter_properties.copy()
+        new_size = filter_p.pop('new_size')
+        request_spec['volume_properties']['size'] = new_size
+
+        request_spec['resource_properties'] = {
+            'availability_zone': volume_properties.get('availability_zone')}
+
+        weighed_backends = self._get_weighted_candidates(context, request_spec,
+                                                         filter_p)
+
+        if not weighed_backends:
+            raise exception.NoValidBackend(
+                reason=_("No backend can extend the volume."))
+
+        top_backend = self._choose_top_backend(weighed_backends, request_spec)
+        return top_backend.obj
+
     def find_backend_for_connector(self, context, connector, request_spec,
                                    filter_properties=None):
         key = 'connection_capabilities'

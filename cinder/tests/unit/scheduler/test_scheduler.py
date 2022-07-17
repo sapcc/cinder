@@ -199,6 +199,7 @@ class SchedulerManagerTestCase(test.TestCase):
             self.assertEqual('_fake_schedule_method', rs['operation'])
 
     @ddt.data('available', 'in-use')
+    @mock.patch('cinder.scheduler.driver.Scheduler.find_backend_for_extend')
     @mock.patch('cinder.scheduler.driver.Scheduler.backend_passes_filters')
     @mock.patch(
         'cinder.scheduler.host_manager.BackendState.consume_from_volume')
@@ -208,12 +209,14 @@ class SchedulerManagerTestCase(test.TestCase):
     def test_extend_volume_no_valid_host(self, status, mock_create,
                                          mock_rollback,
                                          mock_extend, mock_consume,
-                                         mock_backend_passes):
+                                         mock_backend_passes,
+                                         mock_find_extend):
         volume = fake_volume.fake_volume_obj(self.context,
                                              **{'size': 1,
                                                 'previous_status': status})
         no_valid_backend = exception.NoValidBackend(reason='')
         mock_backend_passes.side_effect = [no_valid_backend]
+        mock_find_extend.side_effect = [no_valid_backend]
 
         with mock.patch.object(self.manager,
                                '_set_volume_state_and_notify') as mock_notify:
@@ -223,6 +226,8 @@ class SchedulerManagerTestCase(test.TestCase):
                 'extend_volume', {'volume_state': {'status': status,
                                                    'previous_status': None}},
                 self.context, no_valid_backend, None)
+            mock_find_extend.assert_called_once_with(
+                self.context, None, {'new_size': 2})
             mock_rollback.assert_called_once_with(
                 self.context, 'fake_reservation', project_id=volume.project_id)
             mock_consume.assert_not_called()
@@ -232,6 +237,62 @@ class SchedulerManagerTestCase(test.TestCase):
                 message_field.Action.EXTEND_VOLUME,
                 resource_uuid=volume.id,
                 exception=no_valid_backend)
+
+    @ddt.data('available', 'in-use')
+    @mock.patch('cinder.volume.rpcapi.VolumeAPI.migrate_volume')
+    @mock.patch('cinder.scheduler.driver.Scheduler.find_backend_for_extend')
+    @mock.patch('cinder.scheduler.driver.Scheduler.backend_passes_filters')
+    def test_extend_volume_migrate_in_group(self,
+                                            status,
+                                            mock_backend_passes,
+                                            mock_find_extend,
+                                            mock_migrate):
+        volume = fake_volume.fake_volume_obj(self.context,
+                                             **{'size': 1,
+                                                'group_id': fake.GROUP_ID,
+                                                'previous_status': status})
+        no_valid_backend = exception.NoValidBackend(reason='')
+        mock_backend_passes.side_effect = [no_valid_backend]
+
+        with mock.patch.object(self.manager,
+                               '_set_volume_state_and_notify') as mock_notify:
+            self.manager.extend_volume(self.context, volume, 2,
+                                       'fake_reservation')
+            posargs = mock_notify.call_args[0]
+            self.assertIsInstance(posargs[3], exception.NoValidBackend)
+            mock_find_extend.assert_not_called()
+            mock_migrate.assert_not_called()
+
+    @ddt.data('available', 'in-use')
+    @mock.patch('cinder.volume.rpcapi.VolumeAPI.migrate_volume')
+    @mock.patch('cinder.scheduler.driver.Scheduler.find_backend_for_extend')
+    @mock.patch('cinder.scheduler.driver.Scheduler.backend_passes_filters')
+    @mock.patch('cinder.volume.rpcapi.VolumeAPI.extend_volume')
+    def test_extend_volume_no_valid_host_migrate(self,
+                                                 status,
+                                                 mock_extend,
+                                                 mock_backend_passes,
+                                                 mock_find_extend,
+                                                 mock_migrate):
+        volume = fake_volume.fake_volume_obj(self.context,
+                                             **{'size': 1,
+                                                'previous_status': status})
+        no_valid_backend = exception.NoValidBackend(reason='')
+        mock_backend_passes.side_effect = [no_valid_backend]
+        fake_backend = fake_scheduler.FakeBackendState('host1', {})
+        mock_find_extend.side_effect = [fake_backend]
+
+        self.manager.extend_volume(self.context, volume, 2,
+                                   'fake_reservation')
+        mock_find_extend.assert_called_once_with(
+            self.context, None, {'new_size': 2})
+
+        mock_extend.assert_not_called()
+
+        mock_migrate.assert_called_once_with(
+            self.context, volume, fake_backend,
+            force_host_copy=False, wait_for_completion=False,
+            extend_spec={'new_size': 2, 'reservations': 'fake_reservation'})
 
     @mock.patch('cinder.quota.QuotaEngine.expire')
     def test_clean_expired_reservation(self, mock_clean):
