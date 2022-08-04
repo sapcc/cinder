@@ -154,11 +154,6 @@ class Scheduler(object):
         raise NotImplementedError(_("Must implement"
                                     "find_backend_for_connector"))
 
-    def find_backend_for_extend(self, context, request_spec,
-                                filter_properties):
-        raise NotImplementedError(_(
-            "Must implement find_backend_for_extend"))
-
     def get_pools(self, context, filters):
         """Must override schedule method for scheduler to work."""
         raise NotImplementedError(_(

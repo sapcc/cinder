@@ -684,21 +684,3 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
         backend = sched.find_backend_for_connector(ctx, connector,
                                                    request_spec)
         self.assertEqual('host1', volume_utils.extract_host(backend.host))
-
-    @mock.patch('cinder.db.service_get_all')
-    def test_find_backend_for_extend(self, _mock_service_get_topic):
-        (sched, ctx) = \
-            self._backend_passes_filters_setup(_mock_service_get_topic)
-
-        request_spec = {'volume_id': fake.VOLUME_ID,
-                        'volume_properties':
-                            {'project_id': 1,
-                             'availability_zone': 'zone3',
-                             'size': 1}}
-        filter_properties = {'new_size': 512}
-
-        ret_host = sched.find_backend_for_extend(ctx, request_spec,
-                                                 filter_properties)
-
-        self.assertEqual('host5', volume_utils.extract_host(ret_host.host))
-        self.assertTrue(_mock_service_get_topic.called)

@@ -496,9 +496,24 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         scheduler_hints = \
             volume_utils.get_scheduler_hints_from_volume(volume)
         filter_properties.update(scheduler_hints)
+        filter_properties.pop('new_size')
 
-        backend_state = self.driver.find_backend_for_extend(
-            context, request_spec, filter_properties)
+        request_spec['volume_properties']['size'] = new_size
+
+        if volume['availability_zone']:
+            request_spec['resource_properties'] = {
+                'availability_zone': volume['availability_zone']}
+
+        # SAP
+        # We have to force the destination host to be on
+        # the same backend, or it might get migrated
+        # to another vcenter.
+        backend = volume_utils.extract_host(volume['host'])
+
+        backend_state = self.driver.backend_passes_filters(
+            context, backend, request_spec, filter_properties)
+
+        backend_state.consume_from_volume(volume)
 
         volume_rpcapi.VolumeAPI().migrate_volume(
             context, volume, backend_state,
