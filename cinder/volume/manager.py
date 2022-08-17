@@ -482,83 +482,8 @@ class VolumeManager(manager.CleanableManager,
         # Initialize backend capabilities list
         self.driver.init_capabilities()
 
-        # Zero stats
-        self.stats['pools'] = {}
-        self.stats.update({'allocated_capacity_gb': 0})
-
-        # Batch retrieval volumes and snapshots
-
-        num_vols, num_snaps, max_objs_num, req_range = None, None, None, [0]
-        req_limit = CONF.init_host_max_objects_retrieval
-        use_batch_objects_retrieval = req_limit > 0
-
-        if use_batch_objects_retrieval:
-            # Get total number of volumes
-            num_vols, __, __ = self._get_my_volumes_summary(ctxt)
-            # Get total number of snapshots
-            num_snaps, __ = self._get_my_snapshots_summary(ctxt)
-            # Calculate highest number of the objects (volumes or snapshots)
-            max_objs_num = max(num_vols, num_snaps)
-            # Make batch request loop counter
-            req_range = range(0, max_objs_num, req_limit)
-
-        volumes_to_migrate = volume_migration.VolumeMigrationList()
-
-        for req_offset in req_range:
-
-            # Retrieve 'req_limit' number of objects starting from
-            # 'req_offset' position
-            volumes, snapshots = None, None
-            if use_batch_objects_retrieval:
-                if req_offset < num_vols:
-                    volumes = self._get_my_volumes(ctxt,
-                                                   limit=req_limit,
-                                                   offset=req_offset)
-                else:
-                    volumes = objects.VolumeList()
-                if req_offset < num_snaps:
-                    snapshots = self._get_my_snapshots(ctxt,
-                                                       limit=req_limit,
-                                                       offset=req_offset)
-                else:
-                    snapshots = objects.SnapshotList()
-            # or retrieve all volumes and snapshots per single request
-            else:
-                volumes = self._get_my_volumes(ctxt)
-                snapshots = self._get_my_snapshots(ctxt)
-
-            self._sync_provider_info(ctxt, volumes, snapshots)
-            # FIXME volume count for exporting is wrong
-
-            try:
-                for volume in volumes:
-                    # Account for volumes that have been provisioned already
-                    if volume['host']:
-                        # calculate allocated capacity for driver
-                        self._count_allocated_capacity(ctxt, volume)
-
-                        try:
-                            if volume['status'] in ['in-use']:
-                                self.driver.ensure_export(ctxt, volume)
-                        except Exception:
-                            LOG.exception("Failed to re-export volume, "
-                                          "setting to ERROR.",
-                                          resource=volume)
-                            volume.conditional_update({'status': 'error'},
-                                                      {'status': 'in-use'})
-                # All other cleanups are processed by parent class -
-                # CleanableManager
-
-            except Exception:
-                LOG.exception("Error during re-export on driver init.",
-                              resource=volume)
-                return
-
-            if len(volumes):
-                volumes_to_migrate.append(volumes, ctxt)
-
-            del volumes
-            del snapshots
+        # collect and count all host volumes and snapshots
+        volumes_to_migrate = self._count_host_stats(ctxt, export_volumes=True)
 
         self.driver.set_throttle()
 
@@ -585,6 +510,93 @@ class VolumeManager(manager.CleanableManager,
         # Make sure to call CleanableManager to do the cleanup
         super(VolumeManager, self).init_host(added_to_cluster=added_to_cluster,
                                              **kwargs)
+
+    def recount_host_stats(self, context):
+        self._count_host_stats(context, export_volumes=False)
+
+    @coordination.synchronized('volume-stats')
+    def _count_host_stats(self, context, export_volumes=False):
+        """Recount the number of volumes and allocated capacity."""
+        ctxt = context.elevated()
+        LOG.info("Recounting Allocated capacity")
+
+        # Zero stats
+        self.stats['pools'] = {}
+        self.stats.update({'allocated_capacity_gb': 0})
+
+        # Batch retrieval volumes and snapshots
+        num_vols, num_snaps, max_objs_num, req_range = None, None, None, [0]
+        req_limit = CONF.init_host_max_objects_retrieval
+        use_batch_objects_retrieval = req_limit > 0
+
+        if use_batch_objects_retrieval:
+            # Get total number of volumes
+            num_vols, __, __ = self._get_my_volumes_summary(ctxt)
+            # Get total number of snapshots
+            num_snaps, __ = self._get_my_snapshots_summary(ctxt)
+            # Calculate highest number of the objects (volumes or snapshots)
+            max_objs_num = max(num_vols, num_snaps)
+            # Make batch request loop counter
+            req_range = range(0, max_objs_num, req_limit)
+
+        volumes_to_migrate = volume_migration.VolumeMigrationList()
+
+        for req_offset in req_range:
+            # Retrieve 'req_limit' number of objects starting from
+            # 'req_offset' position
+            volumes, snapshots = None, None
+            if use_batch_objects_retrieval:
+                if req_offset < num_vols:
+                    volumes = self._get_my_volumes(ctxt,
+                                                   limit=req_limit,
+                                                   offset=req_offset)
+                else:
+                    volumes = objects.VolumeList()
+                if req_offset < num_snaps:
+                    snapshots = self._get_my_snapshots(ctxt,
+                                                       limit=req_limit,
+                                                       offset=req_offset)
+                else:
+                    snapshots = objects.SnapshotList()
+
+            # or retrieve all volumes and snapshots per single request
+            else:
+                volumes = self._get_my_volumes(ctxt)
+                snapshots = self._get_my_snapshots(ctxt)
+
+            self._sync_provider_info(ctxt, volumes, snapshots)
+            # FIXME volume count for exporting is wrong
+
+            try:
+                for volume in volumes:
+                    # Account for volumes that have been provisioned already
+                    if volume['host']:
+                        # calculate allocated capacity for driver
+                        self._count_allocated_capacity(ctxt, volume)
+
+                    if export_volumes:
+                        try:
+                            if volume['status'] in ['in-use']:
+                                self.driver.ensure_export(ctxt, volume)
+                        except Exception:
+                            LOG.exception("Failed to re-export volume, "
+                                          "setting to ERROR.",
+                                          resource=volume)
+                            volume.conditional_update({'status': 'error'},
+                                                      {'status': 'in-use'})
+
+            except Exception:
+                LOG.exception("Error during re-export on driver init.",
+                              resource=volume)
+                return
+
+            if len(volumes):
+                volumes_to_migrate.append(volumes, ctxt)
+
+            del volumes
+            del snapshots
+
+        return volumes_to_migrate
 
     def init_host_with_rpc(self):
         LOG.info("Initializing RPC dependent components of volume "
@@ -2665,6 +2677,7 @@ class VolumeManager(manager.CleanableManager,
                 # queue it to be sent to the Schedulers.
                 self.update_service_capabilities(volume_stats)
 
+    @coordination.synchronized('volume-stats')
     def _append_volume_stats(self, vol_stats):
         pools = vol_stats.get('pools', None)
         if pools:
