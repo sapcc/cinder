@@ -20,6 +20,8 @@ Classes and utility methods for datastore selection.
 from collections.abc import Iterable
 import random
 
+from cachetools import cached
+from cachetools import TTLCache
 from oslo_log import log as logging
 from oslo_vmware import pbm
 from oslo_vmware import vim_util
@@ -66,7 +68,9 @@ class DatastoreSelector(object):
         self._profile_id_cache = {}
         self._random_ds = random_ds
         self._random_ds_range = random_ds_range
+        self._host_props_cache = {}
 
+    @cached(cache=TTLCache(maxsize=64, ttl=300))
     @coordination.synchronized('vmware-datastore-profile-{profile_name}')
     def get_profile_id(self, profile_name):
         """Get vCenter profile ID for the given profile name.
@@ -226,6 +230,7 @@ class DatastoreSelector(object):
                 props = {prop.name: prop.val for prop in prop_set}
         return props
 
+    @cached(cache=TTLCache(maxsize=128, ttl=30))
     def _get_datastores(self):
         vim = self._session.vim
         datastores = {}
@@ -247,6 +252,7 @@ class DatastoreSelector(object):
 
         return datastores
 
+    @cached(cache=TTLCache(maxsize=128, ttl=300))
     def select_datastore_by_name(self, name):
         """Find a datastore by it's name.
 
@@ -282,6 +288,7 @@ class DatastoreSelector(object):
         resource_pool = self._get_resource_pool(parent)
         return (host, resource_pool, summary)
 
+    @cached(cache=TTLCache(maxsize=128, ttl=300))
     def _get_host_properties(self, host_ref):
         retrieve_result = self._session.invoke_api(vim_util,
                                                    'get_object_properties',
@@ -292,6 +299,7 @@ class DatastoreSelector(object):
         if retrieve_result:
             return self._get_object_properties(retrieve_result[0])
 
+    @cached(cache=TTLCache(maxsize=128, ttl=300))
     def _get_resource_pool(self, cluster_ref):
         return self._session.invoke_api(vim_util,
                                         'get_object_property',

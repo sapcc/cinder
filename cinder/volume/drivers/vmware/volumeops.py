@@ -19,6 +19,8 @@ Implements operations on volumes residing on VMware datastores.
 
 import json
 
+from cachetools import cached
+from cachetools import TTLCache
 from oslo_log import log as logging
 from oslo_utils import units
 from oslo_vmware import exceptions
@@ -389,6 +391,7 @@ class VMwareVolumeOps(object):
 
     # TODO(kartikaditya) Keep the methods not specific to volume in
     # a different file
+    @cached(cache=TTLCache(maxsize=128, ttl=300))
     def get_host(self, instance):
         """Get host under which instance is present.
 
@@ -399,6 +402,7 @@ class VMwareVolumeOps(object):
                                         self._session.vim, instance,
                                         'runtime.host')
 
+    @cached(cache=TTLCache(maxsize=128, ttl=300))
     def get_hosts(self):
         """Get all host from the inventory.
 
@@ -477,6 +481,7 @@ class VMwareVolumeOps(object):
                                                'inMaintenance']
         return False
 
+    @cached(cache=TTLCache(maxsize=128, ttl=300))
     def _get_parent(self, child, parent_type):
         """Get immediate parent of given type via 'parent' property.
 
@@ -2000,6 +2005,7 @@ class VMwareVolumeOps(object):
 
         return host_refs
 
+    @cached(cache=TTLCache(maxsize=256, ttl=300))
     def get_cluster_custom_attributes(self, cluster):
         retrieve_fields = self._session.invoke_api(vim_util,
                                                    'get_object_property',
