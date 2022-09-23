@@ -2517,7 +2517,7 @@ class VolumeManager(manager.CleanableManager,
                 # needs to account for the space consumed.
                 LOG.debug("Update remote allocated_capacity_gb for "
                           "host %(host)s",
-                          {'host': host},
+                          {'host': host['host']},
                           resource=volume)
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
                                                        host=host['host'])
@@ -4166,7 +4166,7 @@ class VolumeManager(manager.CleanableManager,
                                                 snapshots)
 
     @utils.trace
-    def update_migrated_volume_capacity(self, ctxt, volume, host=None,
+    def update_migrated_volume_capacity(self, ctxt, volume, host,
                                         decrement=False):
         """Update allocated_capacity_gb for the migrated volume host."""
         self._update_allocated_capacity(volume, host=host, decrement=decrement)
