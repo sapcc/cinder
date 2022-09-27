@@ -389,6 +389,7 @@ class PoolState(BackendState):
                     capability, CONF.max_over_subscription_ratio))
 
             self.multiattach = capability.get('multiattach', False)
+            self.pool_state = capability.get('pool_state', 'up')
 
     def update_pools(self, capability):
         # Do nothing, since we don't have pools within pool, yet
