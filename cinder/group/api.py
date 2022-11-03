@@ -245,7 +245,10 @@ class API(base.Base):
         # 'volume_properties' as scheduler's filter logic are all designed
         # based on this attribute.
         kwargs = {'group_id': group.id,
-                  'volume_properties': objects.VolumeProperties(size=size)}
+                  'volume_properties': objects.VolumeProperties(
+                      size=size,
+                      project_id=group.project_id
+                  )}
 
         if not group.host or not self.scheduler_rpcapi.validate_host_capacity(
                 context, group.host, objects.RequestSpec(**kwargs)):
