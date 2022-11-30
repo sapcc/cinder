@@ -42,9 +42,10 @@ class ViewBuilder(common.ViewBuilder):
             # SAP we don't show the backend here because it's
             # custom for our deployment with independent snaps
             # for the vmware vmdk driver
-            for key in metadata:
-                if key.startswith(common.SAP_HIDDEN_METADATA_KEY):
-                    del metadata[key]
+            del_key = common.SAP_HIDDEN_METADATA_KEY
+            delete_keys = [key for key in metadata if key.startswith(del_key)]
+            for key in delete_keys:
+                del metadata[key]
         else:
             metadata = {}
 
