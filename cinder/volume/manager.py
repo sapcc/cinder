@@ -57,6 +57,7 @@ profiler = importutils.try_import('osprofiler.profiler')
 import requests
 from taskflow import exceptions as tfe
 
+from cinder import action_track
 from cinder.backup import rpcapi as backup_rpcapi
 from cinder.common import constants
 from cinder import compute
@@ -789,6 +790,7 @@ class VolumeManager(manager.CleanableManager,
                     LOG.exception("Failed to set scheduler hints.",
                                   resource=meta_vol)
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_CREATE)
     @objects.Volume.set_workers
     def create_volume(self, context, volume, request_spec=None,
                       filter_properties=None,
@@ -904,7 +906,10 @@ class VolumeManager(manager.CleanableManager,
         # other volumes.
         self._propagate_volume_scheduler_hints(context, volume)
 
-        LOG.info("Created volume successfully.", resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_CREATE,
+            volume, "Created Volume successfully"
+        )
         return volume.id
 
     def _driver_shares_targets(self):
@@ -976,6 +981,7 @@ class VolumeManager(manager.CleanableManager,
 
     @clean_volume_locks
     @coordination.synchronized('{volume.id}-delete_volume')
+    @action_track.track_decorator(action_track.ACTION_VOLUME_DELETE)
     @objects.Volume.set_workers
     def delete_volume(self,
                       context: context.RequestContext,
@@ -1003,7 +1009,11 @@ class VolumeManager(manager.CleanableManager,
         except exception.VolumeNotFound:
             # NOTE(thingee): It could be possible for a volume to
             # be deleted when resuming deletes from init_host().
-            LOG.debug("Attempted delete of non-existent volume: %s", volume.id)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DELETE,
+                volume,
+                "Attempted delete of non-existent volume: %s" % volume.id,
+            )
             return None
 
         if context.project_id != volume.project_id:
@@ -1063,8 +1073,10 @@ class VolumeManager(manager.CleanableManager,
             else:
                 self.driver.delete_volume(volume)
         except exception.VolumeIsBusy:
-            LOG.error("Unable to delete busy volume.",
-                      resource=volume)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DELETE,
+                volume, "Unable to delete busy volume.", loglevel=logging.ERROR
+            )
             # If this is a destination volume, we have to clear the database
             # record to avoid user confusion.
             self._clear_db(volume, 'available')
@@ -1115,7 +1127,10 @@ class VolumeManager(manager.CleanableManager,
         msg = "Deleted volume successfully."
         if unmanage_only:
             msg = "Unmanaged volume successfully."
-        LOG.info(msg, resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DELETE,
+            volume, msg
+        )
         return None
 
     def _clear_db(self, volume_ref, status) -> None:
@@ -1289,6 +1304,7 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_volume_usage(context, volume, "revert.end")
         self._notify_about_snapshot_usage(context, snapshot, "revert.end")
 
+    @action_track.track_decorator(action_track.ACTION_SNAPSHOT_CREATE)
     @objects.Snapshot.set_workers
     def create_snapshot(self, context, snapshot) -> ovo_fields.UUIDField:
         """Creates and exports the snapshot."""
@@ -1339,6 +1355,11 @@ class VolumeManager(manager.CleanableManager,
                               resource=snapshot)
                 snapshot.status = fields.SnapshotStatus.ERROR
                 snapshot.save()
+                action_track.track(
+                    context, action_track.ACTION_SNAPSHOT_CREATE,
+                    snapshot, "Failed updating snapshot metadata",
+                    loglevel=logging.ERROR
+                )
                 self.message_api.create(
                     context,
                     action=message_field.Action.SNAPSHOT_CREATE,
@@ -1358,12 +1379,15 @@ class VolumeManager(manager.CleanableManager,
         snapshot.save()
 
         self._notify_about_snapshot_usage(context, snapshot, "create.end")
-        LOG.info("Create snapshot completed successfully",
-                 resource=snapshot)
+        action_track.track(
+            context, action_track.ACTION_SNAPSHOT_CREATE,
+            snapshot, "Create snapshot completed successfully",
+        )
         return snapshot.id
 
     @clean_snapshot_locks
     @coordination.synchronized('{snapshot.id}-delete_snapshot')
+    @action_track.track_decorator(action_track.ACTION_SNAPSHOT_DELETE)
     def delete_snapshot(self,
                         context: context.RequestContext,
                         snapshot: objects.Snapshot,
@@ -1389,8 +1413,11 @@ class VolumeManager(manager.CleanableManager,
             else:
                 self.driver.delete_snapshot(snapshot)
         except exception.SnapshotIsBusy as busy_error:
-            LOG.error("Delete snapshot failed, due to snapshot busy.",
-                      resource=snapshot)
+            action_track.track(
+                context, action_track.ACTION_SNAPSHOT_DELETE,
+                snapshot, "Delete snapshot failed, due to snapshot busy.",
+                loglevel=logging.ERROR
+            )
             snapshot.status = fields.SnapshotStatus.AVAILABLE
             snapshot.save()
             self.message_api.create(
@@ -1445,10 +1472,14 @@ class VolumeManager(manager.CleanableManager,
         msg = "Delete snapshot completed successfully."
         if unmanage_only:
             msg = "Unmanage snapshot completed successfully."
-        LOG.info(msg, resource=snapshot)
+        action_track.track(
+            context, action_track.ACTION_SNAPSHOT_DELETE,
+            snapshot, msg,
+        )
         return None
 
     @coordination.synchronized('{volume_id}')
+    @action_track.track_decorator(action_track.ACTION_VOLUME_ATTACH)
     def attach_volume(self, context, volume_id, instance_uuid, host_name,
                       mountpoint, mode,
                       volume=None) -> objects.VolumeAttachment:
@@ -1509,12 +1540,15 @@ class VolumeManager(manager.CleanableManager,
                                                         volume_id=volume.id)
             volume_utils.require_driver_initialized(self.driver)
 
-            LOG.info('Attaching volume %(volume_id)s to instance '
-                     '%(instance)s at mountpoint %(mount)s on host '
-                     '%(host)s.',
-                     {'volume_id': volume_id, 'instance': instance_uuid,
-                      'mount': mountpoint, 'host': host_name_sanitized},
-                     resource=volume)
+            msg = ('Attaching volume %(volume_id)s to instance '
+                   '%(instance)s at mountpoint %(mount)s on host '
+                   '%(host)s.' %
+                   {'volume_id': volume_id, 'instance': instance_uuid,
+                    'mount': mountpoint, 'host': host_name_sanitized})
+            action_track.track(
+                context, action_track.ACTION_VOLUME_ATTACH,
+                volume, msg
+            )
         except Exception as excep:
             with excutils.save_and_reraise_exception():
                 self.message_api.create(
@@ -1533,11 +1567,14 @@ class VolumeManager(manager.CleanableManager,
             mode)
 
         self._notify_about_volume_usage(context, volume, "attach.end")
-        LOG.info("Attach volume completed successfully.",
-                 resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_ATTACH,
+            volume, "Attach volume completed successfully.",
+        )
         return attachment
 
     @coordination.synchronized('{volume_id}-{f_name}')
+    @action_track.track_decorator(action_track.ACTION_VOLUME_DETACH)
     def detach_volume(self, context, volume_id, attachment_id=None,
                       volume=None) -> None:
         """Updates db to show volume is detached."""
@@ -1801,6 +1838,7 @@ class VolumeManager(manager.CleanableManager,
                                        False)
         return True
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_COPY_TO_IMAGE)
     def copy_volume_to_image(self,
                              context: context.RequestContext,
                              volume_id: str,
@@ -1943,6 +1981,7 @@ class VolumeManager(manager.CleanableManager,
 
         return conn_info
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_ATTACH)
     def initialize_connection(self,
                               context,
                               volume: objects.Volume,
@@ -2105,6 +2144,7 @@ class VolumeManager(manager.CleanableManager,
                  resource=snapshot)
         return conn
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_DETACH)
     def terminate_connection(self,
                              context,
                              volume_id: ovo_fields.UUIDField,
@@ -2693,6 +2733,7 @@ class VolumeManager(manager.CleanableManager,
         extra_specs.pop('RESKEY:availability_zones', None)
         return not extra_specs
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_MIGRATE)
     def migrate_volume(self,
                        ctxt: context.RequestContext,
                        volume,
@@ -2736,6 +2777,10 @@ class VolumeManager(manager.CleanableManager,
                           resource=volume)
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
                                                        host=host['host'])
+                action_track.track(
+                    context, action_track.ACTION_VOLUME_MIGRATE,
+                    volume, "calling driver migrate_volume"
+                )
                 moved, model_update = self.driver.migrate_volume(ctxt,
                                                                  volume,
                                                                  host)
@@ -2784,6 +2829,10 @@ class VolumeManager(manager.CleanableManager,
                           resource=volume)
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
                                                        host=host['host'])
+                action_track.track(
+                    context, action_track.ACTION_VOLUME_MIGRATE,
+                    volume, "Call Generic migrate volume"
+                )
                 self._migrate_volume_generic(ctxt, volume, host, new_type_id)
                 self._update_allocated_capacity(volume, decrement=True,
                                                 host=original_host)
@@ -2796,13 +2845,20 @@ class VolumeManager(manager.CleanableManager,
                                                        host=host['host'],
                                                        decrement=True)
                 with excutils.save_and_reraise_exception():
+                    action_track.track(
+                        context, action_track.ACTION_VOLUME_MIGRATE,
+                        volume, "Failed generic migration",
+                        loglevel=logging.ERROR
+                    )
                     updates = {'migration_status': 'error'}
                     if status_update:
                         updates.update(status_update)
                     volume.update(updates)
                     volume.save()
-        LOG.info("Migrate volume completed successfully.",
-                 resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_MIGRATE,
+            volume, "Migrate volume completed successfully."
+        )
 
     def _report_driver_status(self, context: context.RequestContext) -> None:
         # It's possible during live db migration that the self.service_uuid
@@ -3099,6 +3155,7 @@ class VolumeManager(manager.CleanableManager,
                     context, snapshot, event_suffix,
                     extra_usage_info=extra_usage_info, host=self.host)
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_EXTEND)
     def extend_volume(self,
                       context: context.RequestContext,
                       volume: objects.Volume,
@@ -3199,6 +3256,7 @@ class VolumeManager(manager.CleanableManager,
                  volume_utils.hosts_are_equivalent(self.driver.cluster_name,
                                                    cluster_name)))
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_RETYPE)
     def retype(self,
                context: context.RequestContext,
                volume: objects.Volume,
@@ -3502,6 +3560,7 @@ class VolumeManager(manager.CleanableManager,
                               "to driver error.")
         return driver_entries
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_CREATE)
     def create_group(self,
                      context: context.RequestContext,
                      group) -> objects.Group:
@@ -3948,6 +4007,7 @@ class VolumeManager(manager.CleanableManager,
                         resource=vol)
             self.stats['pools'][pool]['allocated_capacity_gb'] = 0
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_DELETE)
     def delete_group(self,
                      context: context.RequestContext,
                      group: objects.Group) -> None:
@@ -4215,6 +4275,7 @@ class VolumeManager(manager.CleanableManager,
             volumes_ref.append(add_vol_ref)
         return volumes_ref
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_UPDATE)
     def update_group(self,
                      context: context.RequestContext,
                      group,
@@ -4318,6 +4379,7 @@ class VolumeManager(manager.CleanableManager,
                  resource={'type': 'group',
                            'id': group.id})
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_SNAPSHOT_CREATE)
     def create_group_snapshot(
             self,
             context: context.RequestContext,
@@ -4493,6 +4555,7 @@ class VolumeManager(manager.CleanableManager,
 
         return model_update, snapshot_model_updates
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_SNAPSHOT_DELETE)
     def delete_group_snapshot(self,
                               context: context.RequestContext,
                               group_snapshot: objects.GroupSnapshot) -> None:
@@ -5046,19 +5109,33 @@ class VolumeManager(manager.CleanableManager,
         try:
             self.driver.validate_connector(connector)
         except exception.InvalidConnectorException as err:
+            action_track.track(
+                context, action_track.ACTION_VOLUME_ATTACH,
+                volume, str(err), loglevel=logging.ERROR
+            )
             raise exception.InvalidInput(reason=str(err))
         except Exception as err:
             err_msg = (_("Validate volume connection failed "
                          "(error: %(err)s).") % {'err': err})
-            LOG.error(err_msg, resource=volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
 
         try:
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, "call create_export"
+            )
             model_update = self.driver.create_export(ctxt.elevated(),
                                                      volume, connector)
         except exception.CinderException as ex:
             err_msg = (_("Create export for volume failed (%s).") % ex.msg)
-            LOG.exception(err_msg, resource=volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
 
         try:
@@ -5067,18 +5144,34 @@ class VolumeManager(manager.CleanableManager,
                 volume.save()
         except exception.CinderException as ex:
             LOG.exception("Model update failed.", resource=volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, f"Model update failed {str(ex)}",
+                loglevel=logging.ERROR
+            )
             raise exception.ExportFailure(reason=str(ex))
 
         try:
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, "call driver initialize_connection"
+            )
             conn_info = self.driver.initialize_connection(volume, connector)
         except exception.ConnectorRejected:
             with excutils.save_and_reraise_exception():
-                LOG.info("The connector was rejected by the volume driver.")
+                action_track.track(
+                    ctxt, action_track.ACTION_VOLUME_ATTACH,
+                    volume, "ConnectorRejected.  Volume needs to be migrated"
+                )
         except Exception as err:
             err_msg = (_("Driver initialize connection failed "
                          "(error: %(err)s).") % {'err': err})
             LOG.exception(err_msg, resource=volume)
             self.driver.remove_export(ctxt.elevated(), volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
         conn_info = self._parse_connection_options(ctxt, volume, conn_info)
 
@@ -5097,9 +5190,13 @@ class VolumeManager(manager.CleanableManager,
         # Append the enforce_multipath value if the connector has it
         connection_info['enforce_multipath'] = connector.get(
             'enforce_multipath', False)
-        LOG.debug("Connection info returned from driver %(connection_info)s",
-                  {'connection_info':
+        msg = ("Connection info returned from driver %(connection_info)s" %
+               {'connection_info':
                    strutils.mask_dict_password(connection_info)})
+        action_track.track(
+            ctxt, action_track.ACTION_VOLUME_ATTACH,
+            volume, msg
+        )
         return connection_info
 
     def attachment_update(self,
@@ -5123,6 +5220,10 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_volume_usage(context, vref, 'attach.start')
         attachment_ref = objects.VolumeAttachment.get_by_id(context,
                                                             attachment_id)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_ATTACH,
+            vref, "called"
+        )
 
         # Check to see if a mode parameter was set during attachment-create;
         # this seems kinda wonky, but it's how we're keeping back compatability
@@ -5145,6 +5246,11 @@ class VolumeManager(manager.CleanableManager,
                 context, message_field.Action.UPDATE_ATTACHMENT,
                 resource_uuid=vref.id,
                 exception=err)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_ATTACH,
+                vref, f"driver attach_volume failed {str(err)}",
+                loglevel=logging.ERROR
+            )
             with excutils.save_and_reraise_exception():
                 self.db.volume_attachment_update(
                     context, attachment_ref.id,
@@ -5160,8 +5266,10 @@ class VolumeManager(manager.CleanableManager,
                                 False)
         vref.refresh()
         attachment_ref.refresh()
-        LOG.info("attachment_update completed successfully.",
-                 resource=vref)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_ATTACH,
+            vref, "attachment_update completed_successfully"
+        )
         return connection_info
 
     def _connection_terminate(self,
@@ -5174,6 +5282,10 @@ class VolumeManager(manager.CleanableManager,
         Exits early if the attachment does not have a connector and returns
         None to indicate shared connections are irrelevant.
         """
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DETACH,
+            volume, "called"
+        )
         volume_utils.require_driver_initialized(self.driver)
         connector = attachment.connector
         if not connector and not force:
@@ -5183,11 +5295,19 @@ class VolumeManager(manager.CleanableManager,
             # so if we don't have a connector we can't terminate a connection
             # that was never actually made to the storage backend, so just
             # log a message and exit.
-            LOG.debug('No connector for attachment %s; skipping storage '
-                      'backend terminate_connection call.', attachment.id)
+            msg = ('No connector for attachment %s; skipping storage '
+                   'backend terminate_connection call.' % attachment.id)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                volume, msg
+            )
             # None indicates we don't know and don't care.
             return None
         try:
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                volume, "Call driver.terminate_connection"
+            )
             shared_connections = self.driver.terminate_connection(volume,
                                                                   connector,
                                                                   force=force)
@@ -5198,9 +5318,16 @@ class VolumeManager(manager.CleanableManager,
             err_msg = (_('Terminate volume connection failed: %(err)s')
                        % {'err': err})
             LOG.exception(err_msg, resource=volume)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
-        LOG.info("Terminate volume connection completed successfully.",
-                 resource=volume)
+
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DETACH,
+            volume, "Terminate volume connection completed successfully."
+        )
         # NOTE(jdg): Return True/False if there are other outstanding
         # attachments that share this connection.  If True should signify
         # caller to preserve the actual host connection (work should be
@@ -5220,6 +5347,10 @@ class VolumeManager(manager.CleanableManager,
         param: attachment_id: Attachment id to remove
         param: vref: Volume object associated with the attachment
         """
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DETACH,
+            vref, "called"
+        )
         volume_utils.require_driver_initialized(self.driver)
         attachment = objects.VolumeAttachment.get_by_id(context, attachment_id)
 
@@ -5228,16 +5359,21 @@ class VolumeManager(manager.CleanableManager,
                                                            vref,
                                                            attachment)
         try:
-            LOG.debug('Deleting attachment %(attachment_id)s.',
-                      {'attachment_id': attachment.id},
-                      resource=vref)
+            msg = ('Deleting attachment %(attachment_id)s.' %
+                   {'attachment_id': attachment.id})
+            action_track.track(context, action_track.ACTION_VOLUME_DETACH,
+                               vref, msg)
             if has_shared_connection is not None and not has_shared_connection:
                 self.driver.remove_export(context.elevated(), vref)
-        except Exception as exc:
+        except Exception:
             # Failures on detach_volume and remove_export are not considered
             # failures in terms of detaching the volume.
-            LOG.warning('Failed to detach volume on the backend, ignoring '
-                        'failure %s', exc)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                vref,
+                'Failed during driver.remove_export',
+                loglevel=logging.ERROR
+            )
 
     # Replication group API (Tiramisu)
     def enable_replication(self,
