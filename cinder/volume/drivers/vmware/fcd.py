@@ -30,7 +30,6 @@ from oslo_vmware import vim_util
 from cinder import exception
 from cinder.i18n import _
 from cinder import interface
-from cinder.volume.drivers.vmware import datastore as hub
 from cinder.volume.drivers.vmware import vmdk
 from cinder.volume.drivers.vmware import volumeops as vops
 from cinder.volume import volume_utils
@@ -82,25 +81,12 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         return stats
 
     def _select_ds_fcd(self, volume):
-        req = {}
-        req[hub.DatastoreSelector.SIZE_BYTES] = volume.size * units.Gi
-
-        if self._storage_policy_enabled:
-            req[hub.DatastoreSelector.PROFILE_NAME] = (
-                self._get_storage_profile(volume))
-        (_host_ref, _resource_pool, summary) = self._select_datastore(req)
+        (host, rp, folder, summary) = self._select_ds_for_volume(volume)
         return summary.datastore
 
-    def _get_temp_image_folder(self, size_bytes, preallocated=False):
-        req = {}
-        req[hub.DatastoreSelector.SIZE_BYTES] = size_bytes
-
-        if preallocated:
-            req[hub.DatastoreSelector.HARD_AFFINITY_DS_TYPE] = (
-                hub.DatastoreType.get_all_types() -
-                {hub.DatastoreType.VSAN, hub.DatastoreType.VVOL})
-
-        (host_ref, _resource_pool, summary) = self._select_datastore(req)
+    def _get_temp_image_folder(self, volume):
+        (host_ref, _resource_pool,
+            folder, summary) = self._select_ds_for_volume(volume)
 
         folder_path = vmdk.TMP_IMAGES_DATASTORE_FOLDER_PATH
         dc_ref = self.volumeops.get_dc(host_ref)
@@ -200,8 +186,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         vmdk.ImageDiskType.validate(disk_type)
 
         size_bytes = metadata['size']
-        dc_ref, summary, folder_path = self._get_temp_image_folder(
-            volume.size * units.Gi)
+        dc_ref, summary, folder_path = self._get_temp_image_folder(volume)
         disk_name = volume.id
         if disk_type in [vmdk.ImageDiskType.SPARSE,
                          vmdk.ImageDiskType.STREAM_OPTIMIZED]:
