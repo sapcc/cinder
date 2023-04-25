@@ -2195,11 +2195,13 @@ class VolumeManager(manager.CleanableManager,
     def _connect_device(self, conn: dict) -> dict:
         use_multipath = self.configuration.use_multipath_for_image_xfer
         device_scan_attempts = self.configuration.num_volume_device_scan_tries
+        use_qemu = self.configuration.use_qemu_for_image_xfer
         protocol = conn['driver_volume_type']
         connector = volume_utils.brick_get_connector(
             protocol,
             use_multipath=use_multipath,
             device_scan_attempts=device_scan_attempts,
+            use_qemu=use_qemu,
             conn=conn)
         vol_handle = connector.connect_volume(conn['data'])
 
