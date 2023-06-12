@@ -327,6 +327,13 @@ image_opts = [
                      'This parameter needs to be configured for each backend '
                      'section or in [backend_defaults] section as a common '
                      'configuration for all backends.'),
+    cfg.BoolOpt('use_qemu_for_image_xfer',
+                default=False,
+                help='If this is set to True, it will try to use qemu\'s '
+                     'internal block driver.'
+                     'This parameter needs to be configured for each backend '
+                     'section or in [backend_defaults] section as a common '
+                     'configuration for all backends.'),
 ]
 fqdn_opts = [
     cfg.BoolOpt('unique_fqdn_network',
@@ -1132,11 +1139,13 @@ class BaseVD(object, metaclass=abc.ABCMeta):
         # Use Brick's code to do attach/detach
         use_multipath = self.configuration.use_multipath_for_image_xfer
         device_scan_attempts = self.configuration.num_volume_device_scan_tries
+        use_qemu = self.configuration.use_qemu_for_image_xfer
         protocol = conn['driver_volume_type']
         connector = volume_utils.brick_get_connector(
             protocol,
             use_multipath=use_multipath,
             device_scan_attempts=device_scan_attempts,
+            use_qemu=use_qemu,
             conn=conn)
         device = connector.connect_volume(conn['data'])
         host_device = device['path']

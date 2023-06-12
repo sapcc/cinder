@@ -96,6 +96,7 @@ backup_manager_opts = [
 CONF = cfg.CONF
 CONF.register_opts(backup_manager_opts)
 CONF.import_opt('use_multipath_for_image_xfer', 'cinder.volume.driver')
+CONF.import_opt('use_qemu_for_image_xfer', 'cinder.volume.driver')
 CONF.import_opt('num_volume_device_scan_tries', 'cinder.volume.driver')
 QUOTAS = quota.QUOTAS
 MAPPING = {
@@ -1193,10 +1194,12 @@ class BackupManager(manager.SchedulerDependentManager):
         use_multipath = CONF.use_multipath_for_image_xfer
         device_scan_attempts = CONF.num_volume_device_scan_tries
         protocol = conn['driver_volume_type']
+        use_qemu = CONF.use_qemu_for_image_xfer
         connector = volume_utils.brick_get_connector(
             protocol,
             use_multipath=use_multipath,
             device_scan_attempts=device_scan_attempts,
+            use_qemu=use_qemu,
             conn=conn,
             expect_raw_disk=True)
         vol_handle = connector.connect_volume(conn['data'])

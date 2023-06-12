@@ -30,6 +30,7 @@ import math
 import os
 import re
 import tempfile
+import time
 
 import cryptography
 from cursive import exception as cursive_exception
@@ -344,19 +345,26 @@ def _convert_image(prefix, source, dest, out_format,
 
     # If there is not enough space on the conversion partition, include
     # the partitions's name in the error message.
-    try:
-        utils.execute(*cmd, run_as_root=run_as_root)
-    except processutils.ProcessExecutionError as ex:
-        if "No space left" in ex.stderr and CONF.image_conversion_dir in dest:
-            conversion_dir = CONF.image_conversion_dir
-            while not os.path.ismount(conversion_dir):
-                conversion_dir = os.path.dirname(conversion_dir)
+    max_tries = 3
+    for attempt in range(max_tries):
+        try:
+            utils.execute(*cmd, run_as_root=run_as_root)
+        except processutils.ProcessExecutionError as ex:
+            if "Could not create image" in ex.stderr and attempt < max_tries:
+                LOG.info("Retry %d of %d: %s", attempt, max_tries, ex)
+                time.sleep(3)
+                continue
 
-            message = _("Insufficient free space on %(location)s for image "
-                        "conversion.") % {'location': conversion_dir}
-            LOG.error(message)
+            if ("No space left" in ex.stderr
+                    and CONF.image_conversion_dir in dest):
+                conversion_dir = CONF.image_conversion_dir
+                while not os.path.ismount(conversion_dir):
+                    conversion_dir = os.path.dirname(conversion_dir)
 
-        raise
+                message = _("Insufficient free space on %(location)s for image"
+                            " conversion.") % {'location': conversion_dir}
+                LOG.error(message)
+            raise
     duration = timeutils.delta_seconds(start_time, timeutils.utcnow())
 
     # NOTE(jdg): use a default of 1, mostly for unit test, but in
