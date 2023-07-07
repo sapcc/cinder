@@ -39,8 +39,11 @@ from oslo_vmware import image_transfer
 from oslo_vmware import pbm
 from oslo_vmware import vim_util
 
+from cinder import compute
 from cinder import context
 from cinder import exception
+# This is needed to register the SAP config options
+from cinder.common import sap # noqa
 from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
@@ -356,6 +359,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # PBM is enabled only for vCenter versions 5.5 and above
     PBM_ENABLED_VC_VERSION = '5.5'
 
+    # flag this driver as supporting independent snapshots
+    has_independent_snapshots = True
+
     def __init__(self, *args, **kwargs):
         super(VMwareVcVmdkDriver, self).__init__(*args, **kwargs)
 
@@ -387,6 +393,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     @property
     def ds_sel(self):
         return self._ds_sel
+
+    def _driver_name(self):
+        return LOCATION_DRIVER_NAME
 
     @property
     def _vcenter_instance_uuid(self):
@@ -545,7 +554,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             thick_provisioning_on = True
 
         location_info = '%(driver_name)s:%(vcenter)s' % {
-            'driver_name': LOCATION_DRIVER_NAME,
+            'driver_name': self._driver_name(),
             'vcenter': self.session.vim.service_content.about.instanceUuid}
         reserved_percentage = self.configuration.reserved_percentage
         max_over_subscription_ratio = self.configuration.safe_get(
@@ -558,13 +567,19 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             snapshot_type = 'clone'
 
         backend_state = 'up'
+        if CONF.sap_allow_independent_snapshots:
+            independent_snapshot = 'true' if self.has_independent_snapshots \
+                else 'false'
+        else:
+            independent_snapshot = 'false'
         data = {'volume_backend_name': backend_name,
                 'vendor_name': 'VMware',
                 'driver_version': self.VERSION,
                 'storage_protocol': 'vmdk',
                 'location_info': location_info,
                 'backend_state': backend_state,
-                'snapshot_type': snapshot_type
+                'snapshot_type': snapshot_type,
+                'has_independent_snapshots': independent_snapshot,
                 }
 
         result, datastores = self._collect_backend_stats()
@@ -634,6 +649,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         'pool_state': pool_state,
                         'pool_down_reason': pool_down_reason,
                         'custom_attributes': custom_attributes,
+                        'independent_snapshots': independent_snapshot,
                         }
 
                 pools.append(pool)
@@ -1036,6 +1052,22 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             }
         }
 
+    def _get_connector_config(self):
+        config = self.configuration
+        return {
+            'vmware_host_ip': config.vmware_host_ip,
+            'vmware_host_port': config.vmware_host_port,
+            'vmware_host_username': config.vmware_host_username,
+            'vmware_host_password': config.vmware_host_password,
+            'vmware_api_retry_count': config.vmware_api_retry_count,
+            'vmware_task_poll_interval': config.vmware_task_poll_interval,
+            'vmware_ca_file': config.vmware_ca_file,
+            'vmware_insecure': config.vmware_insecure,
+            'vmware_tmp_dir': config.vmware_tmp_dir,
+            'vmware_image_transfer_timeout_secs':
+                config.vmware_image_transfer_timeout_secs,
+        }
+
     def _get_connection_info(self, volume, backing, connector):
         connection_info = {'driver_volume_type': 'vmdk'}
         connection_info['data'] = {
@@ -1057,21 +1089,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             connection_info['data']['datacenter'] = \
                 vim_util.get_moref_value(datacenter)
 
-            config = self.configuration
-            vmdk_connector_config = {
-                'vmware_host_ip': config.vmware_host_ip,
-                'vmware_host_port': config.vmware_host_port,
-                'vmware_host_username': config.vmware_host_username,
-                'vmware_host_password': config.vmware_host_password,
-                'vmware_api_retry_count': config.vmware_api_retry_count,
-                'vmware_task_poll_interval': config.vmware_task_poll_interval,
-                'vmware_ca_file': config.vmware_ca_file,
-                'vmware_insecure': config.vmware_insecure,
-                'vmware_tmp_dir': config.vmware_tmp_dir,
-                'vmware_image_transfer_timeout_secs':
-                    config.vmware_image_transfer_timeout_secs,
-            }
-            connection_info['data']['config'] = vmdk_connector_config
+            connection_info['data']['config'] = self._get_connector_config()
 
             # instruct os-brick to use ImportVApp and HttpNfc upload for
             # disconnecting the volume
@@ -1471,6 +1489,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             LOG.warning("Error occurred while deleting temporary disk: %s.",
                         descriptor_ds_file_path, exc_info=True)
 
+    @volume_utils.trace
     def _copy_temp_virtual_disk(self, src_dc_ref, src_path, dest_dc_ref,
                                 dest_path):
         """Clones a temporary virtual disk and deletes it finally."""
@@ -3078,7 +3097,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         false_ret = (False, None)
         allowed_statuses = ['available', 'reserved', 'in-use', 'maintenance',
-                            'extending']
+                            'extending', 'retyping']
         if volume['status'] not in allowed_statuses:
             LOG.debug('Only %s volumes can be migrated using backend '
                       'assisted migration. Falling back to generic migration.',
@@ -3086,6 +3105,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             return false_ret
 
         if 'location_info' not in host['capabilities']:
+            LOG.error("Location info not found in host capabilities: %s."
+                      " not migrating volume {volume['id']}.", host)
             return false_ret
         info = host['capabilities']['location_info']
         try:
@@ -3093,7 +3114,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         except ValueError:
             return false_ret
 
-        if driver_name != LOCATION_DRIVER_NAME:
+        # This covers retype and migration
+        if (driver_name == 'VMwareVcFcdDriver'):
+            LOG.info("Retyping/Migrating volume %s to FCD driver.",
+                     volume['id'])
+            return self._migrate_to_fcd(context, volume, host)
+
+        if driver_name != self._driver_name():
             return false_ret
 
         backing = self.volumeops.get_backing(volume.name, volume.id)
@@ -3209,3 +3236,136 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self.volumeops.update_backing_disk_uuid(backing, volume['id'])
 
         return None
+
+    def _provider_location_to_ds_name_location(self, moref_location):
+        """Translate the provider location to the datastore name."""
+        fcd_loc = volumeops.FcdLocation.from_provider_location(
+            moref_location
+        )
+        ds_ref = fcd_loc.ds_ref()
+        summary = self.volumeops.get_summary(ds_ref)
+        return "%s@%s" % (fcd_loc.fcd_id, summary.name)
+
+    @volume_utils.trace
+    def _migrate_to_fcd(self, context, volume, host):
+
+        info = host['capabilities']['location_info']
+        false_ret = (False, None)
+        if 'location_info' not in host['capabilities']:
+            return false_ret
+        info = host['capabilities']['location_info']
+        try:
+            (driver_name, vcenter) = info.split(':')
+        except ValueError:
+            return false_ret
+        dest_host = host['host']
+        tgt_ds = self._remote_api.select_ds_for_volume(context,
+                                                       cinder_host=dest_host,
+                                                       volume=volume)
+        vol_status = volume.previous_status
+        backing = self.volumeops.get_backing(volume.name, volume.id)
+        if not backing:
+            # we need to create the backing and then migrate it.
+            LOG.debug("Backing does not exist for volume.", resource=volume)
+            backing = self._create_backing(volume)
+            if not backing:
+                msg = ("Failed to create backing for vmdk volume prior to "
+                       "migration to fcd.")
+                LOG.error(msg, resource=volume)
+                raise Exception(msg)
+
+        # upgrade shadow vm to support FCD
+        vmx = volumeops.VMX_VERSION
+        try:
+            upgrade_task = self._session.invoke_api(
+                self._session.vim, "UpgradeVM_Task", backing, version=vmx)
+            self._session.wait_for_task(upgrade_task)
+        except exceptions.VimFaultException as ex:
+            txt = "already up-to-date"
+            if txt in ex.description:
+                LOG.info("Shadow vm {backing} is already at {vmx}")
+                pass
+            else:
+                raise ex
+
+        chost = self.volumeops.get_host(backing)
+        dc_ref = self.volumeops.get_dc(chost)
+        dc_path = self.volumeops.get_inventory_path(dc_ref)
+        disk_dev = self.volumeops.get_disk_by_uuid(backing, volume.id)
+        vmdk_path = disk_dev.backing.fileName
+        (ds_name,
+         ds_rel_path,
+         file_name) = volumeops.split_datastore_path(vmdk_path)
+        (_, _, _, summary) = self._select_ds_by_name_for_volume(ds_name,
+                                                                volume)
+        vmdk_url = "https://%s/folder/%s/%s?dcPath=%s&dsName=%s" % (
+            self.configuration.vmware_host_ip, ds_rel_path, file_name,
+            dc_path, ds_name)
+        self.volumeops.detach_disk_from_backing(backing, disk_dev)
+        fcd_loc = self.volumeops.register_disk(
+            vmdk_url, volume.name, summary.datastore)
+        prov_loc = fcd_loc.provider_location()
+        self.volumeops.delete_backing(backing)
+        ds_ref = vim_util.get_moref(tgt_ds['datastore'], 'Datastore')
+        if (ds_ref.value != summary.datastore.value):
+            # Migration required
+            if vol_status == 'available':
+                self.volumeops.relocate_fcd(fcd_loc, ds_ref,
+                                            volume.name)
+                old_mref = summary.datastore.value
+                new_prov_loc = prov_loc.replace(old_mref, ds_ref.value)
+                prov_loc = self._provider_location_to_ds_name_location(
+                    new_prov_loc
+                )
+                volume.update({'provider_location': prov_loc})
+                volume.save()
+                return (True, None)
+            else:
+                attachments = volume.volume_attachment
+                instance_uuid = attachments[0]['instance_uuid']
+                get_vm_by_uuid = self.volumeops.get_backing_by_uuid
+                attachedvm = get_vm_by_uuid(instance_uuid)
+                profile_id = tgt_ds.get('profile_id')
+                rp_ref = vim_util.get_moref(tgt_ds['resource_pool'],
+                                            'ResourcePool')
+                self.volumeops.relocate_one_disk(attachedvm,
+                                                 ds_ref, rp_ref,
+                                                 volume_id=volume.id,
+                                                 profile_id=profile_id)
+                fcd_loc_new = volumeops.FcdLocation(fcd_loc.fcd_id,
+                                                    ds_ref.value)
+                prov_loc = self._provider_location_to_ds_name_location(
+                    fcd_loc_new.provider_location()
+                )
+
+        else:
+            prov_loc = self._provider_location_to_ds_name_location(
+                prov_loc
+            )
+        volume.update({'provider_location': prov_loc})
+        volume.save()
+        if vol_status == 'in-use':
+            new_conn_info = {
+                'driver_volume_type': "vstorageobject",
+                'volume_id': volume.id,
+                'name': volume.name,
+                'id': fcd_loc.fcd_id,
+                'ds_ref_val': fcd_loc.ds_ref_val,
+                'ds_name': volume_utils.extract_host(volume.host,
+                                                     level='pool'),
+                'adapter_type': self._get_adapter_type(volume),
+                'profile_id': self._get_storage_profile_id(volume),
+                'volume': "",
+                'vmdk_size': volume.size * units.Gi,
+                'vmdk_path': vmdk_path,
+                'datacenter': dc_ref.value
+            }
+            attachments = volume.volume_attachment
+            for attach in attachments:
+                attach.connection_info = new_conn_info
+                attach.save()
+            nova_api = compute.API()
+            instance_uuid = attachments[0]['instance_uuid']
+            nova_api.update_server_volume(context, instance_uuid,
+                                          volume.id, volume.id)
+        return (True, None)

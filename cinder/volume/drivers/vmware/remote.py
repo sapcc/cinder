@@ -18,12 +18,16 @@ RPC server and client for communicating with other VMDK drivers directly.
 This is the gateway which allows us gathering VMWare related information from
 other hosts and perform cross vCenter operations.
 """
+from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_vmware import vim_util
 
 from cinder import rpc
 from cinder.volume.rpcapi import VolumeAPI
 from cinder.volume import volume_utils
+
+
+LOG = logging.getLogger(__name__)
 
 
 class VmdkDriverRemoteApi(rpc.RPCAPI):
@@ -58,6 +62,22 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
                           create_params=create_params,
                           cinder_host=cinder_host or host)
 
+    def destory_backing(self, ctxt, host, volume):
+        cctxt = self._get_cctxt(host)
+        return cctxt.call(ctxt, 'destory_backing', volume=volume)
+
+    @volume_utils.trace
+    def update_fcd_policy(self, ctxt, cinder_host, prov_loc, profile_id):
+        cctxt = self._get_cctxt(cinder_host)
+        return cctxt.call(ctxt, 'update_fcd_policy',
+                          prov_loc=prov_loc,
+                          profile_id=profile_id)
+
+    def get_fcd_provider_location(self, ctxt, host, fcd_id, datastore_ref):
+        cctxt = self._get_cctxt(host)
+        return cctxt.call(ctxt, 'get_fcd_provider_location',
+                          fcd_id=fcd_id, datastore_ref=datastore_ref)
+
 
 class VmdkDriverRemoteService(object):
     RPC_API_VERSION = VmdkDriverRemoteApi.RPC_API_VERSION
@@ -87,6 +107,7 @@ class VmdkDriverRemoteService(object):
             'resource_pool': rp.value,
             'folder': folder.value,
             'datastore': summary.datastore.value,
+            'datastore_url': summary.url,
             'profile_id': profile_id,
         }
 
@@ -101,3 +122,27 @@ class VmdkDriverRemoteService(object):
         return self._driver._create_backing(volume,
                                             create_params=create_params,
                                             cinder_host=cinder_host)
+
+    @volume_utils.trace
+    def destory_backing(self, ctxt, volume):
+        backing = self._driver.volumeops.get_backing_by_uuid(volume.id)
+        disk_device = self._driver.volumeops._get_disk_device(backing)
+        self._driver.volumeops.detach_disk_from_backing(backing,
+                                                        disk_device)
+        self._driver.volumeops.delete_backing(backing)
+
+    @volume_utils.trace
+    def update_fcd_policy(self, ctxt, prov_loc, profile_id):
+        vops = self._driver.volumeops
+        fcd_location = vops._get_fcd_loc(prov_loc)
+        return self._driver.volumeops.update_fcd_policy(fcd_location,
+                                                        profile_id)
+
+    def get_fcd_provider_location(self, ctxt, fcd_id, datastore_ref):
+        fcd_loc_new = self._driver._get_fcd_location(fcd_id, datastore_ref)
+        # Convert the provider location from the moref format to the
+        # datastore name format to store in the cinder DB.
+        prov_loc = self._driver._provider_location_to_ds_name_location(
+            fcd_loc_new.provider_location()
+        )
+        return prov_loc
