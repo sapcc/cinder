@@ -161,15 +161,18 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         host = mock.sentinel.host
         summary = mock.Mock()
         summary.name = 'ds-1'
+        volume = self._create_volume_obj()
         select_datastore.return_value = (host, mock.ANY, summary)
 
         dc_ref = mock.sentinel.dc_ref
         vops.get_dc.return_value = dc_ref
 
         size_bytes = units.Gi
-        ret = self._driver._get_temp_image_folder(size_bytes, preallocated)
+        ret = self._driver._get_temp_image_folder(volume.name,
+                                                  size_bytes,
+                                                  preallocated)
         self.assertEqual(
-            (dc_ref, summary, vmdk.TMP_IMAGES_DATASTORE_FOLDER_PATH), ret)
+            (dc_ref, summary, volume.name + '/'), ret)
         exp_req = {hub.DatastoreSelector.SIZE_BYTES: size_bytes}
         if preallocated:
             exp_req[hub.DatastoreSelector.HARD_AFFINITY_DS_TYPE] = (
@@ -179,7 +182,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         select_datastore.assert_called_once_with(exp_req)
         vops.get_dc.assert_called_once_with(host)
         vops.create_datastore_folder.assert_called_once_with(
-            summary.name, vmdk.TMP_IMAGES_DATASTORE_FOLDER_PATH, dc_ref)
+            summary.name, volume.name + '/', dc_ref)
 
     def test_get_temp_image_folder(self):
         self._test_get_temp_image_folder()
@@ -226,7 +229,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         select_ds_fcd.assert_called_once_with(volume)
         get_disk_type.assert_called_once_with(volume)
         vops.create_fcd.assert_called_once_with(
-            volume.name, volume.size * units.Ki, ds_ref, disk_type,
+            volume.id, volume.name, volume.size * units.Ki,
+            ds_ref, disk_type,
             profile_id=profile_id)
 
     @mock.patch.object(volumeops.FcdLocation, 'from_provider_location')
@@ -357,7 +361,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             self._context, volume, image_service, image_id)
 
         self.assertEqual({'provider_location': provider_location}, ret)
-        get_temp_image_folder.assert_called_once_with(volume.size * units.Gi)
+        get_temp_image_folder.assert_called_once_with(volume.name,
+                                                      volume.size * units.Gi)
         if disk_type == vmdk.ImageDiskType.PREALLOCATED:
             create_disk_from_preallocated_image.assert_called_once_with(
                 self._context, image_service, image_id, image_meta['size'],
@@ -470,8 +475,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         name = mock.sentinel.name
         dest_ds_ref = mock.sentinel.dest_ds_ref
         disk_type = mock.sentinel.disk_type
-        ret = self._driver._clone_fcd(
-            provider_loc, name, dest_ds_ref, disk_type)
+        ret = self._driver._clone_fcd(provider_loc,
+                                      name, dest_ds_ref, disk_type)
         self.assertEqual(dest_fcd_loc, ret)
         from_provider_loc.assert_called_once_with(provider_loc)
         vops.clone_fcd.assert_called_once_with(
@@ -582,18 +587,14 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             get_disk_type, select_ds_fcd):
         ds_ref = mock.sentinel.ds_ref
         select_ds_fcd.return_value = ds_ref
-
         disk_type = mock.sentinel.disk_type
         get_disk_type.return_value = disk_type
-
         profile_id = mock.sentinel.profile_id
         get_storage_profile_id.return_value = profile_id
-
         cloned_fcd_loc = mock.Mock()
         dest_provider_loc = mock.sentinel.dest_provider_loc
         cloned_fcd_loc.provider_location.return_value = dest_provider_loc
         clone_fcd.return_value = cloned_fcd_loc
-
         provider_loc = mock.sentinel.provider_loc
         cur_size = 1
         volume = self._create_volume_obj()
@@ -602,9 +603,9 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self.assertEqual({'provider_location': dest_provider_loc}, ret)
         select_ds_fcd.test_assert_called_once_with(volume)
         get_disk_type.test_assert_called_once_with(volume)
-        clone_fcd.assert_called_once_with(
-            provider_loc, volume.name, ds_ref, disk_type=disk_type,
-            profile_id=profile_id)
+        clone_fcd.assert_called_once_with(provider_loc, volume,
+                                          ds_ref, disk_type=disk_type,
+                                          profile_id=profile_id)
         extend_if_needed.assert_called_once_with(
             cloned_fcd_loc, cur_size, volume.size)
 
@@ -639,7 +640,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         if use_fcd_snapshot:
             self.assertEqual({'provider_location': provider_loc}, ret)
             vops.create_fcd_from_snapshot.assert_called_once_with(
-                fcd_snap_loc, volume.name, profile_id=profile_id)
+                fcd_snap_loc, volume.name, volume.id, profile_id=profile_id)
             extend_if_needed.assert_called_once_with(
                 fcd_loc, snapshot.volume_size, volume.size)
         else:

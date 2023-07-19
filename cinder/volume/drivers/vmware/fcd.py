@@ -91,7 +91,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         (_host_ref, _resource_pool, summary) = self._select_datastore(req)
         return summary.datastore
 
-    def _get_temp_image_folder(self, size_bytes, preallocated=False):
+    def _get_temp_image_folder(self, name, size_bytes, preallocated=False):
         req = {}
         req[hub.DatastoreSelector.SIZE_BYTES] = size_bytes
 
@@ -102,7 +102,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         (host_ref, _resource_pool, summary) = self._select_datastore(req)
 
-        folder_path = vmdk.TMP_IMAGES_DATASTORE_FOLDER_PATH
+        folder_path = name + '/'
         dc_ref = self.volumeops.get_dc(host_ref)
         self.volumeops.create_datastore_folder(
             summary.name, folder_path, dc_ref)
@@ -130,8 +130,8 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         ds_ref = self._select_ds_fcd(volume)
         profile_id = self._get_storage_profile_id(volume)
         fcd_loc = self.volumeops.create_fcd(
-            volume.name, volume.size * units.Ki, ds_ref, disk_type,
-            profile_id=profile_id)
+            volume.id, volume.name, volume.size * units.Ki, ds_ref,
+            disk_type, profile_id=profile_id)
         return {'provider_location': fcd_loc.provider_location()}
 
     def _delete_fcd(self, provider_loc):
@@ -201,7 +201,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         size_bytes = metadata['size']
         dc_ref, summary, folder_path = self._get_temp_image_folder(
-            volume.size * units.Gi)
+            volume.name, volume.size * units.Gi)
         disk_name = volume.id
         if disk_type in [vmdk.ImageDiskType.SPARSE,
                          vmdk.ImageDiskType.STREAM_OPTIMIZED]:
@@ -228,6 +228,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         profile_id = self._get_storage_profile_id(volume)
         if profile_id:
             self.volumeops.update_fcd_policy(fcd_loc, profile_id)
+
+        self.volumeops.update_fcd_vmdk_uuid(summary.datastore,
+                                            vmdk_path, volume.id)
 
         return {'provider_location': fcd_loc.provider_location()}
 
@@ -298,12 +301,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             volume.provider_location)
         self.volumeops.extend_fcd(fcd_loc, new_size * units.Ki)
 
-    def _clone_fcd(self, provider_loc, name, dest_ds_ref,
+    def _clone_fcd(self, provider_loc, volume, dest_ds_ref,
                    disk_type=vops.VirtualDiskType.THIN,
                    profile_id=None):
         fcd_loc = vops.FcdLocation.from_provider_location(provider_loc)
-        return self.volumeops.clone_fcd(
-            name, fcd_loc, dest_ds_ref, disk_type, profile_id=profile_id)
+        return self.volumeops.clone_fcd(volume,
+                                        fcd_loc, dest_ds_ref,
+                                        disk_type, profile_id=profile_id)
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot.
@@ -348,7 +352,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         disk_type = self._get_disk_type(volume)
         profile_id = self._get_storage_profile_id(volume)
         cloned_fcd_loc = self._clone_fcd(
-            provider_loc, volume.name, ds_ref, disk_type=disk_type,
+            provider_loc, volume, ds_ref, disk_type=disk_type,
             profile_id=profile_id)
         self._extend_if_needed(cloned_fcd_loc, cur_size, volume.size)
         return {'provider_location': cloned_fcd_loc.provider_location()}
@@ -365,7 +369,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if fcd_snap_loc:
             profile_id = self._get_storage_profile_id(volume)
             fcd_loc = self.volumeops.create_fcd_from_snapshot(
-                fcd_snap_loc, volume.name, profile_id=profile_id)
+                fcd_snap_loc, volume.name, volume.id, profile_id=profile_id)
             self._extend_if_needed(fcd_loc, snapshot.volume_size, volume.size)
             return {'provider_location': fcd_loc.provider_location()}
         else:
