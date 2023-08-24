@@ -23,6 +23,7 @@ driver requires a minimum vCenter version of 6.5.
 from oslo_log import log as logging
 from oslo_utils import units
 from oslo_utils import versionutils
+from oslo_vmware import exceptions as vexc
 from oslo_vmware import image_transfer
 from oslo_vmware.objects import datastore
 from oslo_vmware import vim_util
@@ -138,6 +139,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         fcd_loc = vops.FcdLocation.from_provider_location(provider_loc)
         self.volumeops.delete_fcd(fcd_loc)
 
+    @volume_utils.trace
     def delete_volume(self, volume):
         """Delete a volume from the backend.
 
@@ -147,7 +149,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             LOG.warning("FCD provider location is empty for volume %s",
                         volume.id)
         else:
-            self._delete_fcd(volume.provider_location)
+            try:
+                self._delete_fcd(volume.provider_location)
+            except vexc.VimException as ex:
+                if "could not be found" in str(ex):
+                    LOG.warning("FCD deletion failed for %(vol)s not found. "
+                                "delete_volume is considered successful.")
+                else:
+                    raise ex
 
     def initialize_connection(self, volume, connector, initiator_data=None):
         """Allow connection to connector and return connection info.
