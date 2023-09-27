@@ -26,6 +26,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import strutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 from oslo_utils import versionutils
 
 from cinder import action_track
@@ -297,6 +298,37 @@ class API(base.Base):
         availability_zones = set([az['name'] for az in raw_zones])
         if CONF.storage_availability_zone:
             availability_zones.add(CONF.storage_availability_zone)
+
+        # Validate the scheduler_hints same_host and different_hosts as
+        # valid volume UUIDs.
+        if scheduler_hints:
+            validate_volume_uuids = []
+            if 'same_host' in scheduler_hints:
+                if isinstance(scheduler_hints['same_host'], list):
+                    validate_volume_uuids.extend(scheduler_hints['same_host'])
+                else:
+                    validate_volume_uuids.append(scheduler_hints['same_host'])
+            elif 'different_host' in scheduler_hints:
+                if isinstance(scheduler_hints['different_host'], list):
+                    validate_volume_uuids.extend(
+                        scheduler_hints['different_host'])
+                else:
+                    validate_volume_uuids.append(
+                        scheduler_hints['different_host'])
+
+            for hint_volume_id in validate_volume_uuids:
+                if not uuidutils.is_uuid_like(hint_volume_id):
+                    msg = _("Invalid UUID(s) '%s' provided in scheduler "
+                            "hints.") % hint_volume_id
+                    raise exception.InvalidInput(reason=msg)
+
+            # Now validate that the uuids are valid volumes that exist in
+            # cinder DB.
+            for hint_volume_id in validate_volume_uuids:
+                # All we have to do here is try and fetch the UUID as volume.
+                # If the UUID doesn't exist in the DB, Cinder will throw
+                # a VolumeNotFound exception.
+                objects.Volume.get_by_id(context, hint_volume_id)
 
         # Force the scheduler hints into the volume metadata
         if not metadata:
