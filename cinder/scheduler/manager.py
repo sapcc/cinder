@@ -533,13 +533,15 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         filter_properties.pop('new_size')
 
         if not request_spec:
-            request_spec = {'volume_properties': {'size': new_size}}
+            request_spec = {'volume_properties': {'size': new_size},
+                            'operation': 'volume_migrate'}
         else:
             request_spec['volume_properties']['size'] = new_size
 
         if volume['availability_zone']:
             request_spec['resource_properties'] = {
                 'availability_zone': volume['availability_zone']}
+        request_spec['operation'] = 'volume_migrate'
 
         # SAP
         # We have to force the destination host to be on

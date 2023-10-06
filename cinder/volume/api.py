@@ -838,7 +838,7 @@ class API(base.Base):
             'volume_properties': volume,
             'volume_type': volume_type,
             'volume_id': volume.id,
-            'action': 'migrate_volume'
+            'operation': 'migrate_volume'
         }
 
         # Check if there is an affinity/antiaffinity against the volume
@@ -1727,7 +1727,7 @@ class API(base.Base):
         request_spec = {'volume_properties': volume,
                         'volume_type': volume_type,
                         'volume_id': volume.id,
-                        'action': 'migrate_volume'}
+                        'operation': 'migrate_volume'}
         self.scheduler_rpcapi.migrate_volume(context,
                                              volume,
                                              cluster_name or host,
