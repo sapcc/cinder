@@ -164,6 +164,10 @@ class ShardFilter(filters.BaseBackendFilter):
         project_id = vol_props.get('project_id', None)
         metadata = vol_props.get('metadata', {})
 
+        # We don't filter on the cluster if we're migrating a volume
+        if spec.get('action', None) == 'volume_migrate':
+            return backends
+
         is_vmware = any(self._is_vmware(b) for b in backends)
         if (not metadata or not project_id
                 or spec.get('snapshot_id')
