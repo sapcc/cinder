@@ -1096,7 +1096,6 @@ class VMwareVolumeOps(object):
         if service is not None:
             relocate_spec.service = self._get_service_locator_spec(service)
 
-        LOG.debug("Spec for relocating the backing: %s.", relocate_spec)
         return relocate_spec
 
     def _get_service_locator_spec(self, service):
@@ -1394,7 +1393,6 @@ class VMwareVolumeOps(object):
         if device_changes:
             config_spec.deviceChange = device_changes
 
-        LOG.debug("Spec for cloning the backing: %s.", clone_spec)
         return clone_spec
 
     def _create_device_change_for_disk_removal(self, backing, disks_to_clone):
