@@ -8,12 +8,12 @@ operations.
 
 Support for iSCSI storage protocol is available with the PureISCSIDriver
 Volume Driver class, Fibre Channel with the PureFCDriver and
-NVMe-ROCE with the PureNVMEDriver.
+NVMe-ROCE or NVMe-TCP with the PureNVMEDriver.
 
-iSCSI and Fibre Channel drivers are compatible with Purity FlashArrays
-that support the REST API version 1.6 and higher (Purity 4.7.0 and newer).
-The NVMe driver is compatible with Purity FlashArrays
-that support the REST API version 1.16 and higher (Purity 5.2.0 and newer).
+iSCSI, Fibre Channel and NVMe-RoCE drivers are compatible with FlashArrays
+that support the REST API version 2.4 and higher (Purity 6.1.0 and newer).
+The NVMe-TCP driver is compatible with FlashArrays
+that are running Purity 6.4.2 and higher.
 Some features may require newer versions of Purity.
 
 Limitations and known issues
@@ -84,11 +84,11 @@ Pure Storage FlashArray as back-end storage.
 
 #. Install Pure Storage PyPI module.
    A requirement for the Pure Storage driver is the installation of the
-   Pure Storage Python SDK version 1.4.0 or later from PyPI.
+   Pure Storage Python SDK version 1.47.0 or later from PyPI.
 
    .. code-block:: console
 
-      $ pip install purestorage
+      $ pip install py-pure-client
 
 #. Retrieve an API token from Purity.
    The OpenStack Block Storage service configuration requires an API token
@@ -161,7 +161,7 @@ Pure Storage FlashArray as back-end storage.
        NVME connectivity.
 
        If using the NVME driver, specify the ``pure_nvme_transport`` value.
-       Currently only ``roce`` is supported.
+       Supported values are ``roce`` or ``tcp``.
 
    IP_PURE_MGMT
        The IP address of the Pure Storage array's management interface or a
@@ -240,10 +240,6 @@ certificates of trusted CAs:
 .. code-block:: ini
 
     driver_ssl_cert_path = Certificate path
-
-.. note::
-
-   This requires the use of Pure Storage Python SDK > 1.4.0.
 
 Replication configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
