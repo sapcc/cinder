@@ -557,13 +557,16 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             snapshot_type = 'clone'
 
         backend_state = 'up'
+        independent_snapshot = False
+        if sap_allow_independent_snapshots:
+            independent_snapshot = True
         data = {'volume_backend_name': backend_name,
                 'vendor_name': 'VMware',
                 'driver_version': self.VERSION,
                 'storage_protocol': 'vmdk',
                 'location_info': location_info,
                 'backend_state': backend_state,
-                'snapshot_type': snapshot_type
+                'snapshot_type': snapshot_type,
                 }
 
         result, datastores = self._collect_backend_stats()
@@ -632,6 +635,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         'pool_state': pool_state,
                         'pool_down_reason': pool_down_reason,
                         'custom_attributes': custom_attributes,
+                        'independent_snapshots': independent_snapshot,
                         }
 
                 pools.append(pool)

@@ -248,10 +248,23 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         """
         self._wait_for_scheduler()
 
+        LOG.warning(f"create_snapshot: {volume} {snapshot} {backend} {request_spec} {filter_properties}")
+        do_independent_snapshots = False
+
         if CONF.sap_allow_independent_snapshots:
             # We allow snapshots to be created on a pool
             # separate from the volume's pool.
-            backend = vol_utils.extract_host(volume['host'])
+            # This is only available for volume types that
+            # have the extra spec 'independent_snapshots' set to True.
+            volume_type = volume.get('volume_type')
+            LOG.warning(f"volume_type: {volume_type}")
+            if volume_type:
+                extra_specs = volume_type.get('extra_specs')
+                LOG.warning(f"extra_specs: {extra_specs}")
+                if extra_specs and extra_specs.get('independent_snapshots', False):
+                    LOG.info("Allowing a snapshot to be created on any pool. ")
+                    backend = vol_utils.extract_host(volume['host'])
+                    do_independent_snapshots = True
 
         try:
             tgt_backend = self.driver.backend_passes_filters(
@@ -266,7 +279,7 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                                                 fields.SnapshotStatus.ERROR,
                                                 ctxt, ex, request_spec)
         else:
-            if CONF.sap_allow_independent_snapshots:
+            if do_independent_snapshots:
                 # Set this in the metadata of the snap
                 key = snapshot_obj.SAP_HIDDEN_BACKEND_KEY
                 if snapshot.metadata:
