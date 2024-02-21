@@ -2969,7 +2969,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                   "%(instance)s.", {'dev': vol_dev_uuid,
                                     'instance': instance})
 
-        tmp_name = tmp_name or uuidutils.generate_uuid()
+        tmp_name = tmp_name or "TEMP_BACKING-%s" % uuidutils.generate_uuid()
 
         device_changes = self.volumeops._create_device_change_for_disk_removal(
             instance, disks_to_clone=[vol_dev_uuid])
@@ -2977,7 +2977,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self.volumeops._create_device_change_for_vif_removal(instance))
 
         # Remove another attribute by which the nova driver identifies VMs
-        extra_config = {'nvp.vm-uuid': ''}
+        extra_config = {'nvp.vm-uuid': '', 'hardware.numCPU': 1,
+                        'hardware.memoryMB': 128}
 
         return self.volumeops.clone_backing(
             tmp_name, instance, None, volumeops.FULL_CLONE_TYPE, datastore,
