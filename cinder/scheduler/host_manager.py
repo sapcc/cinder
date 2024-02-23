@@ -428,6 +428,9 @@ class HostManager(object):
         self.service_states = {}  # { <host|cluster>: {<service>: {cap k : v}}}
         self.backend_state_map = {}
         self.backup_service_states = {}
+        # SAP keep track of original stats from backends that have
+        # an aggregate pool. This is used to calculate the stats
+        self.aggregate_service_states = {}
         self.filter_handler = filters.BackendFilterHandler('cinder.scheduler.'
                                                            'filters')
         self.filter_classes = self.filter_handler.get_all_classes()
@@ -517,6 +520,60 @@ class HostManager(object):
         LOG.debug("Weighed %s", weighed_backends)
         return weighed_backends
 
+    def _propogate_aggregate_stats(self, backend, capabilities):
+        """Propogate the aggregate stats to the backend capabilities.
+
+        This method is used to propagate the aggregate stats to the backend
+        capabilities from all the other backends that have the same aggregate
+        pool.
+
+        Loop through every aggregate pool and add the allocated_capacity_gb
+        from all the other backends that have the same aggregate pool. Also,
+        keep a copy of the relevant stats for each aggregate pool from the
+        driver so the stats are accurate.
+        """
+        _agg_caps = {}
+        # only because of pep8 line too long
+        _agg_stats = self.aggregate_service_states
+        if capabilities.get('pools', None):
+            for pool in capabilities['pools']:
+                if pool.get('aggregate_id', None):
+                    # First save the existing capabilities of the backend
+                    # in our aggregate_service_states
+                    agg_id = pool.get('aggregate_id')
+                    info = {
+                        "allocated_capacity_gb": pool['allocated_capacity_gb'],
+                        "pool_name": pool['pool_name']}
+                    _agg_caps[agg_id] = info
+                    for tmp_back in self.aggregate_service_states:
+                        # because pep8 line too long
+                        if tmp_back != backend:
+                            for tmp_agg_id in _agg_stats[tmp_back]:
+                                if tmp_agg_id == agg_id:
+                                    _caps = _agg_stats[tmp_back][tmp_agg_id]
+                                    pool['allocated_capacity_gb'] += \
+                                        _caps['allocated_capacity_gb']
+        else:
+            # Backend doesn't have pools, so the stats are in the caps.
+            agg_id = capabilities.get('aggregate_id', None)
+            if agg_id:
+                # Because pep8 line too long
+                orig_caps = capabilities
+                info = {
+                    "allocated_capacity_gb":
+                        orig_caps['allocated_capacity_gb']}
+                _agg_caps[agg_id] = info
+                for tmp_back in _agg_stats:
+                    if tmp_back != backend:
+                        for tmp_agg_id in _agg_stats[tmp_back]:
+                            if tmp_agg_id == agg_id:
+                                _caps = _agg_stats[tmp_back][tmp_agg_id]
+                                orig_caps['allocated_capacity_gb'] += \
+                                    _caps['allocated_capacity_gb']
+
+        self.aggregate_service_states[backend] = _agg_caps
+        return capabilities
+
     def update_service_capabilities(self, service_name, host, capabilities,
                                     cluster_name, timestamp):
         """Update the per-service capabilities based on this notification."""
@@ -547,6 +604,14 @@ class HostManager(object):
                       {'service_name': service_name, 'host': host,
                        'cap': capabilities})
             return
+
+        if capabilities.get("has_aggregate_pool", False):
+            # This backend has an aggregate pool.
+            # We need to update the capabilities of the aggregate pool.
+            LOG.debug("Backend %s has an aggregate pool.", backend)
+            LOG.debug("Aggregate pool capabilities: %s", capabilities)
+            capab_copy = self._propogate_aggregate_stats(backend, capab_copy)
+            LOG.debug("Updated aggregate stats: %s", capab_copy)
 
         capab_old = self.service_states.get(backend, {"timestamp": 0})
         capab_last_update = self.service_states_last_update.get(
