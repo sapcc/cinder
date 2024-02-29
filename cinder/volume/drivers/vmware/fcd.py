@@ -58,6 +58,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
     STORAGE_TYPE = 'vstorageobject'
 
+    # flag this driver as not supporting independent snapshots
+    has_independent_snapshots = False
+
     def do_setup(self, context):
         """Any initialization the volume driver needs to do while starting.
 
@@ -80,6 +83,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         stats = super(VMwareVStorageObjectDriver, self).get_volume_stats(
             refresh=refresh)
         stats['storage_protocol'] = self.STORAGE_TYPE
+        # Mark each pool as not independent snapshots
         return stats
 
     def _select_ds_fcd(self, volume):
