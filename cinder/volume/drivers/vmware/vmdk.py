@@ -1870,7 +1870,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 image_size=image_size,
                 http_method='POST',
                 allow_pull_from_url=allow_url)
-            self.volumeops.update_backing_disk_uuid(backing, volume['id'])
+            self.volumeops.update_backing_disk_uuid(backing, volume['id'],
+                                                    profile_id=profile_id)
         except (exceptions.VimException,
                 exceptions.VMwareDriverException):
             with excutils.save_and_reraise_exception():
@@ -1997,6 +1998,14 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self._extend_backing(backing, volume['size'],
                                  VMwareVcVmdkDriver._get_disk_type(volume))
         # TODO(vbala): handle volume_size < disk_size case.
+
+        # handle encryption key
+        # crypto_key_id = self.volumeops.get_crypto_key_id(backing)
+        # LOG.info("=== key_id %s", crypto_key_id)
+        # if crypto_key_id:
+        #     profile_id = self._get_storage_profile_id(volume)
+        #     self.volumeops.reconfigure_backing_crypto_key_id(backing, crypto_key_id,
+        #                                                      profile_id=profile_id)
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Creates glance image from volume.

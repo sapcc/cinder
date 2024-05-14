@@ -1044,6 +1044,7 @@ class VMwareVolumeOps(object):
         cf = self._session.vim.client.factory
         relocate_spec = cf.create('ns0:VirtualMachineRelocateSpec')
         locator = []
+        device_changes = []
         for disk_device in disk_devices:
             if disk_device.backing.uuid == disk_to_move.backing.uuid:
                 spec = self._create_relocate_spec_disk_locator(datastore,
@@ -1057,9 +1058,15 @@ class VMwareVolumeOps(object):
                                                                disk_device,
                                                                None)
             locator.append(spec)
+            if profile_id:
+                device_change = self._create_device_change_for_profile_id(
+                    disk_device, profile_id)
+                device_changes.append(device_change)
+
         relocate_spec.disk = locator
         relocate_spec.diskMoveType = disk_move_type
-        LOG.debug("Spec for relocating the backing: %s.", relocate_spec)
+        LOG.debug("_get_rspec_for_one_disk: "
+                  "Spec for relocating the backing: %s.", relocate_spec)
         return relocate_spec
 
     def _get_relocate_spec(self, datastore, resource_pool, host,
@@ -1094,10 +1101,22 @@ class VMwareVolumeOps(object):
                                                                    profile_id)
             relocate_spec.disk = [disk_locator]
 
+        if profile_id and disk_device:
+            device_change = self._create_device_change_for_profile_id(
+                disk_device, profile_id)
+            relocate_spec.deviceChange = [device_change]
+            profile_spec = self._create_profile_spec(cf, profile_id)
+            relocate_spec.profile = profile_spec
+            # if disk_device.backing.keyId:
+            #     crypto_spec = cf.create('ns0:CryptoSpecShallowRecrypt')
+            #     crypto_spec.newKeyId = disk_device.backing.keyId
+            #     relocate_spec.cryptoSpec = crypto_spec
+
         if service is not None:
             relocate_spec.service = self._get_service_locator_spec(service)
 
-        LOG.debug("Spec for relocating the backing: %s.", relocate_spec)
+        LOG.debug("_get_relocate_spec: "
+                  "Spec for relocating the backing: %s.", relocate_spec)
         return relocate_spec
 
     def _get_service_locator_spec(self, service):
@@ -1409,6 +1428,24 @@ class VMwareVolumeOps(object):
 
         return device_change
 
+    def _create_device_change_for_profile_id(self, disk_device, profile_id):
+        cf = self._session.vim.client.factory
+
+        disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
+        disk_spec.device = disk_device
+
+        # if disk_device.backing.keyId:
+        #     backing_config = cf.create('ns0:VirtualDeviceConfigSpecBackingSpec')
+        #     crypto_spec = cf.create('ns0:CryptoSpecShallowRecrypt')
+        #     crypto_spec.newKeyId = disk_device.backing.keyId
+        #     backing_config.crypto = crypto_spec
+        #     disk_spec.backing = backing_config
+
+        profile_spec = self._create_profile_spec(cf, profile_id)
+        disk_spec.profile = [profile_spec]
+
+        return disk_spec
+
     def _get_vif_devices(self, vm):
         vif_devices = []
         hardware_devices = self._session.invoke_api(vim_util,
@@ -1601,6 +1638,41 @@ class VMwareVolumeOps(object):
                   {'backing': backing,
                    'vmdk_path': new_vmdk_path})
 
+    def reconfigure_backing_crypto_key_id(self, backing, crypto_key_id,
+                                          profile_id=None):
+        """Reconfigures backing VM with a new keyId"""
+
+        cf = self._session.vim.client.factory
+        reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
+        disk_device = self._get_disk_device(backing)
+        disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
+
+        disk_spec.device = disk_device
+        backing_config = cf.create('ns0:VirtualDeviceConfigSpecBackingSpec')
+        crypto_spec = cf.create('ns0:CryptoSpecEncrypt')
+        crypto_spec.cryptoKeyId = crypto_key_id
+        backing_config.crypto = crypto_spec
+        disk_spec.backing = backing_config
+
+        if profile_id:
+            disk_profile = cf.create('ns0:VirtualMachineDefinedProfileSpec')
+            disk_profile.profileId = profile_id
+            disk_spec.profile = [disk_profile]
+
+        disk_spec.operation = 'edit'
+        reconfig_spec.deviceChange = [disk_spec]
+
+        self._reconfigure_backing(backing, reconfig_spec)
+        LOG.info("Backing VM: %(backing)s reconfigured with new keyId: "
+                  "%(key_id)s.",
+                  {'backing': backing,
+                   'key_id': crypto_key_id})
+
+    def get_crypto_key_id(self, backing):
+        return self._session.invoke_api(vim_util, 'get_object_property',
+                                        self._session.vim, backing, 'config.keyId')
+
+
     def rename_backing(self, backing, new_name):
         """Rename backing VM.
 
@@ -1653,7 +1725,8 @@ class VMwareVolumeOps(object):
                   {'backing': backing,
                    'profile': profile_id})
 
-    def update_backing_disk_uuid(self, backing, disk_uuid):
+    def update_backing_disk_uuid(self, backing, disk_uuid,
+                                 profile_id=None):
         """Update backing VM's disk UUID.
 
         :param backing: Reference to backing VM
@@ -1670,6 +1743,10 @@ class VMwareVolumeOps(object):
         cf = self._session.vim.client.factory
         disk_spec = cf.create('ns0:VirtualDeviceConfigSpec')
         disk_spec.device = disk_device
+        if profile_id:
+            disk_profile = cf.create('ns0:VirtualMachineDefinedProfileSpec')
+            disk_profile.profileId = profile_id
+            disk_spec.profile = [disk_profile]
         disk_spec.operation = 'edit'
 
         reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
