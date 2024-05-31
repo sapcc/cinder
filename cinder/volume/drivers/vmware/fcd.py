@@ -285,7 +285,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if backup:
             backing = self.volumeops.get_backing(volume.name, volume.id)
             if not backing:
-                backing = self._create_backing(volume)
+                create_params = {vmdk.CREATE_PARAM_DISK_LESS: True}
+                backing = self._create_backing(volume,
+                                               create_params=create_params)
                 self.volumeops.attach_fcd(backing, fcd_loc)
             backing_moref = backing.value
             vmdk_path = self.volumeops.get_vmdk_path(backing)
@@ -370,6 +372,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             )
             volume.update({'provider_location': provider_location})
             volume.save()
+        else:
+            backing = self.volumeops.get_backing_by_uuid(volume.id)
+            fcd_loc = vops.FcdLocation.from_provider_location(
+                self._provider_location_to_moref_location(
+                    volume.provider_location))
+            if backing:
+                self.volumeops.detach_fcd(backing, fcd_loc)
+                self._delete_temp_backing(backing)
 
     def _validate_container_format(self, container_format, image_id):
         if container_format and container_format != 'bare':
