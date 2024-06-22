@@ -386,6 +386,8 @@ class PoolState(BackendState):
             # provisioned_capacity_gb if it is not set.
             self.provisioned_capacity_gb = capability.get(
                 'provisioned_capacity_gb', self.allocated_capacity_gb)
+            self.provisioned_capacity_gb += capability.get(
+                'extra_provisioned_capacity_gb', 0)
             self.thin_provisioning_support = capability.get(
                 'thin_provisioning_support', False)
             self.thick_provisioning_support = capability.get(

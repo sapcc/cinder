@@ -1280,6 +1280,7 @@ class BackendStateTestCase(test.TestCase):
                              'free_capacity_gb': 512,
                              'provisioned_capacity_gb': 512,
                              'reserved_percentage': 0,
+                             'extra_provisioned_capacity_gb': 0,
                              'timestamp': None}
 
         fake_backend.update_from_volume_capability(volume_capability)
@@ -1293,12 +1294,16 @@ class BackendStateTestCase(test.TestCase):
                          fake_backend.pools['_pool0'].provisioned_capacity_gb)
 
         # Test update for existing host state
-        volume_capability.update(dict(total_capacity_gb=1000))
+        volume_capability.update(dict(total_capacity_gb=1000,
+                                      extra_provisioned_capacity_gb=100))
         fake_backend.update_from_volume_capability(volume_capability)
         self.assertEqual(1000, fake_backend.pools['_pool0'].total_capacity_gb)
+        self.assertEqual(512 + 100,
+                         fake_backend.pools['_pool0'].provisioned_capacity_gb)
 
         # Test update for existing host state with different backend name
-        volume_capability.update(dict(volume_backend_name='magic'))
+        volume_capability.update(dict(volume_backend_name='magic',
+                                      extra_provisioned_capacity_gb=0))
         fake_backend.update_from_volume_capability(volume_capability)
         self.assertEqual(1000, fake_backend.pools['magic'].total_capacity_gb)
         self.assertEqual(512, fake_backend.pools['magic'].free_capacity_gb)
@@ -1333,6 +1338,7 @@ class BackendStateTestCase(test.TestCase):
                  'free_capacity_gb': 1024,
                  'allocated_capacity_gb': 0,
                  'provisioned_capacity_gb': 0,
+                 'extra_provisioned_capacity_gb': 100,
                  'QoS_support': 'False',
                  'reserved_percentage': 0,
                  'dying_disks': 200,
@@ -1364,7 +1370,7 @@ class BackendStateTestCase(test.TestCase):
             1024, fake_backend.pools['2nd pool'].total_capacity_gb)
         self.assertEqual(1024, fake_backend.pools['2nd pool'].free_capacity_gb)
         self.assertEqual(
-            0, fake_backend.pools['2nd pool'].provisioned_capacity_gb)
+            100, fake_backend.pools['2nd pool'].provisioned_capacity_gb)
 
         capability = {
             'volume_backend_name': 'Local iSCSI',

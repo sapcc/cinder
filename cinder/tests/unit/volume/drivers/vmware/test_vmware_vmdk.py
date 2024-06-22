@@ -123,6 +123,8 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
             vmware_random_datastore_range=None,
             vmware_datastores_as_pools=False,
             allow_pulling_images_from_url=False,
+            enable_image_cache=False,
+            image_cache_max_size_gb=0,
         )
 
         self._db = mock.Mock()
@@ -167,20 +169,40 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         get_profile_id_by_name.assert_called_once_with(session,
                                                        self.STORAGE_PROFILE)
 
+    @mock.patch.object(VMDK_DRIVER, '_get_cached_images')
     @mock.patch.object(VMDK_DRIVER, 'session')
-    def test_get_volume_stats_no_pools(self, session):
+    def test_get_volume_stats_no_pools(self, session, mock_get_cached):
+        self._config.enable_image_cache = True
         retr_result_mock = mock.Mock(spec=['objects'])
         retr_result_mock.objects = []
         session.vim.RetrievePropertiesEx.return_value = retr_result_mock
         session.vim.service_content.about.instanceUuid = 'fake-service'
+        mock_get_cached.return_value = [
+            {
+                'name': self.IMAGE_ID,
+                'vm_ref': mock.sentinel.backing,
+                'ds_ref': mock.sentinel.datastore,
+                'disk_size': 100 * units.Gi,
+                'created_at': None
+            },
+            {
+                'name': self.IMAGE_ID,
+                'vm_ref': mock.sentinel.backing,
+                'ds_ref': mock.sentinel.datastore,
+                'disk_size': 200 * units.Gi,
+                'created_at': None
+            }
+        ]
         stats = self._driver.get_volume_stats()
 
+        mock_get_cached.assert_called_once_with()
         self.assertEqual('VMware', stats['vendor_name'])
         self.assertEqual(self._driver.VERSION, stats['driver_version'])
         self.assertEqual('vmdk', stats['storage_protocol'])
         self.assertEqual(0, stats['reserved_percentage'])
         self.assertEqual(0, stats['total_capacity_gb'])
         self.assertEqual(0, stats['free_capacity_gb'])
+        self.assertEqual(300, stats['extra_provisioned_capacity_gb'])
         self.assertEqual(vmdk.LOCATION_DRIVER_NAME + ":fake-service",
                          stats['location_info'])
 
@@ -213,25 +235,44 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         class result(object):
             objects = [props()]
-
+        ds_obj = vim_util.get_moref("datastore-85", "Datastore")
         datastores = {"datastore-85": {"summary": summary,
-                                       "storage_profile": {"name": "Gold"}}}
+                                       "storage_profile": {"name": "Gold"},
+                                       "datastore_object": ds_obj}}
         return result(), datastores
 
+    @mock.patch.object(VMDK_DRIVER, '_get_cached_images')
     @mock.patch('cinder.volume.drivers.vmware.datastore.'
                 'DatastoreSelector.is_datastore_usable')
     @mock.patch.object(VMDK_DRIVER, '_collect_backend_stats')
     @mock.patch.object(VMDK_DRIVER, 'session')
     def test_get_volume_stats_pools(self, session, mock_stats,
-                                    datastore_usable):
+                                    datastore_usable, mock_get_cached):
         fake_result, fake_datastore_profiles = self._fake_stats_result()
         mock_stats.return_value = (fake_result, fake_datastore_profiles)
         datastore_usable.return_value = True
         self._config.vmware_datastores_as_pools = True
+        self._config.enable_image_cache = True
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
                                                additional_endpoints=[],
                                                db=self._db)
         self._driver._ds_sel = mock.MagicMock()
+        mock_get_cached.return_value = [
+            {
+                'name': self.IMAGE_ID,
+                'vm_ref': mock.sentinel.backing,
+                'ds_ref': vim_util.get_moref("datastore-85", "Datastore"),
+                'disk_size': 100 * units.Gi,
+                'created_at': None
+            },
+            {
+                'name': self.IMAGE_ID,
+                'vm_ref': mock.sentinel.backing,
+                'ds_ref': vim_util.get_moref("unknown-ds", "Datastore"),
+                'disk_size': 200 * units.Gi,
+                'created_at': None
+            }
+        ]
 
         retr_result_mock = mock.Mock(spec=['objects'])
         retr_result_mock.objects = []
@@ -239,6 +280,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         session.vim.service_content.about.instanceUuid = 'fake-service'
         stats = self._driver.get_volume_stats()
 
+        mock_get_cached.assert_called_once_with()
         self.assertEqual('VMware', stats['vendor_name'])
         self.assertEqual(self._driver.VERSION, stats['driver_version'])
         self.assertEqual('vmdk', stats['storage_protocol'])
@@ -247,6 +289,8 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         self.assertEqual(0, stats["pools"][0]['reserved_percentage'])
         self.assertEqual(9313, stats["pools"][0]['total_capacity_gb'])
         self.assertEqual(4657, stats["pools"][0]['free_capacity_gb'])
+        self.assertEqual(100,
+                         stats["pools"][0]["extra_provisioned_capacity_gb"])
         self.assertEqual('up', stats["pools"][0]['pool_state'])
         self.assertEqual('up', stats["backend_state"])
         self.assertFalse(stats["pools"][0]['multiattach'])
@@ -287,6 +331,7 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                 'size': size,
                 'volume_attachment': attachment,
                 'project_id': project_id,
+                'metadata': {},
                 }
 
     def _create_volume_obj(self,
@@ -837,6 +882,72 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
     def test_copy_image_to_volume_with_ova_container(self):
         self._test_copy_image_to_volume(container_format='ova')
+
+    @ddt.data(
+        ({'enable_image_cache': False},
+         False),
+        ({'enable_image_cache': True, 'use_image_cache': 'N/A'},
+         False),
+        ({'enable_image_cache': True, 'use_image_cache': 'true',
+          'image_cache_max_size_gb': 1, 'image_size': 2 * units.Gi},
+         False),
+        ({'enable_image_cache': True, 'use_image_cache': 'True',
+          'image_cache_max_size_gb': 1, 'image_size': 2 * units.Gi},
+         False),
+        ({'enable_image_cache': True, 'use_image_cache': 'true',
+          'image_cache_max_size_gb': 2, 'image_size': 2 * units.Gi},
+         True)
+    )
+    @ddt.unpack
+    @mock.patch.object(VMDK_DRIVER, '_do_copy_image_to_volume')
+    @mock.patch.object(VMDK_DRIVER, 'volumeops')
+    @mock.patch.object(VMDK_DRIVER, '_extend_backing')
+    @mock.patch.object(VMDK_DRIVER, '_create_volume_from_cached_image')
+    @mock.patch.object(VMDK_DRIVER,
+                       '_get_or_create_cached_image_backing')
+    def test_copy_image_to_volume_cached(self, params, expected,
+                                         mock_get_cached_backing,
+                                         mock_create_from_cached,
+                                         mock_extend_backing,
+                                         mock_volumeops,
+                                         mock_do_copy_image):
+        self._config.enable_image_cache = (
+            params.get('enable_image_cache', False))
+        self._config.image_cache_max_size_gb = (
+            params.get('image_cache_max_size_gb', 0))
+
+        volume = self._create_volume_dict()
+
+        use_image_cache = params.get('use_image_cache')
+        if use_image_cache:
+            volume['metadata']['use_image_cache'] = use_image_cache
+
+        backing = mock.sentinel.backing
+        mock_volumeops.get_backing.return_value = backing
+        mock_volumeops.get_disk_size.return_value = self.VOL_SIZE * units.Gi
+
+        mock_get_cached_backing.return_value = mock.sentinel.backing
+
+        image_service = mock.Mock()
+        image_meta = self._create_image_meta(
+            size=params.get('image_size', 1 * units.Gi))
+        image_service.show.return_value = image_meta
+
+        self._driver.copy_image_to_volume(
+            mock.sentinel.context, volume, image_service, self.IMAGE_ID)
+
+        if expected:
+            mock_do_copy_image.assert_not_called()
+            mock_get_cached_backing.assert_called_once_with(
+                mock.sentinel.context, volume,
+                image_service, self.IMAGE_ID, image_meta)
+            mock_create_from_cached.assert_called_once_with(
+                volume, backing)
+        else:
+            mock_get_cached_backing.assert_not_called()
+            mock_do_copy_image.assert_called_once_with(
+                mock.sentinel.context, volume,
+                image_service, self.IMAGE_ID, image_meta)
 
     @mock.patch('cinder.volume.drivers.vmware.vmdk.VMwareVcVmdkDriver.'
                 '_get_disk_type')
