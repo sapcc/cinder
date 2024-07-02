@@ -39,6 +39,7 @@ from oslo_vmware import image_transfer
 from oslo_vmware import pbm
 from oslo_vmware import vim_util
 
+from cinder import compute
 from cinder import context
 from cinder import exception
 # This is needed to register the SAP config options
@@ -3284,9 +3285,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                                        cinder_host=dest_host,
                                                        volume=volume)
         vol_status = volume.previous_status
-        # abort unsupported operation as soon as possible
-        if vol_status != 'available':
-            return false_ret
         backing = self.volumeops.get_backing(volume.name, volume.id)
         # upgrade shadow vm to support FCD
         vmx = volumeops.VMX_VERSION
@@ -3349,4 +3347,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             )
             volume.update({'provider_location': prov_loc})
             volume.save()
+            if vol_status == 'in-use':
+                nova_api = compute.API()
+                attachments = volume.volume_attachment
+                instance_uuid = attachments[0]['instance_uuid']
+                nova_api.update_server_volume(context, instance_uuid,
+                                              volume.id, volume.id)
+
             return (True, None)
