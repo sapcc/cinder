@@ -175,7 +175,7 @@ class API(base.Base):
 
     def update_server_volume(self, context, server_id, src_volid,
                              new_volume_id):
-        #2.85 micro version support update of attachments without swaping
+        # 2.85 micro version support update of attachments without swaping
         api_version = '2.85'
         nova = novaclient(context, privileged_user=True,
                           api_version=api_version)
