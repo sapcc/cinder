@@ -3335,11 +3335,14 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 get_vm_by_uuid = self.volumeops.get_backing_by_uuid
                 attachedvm = get_vm_by_uuid(instance_uuid)
                 profile_id = tgt_ds.get('profile_id')
-                rp_ref = vim_util.get_moref(tgt_ds['resource_pool'], 'ResourcePool')
-                self.volumeops.relocate_one_disk(attachedvm, ds_ref, rp_ref,
-                                         volume_id=volume.id,
-                                         profile_id=profile_id)
-                fcd_loc_new = volumeops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
+                rp_ref = vim_util.get_moref(tgt_ds['resource_pool'],
+                                            'ResourcePool')
+                self.volumeops.relocate_one_disk(attachedvm,
+                                                 ds_ref, rp_ref,
+                                                 volume_id=volume.id,
+                                                 profile_id=profile_id)
+                fcd_loc_new = volumeops.FcdLocation(fcd_loc.fcd_id,
+                                                    ds_ref.value)
                 prov_loc = self._provider_location_to_ds_name_location(
                     fcd_loc_new.provider_location()
                 )
