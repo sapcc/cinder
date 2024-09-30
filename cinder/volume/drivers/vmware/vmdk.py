@@ -3283,6 +3283,16 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                                        volume=volume)
         vol_status = volume.previous_status
         backing = self.volumeops.get_backing(volume.name, volume.id)
+        # If the backing is not yet created, there is no need to migrate
+        if not backing:
+            # we need to create the backing and then migrate it.
+            LOG.debug("Backing does not exist for volume.", resource=volume)
+            backing = self._create_backing(volume)
+            if not backing:
+                LOG.error("Failed to create backing for volume prior to migration to fcd.",
+                          resource=volume)
+                raise Exception("Failed to create backing for volume prior to migration to fcd.")
+
         # upgrade shadow vm to support FCD
         vmx = volumeops.VMX_VERSION
         try:
