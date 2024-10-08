@@ -791,7 +791,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
         disk_type = _get_volume_type_extra_spec(type_id,
                                                 'vmdk_type',
-                                                default_value=THIN_VMDK_TYPE)
+                                                default_value=THICK_VMDK_TYPE)
         volumeops.VirtualDiskType.validate(disk_type)
         return disk_type
 
