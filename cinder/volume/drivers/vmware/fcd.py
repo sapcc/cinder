@@ -786,17 +786,26 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         else:
             service_locator = None
 
+        (_, _, _, src_ds_info) = self._select_ds_for_volume(volume)
+
+        LOG.warning(f"ds_info: {ds_info}")
+        LOG.warning(f"src_ds_info: {src_ds_info}")
+
         ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
         new_profile_id = ds_info.get('profile_id')
 
-        self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                    service_locator)
-        fcd_loc_new = vops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
-        # Convert the provider location from the moref format to the
-        # datastore name format to store in the cinder DB.
-        prov_loc = self._provider_location_to_ds_name_location(
-            fcd_loc_new.provider_location()
-        )
+        if ds_info['datastore_url'] != src_ds_info['url']:
+            self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
+                                        service_locator)
+        prov_loc = self._remote_api.get_fcd_provider_location(
+            context, dest_host, fcd_loc.fcd_id, ds_ref.value)
+        # fcd_loc_new = vops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
+        # # Convert the provider location from the moref format to the
+        # # datastore name format to store in the cinder DB.
+        # prov_loc = self._provider_location_to_ds_name_location(
+        #     fcd_loc_new.provider_location()
+        # )
+        fcd_loc_new = vops.FcdLocation(prov_loc.fcd_id, ds_ref.value)
         volume.update({'provider_location': prov_loc})
         volume.save()
         if cross_vc:

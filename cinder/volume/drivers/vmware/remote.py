@@ -69,6 +69,11 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
                           prov_loc=prov_loc,
                           profile_id=profile_id)
 
+    def get_fcd_provider_location(self, ctxt, host, fcd_id, datastore_ref):
+        cctxt = self._get_cctxt(host)
+        return cctxt.call(ctxt, 'get_fcd_provider_location',
+                          fcd_id=fcd_id, datastore_ref=datastore_ref)
+
 
 class VmdkDriverRemoteService(object):
     RPC_API_VERSION = VmdkDriverRemoteApi.RPC_API_VERSION
@@ -98,6 +103,7 @@ class VmdkDriverRemoteService(object):
             'resource_pool': rp.value,
             'folder': folder.value,
             'datastore': summary.datastore.value,
+            'datastore_url': summary.url,
             'profile_id': profile_id,
         }
 
@@ -127,3 +133,12 @@ class VmdkDriverRemoteService(object):
         fcd_location = vops._get_fcd_loc(prov_loc)
         return self._driver.volumeops.update_fcd_policy(fcd_location,
                                                         profile_id)
+
+    def get_fcd_provider_location(self, ctxt, fcd_id, datastore_ref):
+        fcd_loc_new = self._driver.volumeops.FcdLocation(fcd_id, datastore_ref)
+        # Convert the provider location from the moref format to the
+        # datastore name format to store in the cinder DB.
+        prov_loc = self._provider_location_to_ds_name_location(
+            fcd_loc_new.provider_location()
+        )
+        return prov_loc
