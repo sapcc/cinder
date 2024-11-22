@@ -3134,9 +3134,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         except ValueError:
             return false_ret
 
-        if ((volume['status'] == 'retyping') and
-           (driver_name == 'VMwareVcFcdDriver')):
-            LOG.info("Retyping volume %s to FCD driver.", volume['id'])
+        # This covers retype and migration
+        if (driver_name == 'VMwareVcFcdDriver'):
+            LOG.info("Retyping/Migrating volume %s to FCD driver.",
+                     volume['id'])
             return self._migrate_to_fcd(context, volume, host)
 
         if driver_name != self._driver_name():
@@ -3163,6 +3164,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             return self._migrate_unattached(context, dest_host, volume,
                                             backing)
 
+    @volume_utils.trace
     def _migrate_attached_same_vc(self, context, dest_host, volume, backing):
         get_vm_by_uuid = self.volumeops.get_backing_by_uuid
         # reusing the get_backing_by_uuid to lookup the attacher vm
@@ -3191,6 +3193,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         return (True, None)
 
+    @volume_utils.trace
     def _migrate_unattached(self, context, dest_host, volume, backing):
         ds_info = self._remote_api.select_ds_for_volume(context,
                                                         cinder_host=dest_host,
@@ -3220,6 +3223,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                            'folder': ds_info['folder']},)
             return (True, {'migration_status': 'error'})
 
+    @volume_utils.trace
     def _migrate_attached_cross_vc(self, context, dest_host, volume, backing):
         try:
             # Create a diskless backing vm, so we can attach the
@@ -3238,6 +3242,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                           {'volume_id': volume['id'], }, )
             return (True, {'migration_status': 'error'})
 
+    @volume_utils.trace
     def update_migrated_volume(self, ctxt, volume, new_volume,
                                original_volume_status):
         if original_volume_status == 'in-use':
