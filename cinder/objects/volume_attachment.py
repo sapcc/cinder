@@ -147,6 +147,11 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
     def _convert_connection_info_to_db_format(updates):
         properties = updates.pop('connection_info', None)
         if properties is not None:
+            # SAP: Remove sensitive data from the connection_info
+            # before storing it in the database
+            if properties.get('config', {}).get('vmware_host_ip'):
+                del properties['config']
+
             updates['connection_info'] = jsonutils.dumps(properties)
 
     @staticmethod
