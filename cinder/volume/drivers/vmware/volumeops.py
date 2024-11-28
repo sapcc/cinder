@@ -2157,7 +2157,11 @@ class VMwareVolumeOps(object):
             backing_spec.path = path + '/'
         return backing_spec
 
-    def get_vmdk_path_for_fcd(self, ds_ref, disk_id):
+    def get_vmdk_path_for_fcd(self, ds_ref=None, disk_id=None, fcd_loc=None):
+        cf = self._session.vim.client.factory
+        if fcd_loc:
+            ds_ref = fcd_loc.ds_ref()
+            disk_id = fcd_loc.id(cf)
         vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
         fcd_obj = self._session.invoke_api(
             self._session.vim,
@@ -2167,6 +2171,21 @@ class VMwareVolumeOps(object):
             datastore=ds_ref)
         vmdk_path = fcd_obj.config.backing.filePath
         return vmdk_path
+
+    def get_vmdk_size_for_fcd(self, ds_ref=None, disk_id=None, fcd_loc=None):
+        cf = self._session.vim.client.factory
+        if fcd_loc:
+            ds_ref = fcd_loc.ds_ref()
+            disk_id = fcd_loc.id(cf)
+        vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
+        fcd_obj = self._session.invoke_api(
+            self._session.vim,
+            'RetrieveVStorageObject',
+            vstorage_mgr,
+            id=disk_id,
+            datastore=ds_ref)
+        size_mb = fcd_obj.config.capacityInMB
+        return size_mb
 
     @volume_utils.trace
     def update_fcd_vmdk_uuid(self, ds_ref, vmdk_path, cinder_uuid):
@@ -2222,22 +2241,15 @@ class VMwareVolumeOps(object):
         LOG.debug("Created fcd: %s.", fcd_loc)
         return fcd_loc
 
-    def delete_fcd(self, fcd_location, delete_folder=True):
-        cf = self._session.vim.client.factory
-        vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
-        vmdk_file = self.get_vmdk_path_for_fcd(fcd_location.ds_ref(),
-                                               fcd_location.id(cf))
-        dc_ref = self.get_dc(fcd_location.ds_ref())
-        ds_name, folder, _ = split_datastore_path(vmdk_file)
-        LOG.debug("Deleting fcd: %s.", fcd_location)
-        task = self._session.invoke_api(self._session.vim,
-                                        'DeleteVStorageObject_Task',
-                                        vstorage_mgr,
-                                        id=fcd_location.id(cf),
-                                        datastore=fcd_location.ds_ref())
-        self._session.wait_for_task(task)
-        if delete_folder:
-            self.delete_datastore_folder(ds_name, folder, dc_ref)
+    def get_managed_by(self, instance):
+        """Get ManagedByInfo info from vm instance
+
+        :param instance: Managed object reference of the instance VM
+        :return: summary.config.managedBy
+        """
+        return self._session.invoke_api(vim_util, 'get_object_property',
+                                        self._session.vim, instance,
+                                        'summary.config.managedBy')
 
     def get_fcd_consumer(self, ds_ref, disk_id):
         vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
@@ -2252,6 +2264,37 @@ class VMwareVolumeOps(object):
                 fcd_obj.config.consumerId != []):
             consumer = fcd_obj.config.consumerId[0].id
         return consumer
+
+    def delete_fcd(self, fcd_location, delete_folder=False):
+        cf = self._session.vim.client.factory
+        srv_content = self._session.vim.service_content
+        vstorage_mgr = srv_content.vStorageObjectManager
+        consumer = self.get_fcd_consumer(fcd_location.ds_ref(),
+                                         fcd_location.id(cf))
+        if consumer:
+            instance = self.get_backing_by_uuid(consumer)
+            self.detach_fcd(instance, fcd_location)
+            # We only delete shadowvm leftovers not nova instances
+            managed_by = self.get_managed_by(instance)
+            if (managed_by.extensionKey == self._extension_key and
+                    managed_by.type == self._extension_type):
+                self.delete_backing(instance)
+        vmdk_file = self.get_vmdk_path_for_fcd(fcd_location.ds_ref(),
+                                               fcd_location.id(cf))
+        dc_ref = self.get_dc(fcd_location.ds_ref())
+        ds_name, folder, _ = split_datastore_path(vmdk_file)
+        LOG.debug("Deleting fcd: %s.", fcd_location)
+        task = self._session.invoke_api(self._session.vim,
+                                        'DeleteVStorageObject_Task',
+                                        vstorage_mgr,
+                                        id=fcd_location.id(cf),
+                                        datastore=fcd_location.ds_ref())
+        self._session.wait_for_task(task)
+        folder_path = f"[{ds_name}] {folder}"
+        file_list = self.file_list_in_folder(fcd_location.ds_ref(),
+                                             folder_path)
+        if delete_folder and file_list == []:
+            self.delete_datastore_folder(ds_name, folder, dc_ref)
 
     def clone_fcd(
             self, volume, fcd_location, dest_ds_ref,
@@ -2564,6 +2607,46 @@ class VMwareVolumeOps(object):
 
     def _get_fcd_loc(self, prov_loc):
         return FcdLocation.from_provider_location(prov_loc)
+
+    def _get_browser(self, ds_ref):
+        value = ds_ref.value.replace('datastore', 'datastoreBrowser-datastore')
+        browser = vim_util.get_moref(value, 'HostDatastoreBrowser')
+        return browser
+
+    def _get_HostDatastoreBrowserSearchSpec(self, pattern, details=None):
+        cf = self._session.vim.client.factory
+        browser_spec = cf.create("ns0:HostDatastoreBrowserSearchSpec")
+        browser_spec.matchPattern = pattern
+        browser_spec.details = details
+        return browser_spec
+
+    def _get_subfolder_list(self, browser, folder_path, search_spec):
+        task = self._session.invoke_api(self._session.vim,
+                                        'SearchDatastoreSubFolders_Task',
+                                        browser, datastorePath=folder_path,
+                                        searchSpec=search_spec)
+        return task
+
+    def file_list_in_folder(self, ds_ref, folder_path):
+        def _get_task_detail(task_ref, session):
+            lst_props = ["info"]
+            props = session.invoke_api(vim_util, "get_object_properties_dict",
+                                       session.vim, task_ref, lst_props)
+            return props["info"]
+        browser = self._get_browser(ds_ref)
+        search_spec = self._get_HostDatastoreBrowserSearchSpec('*')
+        search_task = self._get_subfolder_list(browser, folder_path,
+                                               search_spec)
+        self._session.wait_for_task(search_task)
+        info = _get_task_detail(search_task, self._session)
+        res = []
+        if info.state == "success":
+            for i in info.result[0]:
+                if hasattr(i, 'file') and i.file != []:
+                    for j in i.file:
+                        res.append(i.folderPath + j.path)
+
+        return res
 
 
 class FcdLocation(object):
