@@ -2022,14 +2022,18 @@ class VolumeOpsTestCase(test.TestCase):
         self.session.wait_for_task.assert_called_once_with(task)
 
     @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
+                'file_list_in_folder')
+    @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
                 'get_dc')
     @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
                 'get_vmdk_path_for_fcd')
-    def test_delete_fcd(self, get_vmdk_path_for_fcd,
-                        get_dc):
+    @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
+                'get_fcd_consumer')
+    def test_delete_fcd(self, get_fcd_consumer, get_vmdk_path_for_fcd,
+                        get_dc, file_list):
         task = mock.sentinel.task
         self.session.invoke_api.return_value = task
-
+        file_list.return_value = []
         fcd_location = mock.Mock()
         fcd_id = mock.sentinel.fcd_id
         fcd_location.id.return_value = fcd_id
@@ -2038,7 +2042,7 @@ class VolumeOpsTestCase(test.TestCase):
         get_vmdk_path_for_fcd.return_value = (
             "[ds-1] volume-9b3f6f1b-03a9-4f1e-abc123")
         get_dc.return_value = mock.sentinel.dc
-
+        get_fcd_consumer.return_value = None
         self.vops.delete_fcd(fcd_location, delete_folder=False)
         self.session.invoke_api.assert_called_with(
             self.session.vim,

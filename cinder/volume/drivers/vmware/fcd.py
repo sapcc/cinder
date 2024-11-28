@@ -197,12 +197,39 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         return fcd_snap_loc.provider_location()
 
     @volume_utils.trace
+    def _get_adapter_type(self, volume):
+        """Get the adapter type for the volume.
+
+        :param volume: Volume object
+        :returns: Adapter type
+        """
+        if volume.bootable:
+            # Fetch the adapter type from the image metadata
+            image_metadata = volume.glance_metadata
+            if image_metadata:
+                return image_metadata.get(
+                    'vmware_adaptertype',
+                    super(VMwareVStorageObjectDriver,
+                          self)._get_adapter_type(volume)
+                )
+            else:
+                return super(VMwareVStorageObjectDriver,
+                             self)._get_adapter_type(volume)
+        else:
+            return super(VMwareVStorageObjectDriver,
+                         self)._get_adapter_type(volume)
+
+    @volume_utils.trace
     def create_volume(self, volume):
         """Create a new volume on the backend.
 
         :param volume: Volume object containing specifics to create.
         :returns: (Optional) dict of database updates for the new volume.
         """
+        if volume.glance_metadata:
+            LOG.debug("FCD volume is being created from image.")
+            return
+
         disk_type = self._get_disk_type(volume)
         ds_ref = self._select_ds_fcd(volume)
         profile_id = self._get_storage_profile_id(volume)
@@ -292,6 +319,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             backing_moref = backing.value
             vmdk_path = self.volumeops.get_vmdk_path(backing)
             datacenter = self.volumeops.get_dc(backing)
+        else:
+            vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+            datacenter = self.volumeops.get_dc(fcd_loc.ds_ref())
 
         connection_info = {
             'driver_volume_type': self.STORAGE_TYPE,
@@ -395,6 +425,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             LOG.error(msg)
             raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
 
+    def _destroy_backing(self, backing):
+        """Destroys the shadowVM VirtualMachine object"""
+        disk_device = self.volumeops._get_disk_device(backing)
+        self.volumeops.detach_disk_from_backing(backing,
+                                                disk_device)
+        self.volumeops.delete_backing(backing)
+
     @volume_utils.trace
     def copy_image_to_volume(self, context, volume, image_service, image_id,
                              disable_sparse=False):
@@ -419,22 +456,37 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         vmdk.ImageDiskType.validate(disk_type)
 
         size_bytes = metadata['size']
-        dc_ref, summary, folder_path = self._get_temp_image_folder_from_volume(
-            volume)
-        disk_name = volume.id
-        if disk_type in [vmdk.ImageDiskType.SPARSE,
-                         vmdk.ImageDiskType.STREAM_OPTIMIZED]:
-            vmdk_path = self._create_virtual_disk_from_sparse_image(
-                context, image_service, image_id, size_bytes, dc_ref,
-                summary.name, folder_path, disk_name)
+        if disk_type == vmdk.ImageDiskType.STREAM_OPTIMIZED:
+            image_adapter_type = self._get_adapter_type(volume)
+            properties = metadata['properties']
+            if properties:
+                if 'vmware_adaptertype' in properties:
+                    image_adapter_type = properties['vmware_adaptertype']
+            backing = self._fetch_stream_optimized_image(
+                context, volume,
+                image_service, image_id, size_bytes,
+                image_adapter_type)
+            ds_ref = self.volumeops.get_datastore(backing)
+            dc_ref = self.volumeops.get_dc(ds_ref)
+            vmdk_path = self.volumeops.get_vmdk_path(backing)
+            self._destroy_backing(backing)
         else:
-            vmdk_path = self._create_virtual_disk_from_preallocated_image(
-                context, image_service, image_id, size_bytes, dc_ref,
-                summary.name, folder_path, disk_name,
-                vops.VirtualDiskAdapterType.LSI_LOGIC)
+            disk_name = volume.id
+            dc_ref, summary, folder_path = \
+                self._get_temp_image_folder_from_volume(volume)
+            if disk_type == vmdk.ImageDiskType.SPARSE:
+                vmdk_path = self._create_virtual_disk_from_sparse_image(
+                    context, image_service, image_id, size_bytes, dc_ref,
+                    summary.name, folder_path, disk_name)
+            else:
+                vmdk_path = self._create_virtual_disk_from_preallocated_image(
+                    context, image_service, image_id, size_bytes, dc_ref,
+                    summary.name, folder_path, disk_name,
+                    vops.VirtualDiskAdapterType.LSI_LOGIC)
+            vmdk_path = vmdk_path.get_descriptor_ds_file_path()
+            ds_ref = summary.datastore
 
-        ds_path = datastore.DatastorePath.parse(
-            vmdk_path.get_descriptor_ds_file_path())
+        ds_path = datastore.DatastorePath.parse(vmdk_path)
         dc_path = self.volumeops.get_inventory_path(dc_ref)
 
         vmdk_url = datastore.DatastoreURL(
@@ -442,20 +494,29 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             dc_path, ds_path.datastore)
 
         fcd_loc = self.volumeops.register_disk(
-            str(vmdk_url), volume.name, summary.datastore)
+            str(vmdk_url), volume.name, ds_ref)
 
         profile_id = self._get_storage_profile_id(volume)
         if profile_id:
             self.volumeops.update_fcd_policy(fcd_loc, profile_id)
 
-        fcd_vmdk_path = vmdk_path.get_descriptor_ds_file_path()
-        self.volumeops.update_fcd_vmdk_uuid(summary.datastore,
-                                            fcd_vmdk_path, volume.id)
+        # Extend the volume if needed
+        # break this up to 2 lines to pass pep8
+        if hasattr(metadata, 'virtual_size'):
+            image_gib = int(metadata['virtual_size'] / units.Gi)
+        else:
+            image_gib = int(self.volumeops.get_vmdk_size_for_fcd(
+                fcd_loc=fcd_loc) / units.Gi)
+        image_size = 1 if image_gib == 0 else image_gib
+        self._extend_if_needed(fcd_loc, image_size, volume.size)
+        self.volumeops.update_fcd_vmdk_uuid(ds_ref,
+                                            vmdk_path, volume.id)
 
         provider_location = self._provider_location_to_ds_name_location(
             fcd_loc.provider_location()
         )
-        return {'provider_location': provider_location}
+        volume.update({'provider_location': provider_location})
+        volume.save()
 
     @volume_utils.trace
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
@@ -874,15 +935,12 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         )
         volume.update({'provider_location': prov_loc})
         volume.save()
-        
-        backing = self.volumeops.get_backing(volume.name, volume.id)
-        chost = self.volumeops.get_host(backing)
-        dc_ref = self.volumeops.get_dc(chost)
-        disk_dev = self.volumeops.get_disk_by_uuid(backing, volume.id)
-        vmdk_path = disk_dev.backing.fileName
-        
+
+        dc_ref = self.volumeops.get_dc(ds_ref)
+        vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc_new)
+
         self._update_fcd_attachment_info_for_nova(
-            context, volume, prov_loc,
+            context, volume, fcd_loc_new,
             vmdk_path,
             dc_ref
         )
