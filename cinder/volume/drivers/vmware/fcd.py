@@ -51,6 +51,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     # 1.1 - support for vStorageObject snapshot APIs
     # 1.2 - support for SPBM storage policies
     # 1.3 - support for retype
+    # REMOVEME TEST TEST TEST
     VERSION = '1.3.0'
 
     # ThirdPartySystems wiki page
