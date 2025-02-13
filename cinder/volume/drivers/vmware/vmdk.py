@@ -220,6 +220,13 @@ vmdk_opts = [
                'cinder-volume container having to proxy the image between '
                'glance and VMware.'
                ),
+    cfg.StrOpt('vmware_netapp_user',
+               default=None,
+               help='Username to use to connect to the netapp servers'),
+    cfg.StrOpt('vmware_netapp_password',
+               default=None,
+               help='Password to use to connect to the netapp servers',
+               secret=True),
 ]
 
 CONF = cfg.CONF
@@ -380,6 +387,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._remote_api = remote_api.VmdkDriverRemoteApi()
         self._storage_profiles = []
         self._volume_type_by_backend = None
+        # This is a cache of the netapp_fqdn lookup
+        # based on the datastore name.
+        self._netapp_lookup = {}
 
     @staticmethod
     def get_driver_options():
@@ -633,6 +643,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         has_aggregate_pool = True
                         aggregate_id = \
                             custom_attributes['cinder_aggregate_id']
+                    if 'netapp_fqdn' in custom_attributes:
+                        self._netapp_lookup[summary.name] = \
+                            custom_attributes['netapp_fqdn']
 
                 pool = {'pool_name': summary.name,
                         'total_capacity_gb': round(

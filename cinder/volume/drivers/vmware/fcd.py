@@ -34,6 +34,7 @@ from cinder import exception
 from cinder.i18n import _
 from cinder import interface
 from cinder.volume.drivers.vmware import vmdk
+from cinder.volume.drivers.vmware.vmdk import _get_volume_type_extra_spec
 from cinder.volume.drivers.vmware import volumeops as vops
 from cinder.volume import volume_utils
 
@@ -212,7 +213,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         # Check if the quality type is 'standard', then we need to apply
         # the storage policy on the netapp for the vmdk file associated
         # with this volume.
-        quality_type = self._get_volume_type_extra_spec(volume['volume_type_id'], 'quality_type')
+        quality_type = _get_volume_type_extra_spec(
+                volume['volume_type_id'],
+                'quality_type'
+            )
         if quality_type == 'standard':
             # apply the netapp storage policy on the vmdk file.
             # what netapp do we talk to?
@@ -220,7 +224,6 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             # create the correct rest client that is connected to that netapp
             # so we can apply the qos setting on the vmdk file.a
             pass
-            
 
         # Convert the provider_location from the moref format to the
         # datastore name format to store in the cinder DB.
