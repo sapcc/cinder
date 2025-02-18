@@ -195,6 +195,25 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         fcd_snap_loc.fcd_loc = snap_loc
         return fcd_snap_loc.provider_location()
 
+    def _get_adapter_type(self, volume):
+        """Get the adapter type for the volume.
+
+        :param volume: Volume object
+        :returns: Adapter type
+        """
+        if volume.bootable:
+            # Fetch the adapter type from the image metadata
+            image_metadata = volume.glance_metadata
+            if image_metadata:
+                return image_metadata.get(
+                    'adapter_type',
+                    super(VMwareVStorageObjectDriver, self)._get_adapter_type(volume)
+                )
+            else:
+                return super(VMwareVStorageObjectDriver, self)._get_adapter_type(volume)
+        else:
+            return super(VMwareVStorageObjectDriver, self)._get_adapter_type(volume)
+
     @volume_utils.trace
     def create_volume(self, volume):
         """Create a new volume on the backend.
