@@ -492,7 +492,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         profile_id = self._get_storage_profile_id(volume)
         if profile_id:
             self.volumeops.update_fcd_policy(fcd_loc, profile_id)
-
+        try:
+            self.volumeops.extend_fcd(fcd_loc, volume['size'])
+        except Exception as e:
+            pass
         self.volumeops.update_fcd_vmdk_uuid(ds_ref,
                                             vmdk_path, volume.id)
 
