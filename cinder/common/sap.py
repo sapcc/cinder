@@ -25,5 +25,9 @@ sap_custom_opts = [
                 default=False,
                 help='Allow cinder to schedule a clone volume on a pool '
                      'other than the source volume pool.'),
+    cfg.StrOpt('sap_barbican_acl_user_id',
+               default=None,
+               help='ID of the technical user for which to add ACL '
+                    'in Barbican when an encryption key is created.')
 ]
 CONF.register_opts(sap_custom_opts)

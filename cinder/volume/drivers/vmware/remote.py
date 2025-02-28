@@ -67,11 +67,13 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
         return cctxt.call(ctxt, 'destory_backing', volume=volume)
 
     @volume_utils.trace
-    def update_fcd_policy(self, ctxt, cinder_host, prov_loc, profile_id):
+    def update_fcd_policy(self, ctxt, cinder_host, prov_loc, profile_id,
+                          key_id=None):
         cctxt = self._get_cctxt(cinder_host)
         return cctxt.call(ctxt, 'update_fcd_policy',
                           prov_loc=prov_loc,
-                          profile_id=profile_id)
+                          profile_id=profile_id,
+                          key_id=key_id)
 
     def get_fcd_provider_location(self, ctxt, host, fcd_id, datastore_ref):
         cctxt = self._get_cctxt(host)
@@ -132,11 +134,12 @@ class VmdkDriverRemoteService(object):
         self._driver.volumeops.delete_backing(backing)
 
     @volume_utils.trace
-    def update_fcd_policy(self, ctxt, prov_loc, profile_id):
+    def update_fcd_policy(self, ctxt, prov_loc, profile_id, key_id=None):
         vops = self._driver.volumeops
         fcd_location = vops._get_fcd_loc(prov_loc)
         return self._driver.volumeops.update_fcd_policy(fcd_location,
-                                                        profile_id)
+                                                        profile_id,
+                                                        key_id=key_id)
 
     def get_fcd_provider_location(self, ctxt, fcd_id, datastore_ref):
         fcd_loc_new = self._driver._get_fcd_location(fcd_id, datastore_ref)
