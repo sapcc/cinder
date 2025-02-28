@@ -47,6 +47,7 @@ from cinder.common import sap # noqa
 from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
+from cinder.keymgr import kmip
 from cinder.objects import snapshot as snapshot_obj
 from cinder.volume import configuration
 from cinder.volume import driver
@@ -220,6 +221,13 @@ vmdk_opts = [
                'cinder-volume container having to proxy the image between '
                'glance and VMware.'
                ),
+    cfg.StrOpt('kmip_api_url',
+               default="http://kmip-barbican:5006",
+               help='KMIP rest API base URL'),
+    cfg.StrOpt('barbican_url',
+               default="http://barbican-api:9311",
+               help='Barbican base URL passed to the KMIP API to register a '
+                    'key. The URL must be accessible by the KMIP API.'),
 ]
 
 CONF = cfg.CONF
@@ -381,6 +389,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._remote_api = remote_api.VmdkDriverRemoteApi()
         self._storage_profiles = []
         self._volume_type_by_backend = None
+
+        self._kmip_api = kmip.KMIPRestApiClient(
+            kmip_url=self.configuration.kmip_api_url,
+            barbican_url=self.configuration.barbican_url)
 
     @staticmethod
     def get_driver_options():
@@ -2011,6 +2023,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                  VMwareVcVmdkDriver._get_disk_type(volume))
         # TODO(vbala): handle volume_size < disk_size case.
 
+    def copy_image_to_encrypted_volume(
+            self, context, volume, image_service, image_id):
+        # We don't do anything special as encryption is handled by the vCenter
+        self.copy_image_to_volume(context, volume, image_service, image_id)
+
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Creates glance image from volume.
 
@@ -2544,7 +2561,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         max_objects = self.configuration.vmware_max_objects_retrieval
         self._volumeops = volumeops.VMwareVolumeOps(
-            self.session, max_objects, EXTENSION_KEY, EXTENSION_TYPE)
+            self.session, max_objects, EXTENSION_KEY, EXTENSION_TYPE,
+            self.configuration, self._kmip_api)
         random_ds = self.configuration.vmware_select_random_best_datastore
         random_ds_range = self.configuration.vmware_random_datastore_range
         self._ds_sel = hub.DatastoreSelector(
@@ -3379,11 +3397,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         prov_loc = fcd_loc.provider_location()
         self.volumeops.delete_backing(backing)
         ds_ref = vim_util.get_moref(tgt_ds['datastore'], 'Datastore')
+        profile_id = tgt_ds.get('profile_id')
         if (ds_ref.value != summary.datastore.value):
             # Migration required
             if vol_status == 'available':
-                self.volumeops.relocate_fcd(fcd_loc, ds_ref,
-                                            volume.name)
+                self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
+                                            service=None,
+                                            profile_id=profile_id)
                 old_mref = summary.datastore.value
                 new_prov_loc = prov_loc.replace(old_mref, ds_ref.value)
                 prov_loc = self._provider_location_to_ds_name_location(
@@ -3397,7 +3417,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 instance_uuid = attachments[0]['instance_uuid']
                 get_vm_by_uuid = self.volumeops.get_backing_by_uuid
                 attachedvm = get_vm_by_uuid(instance_uuid)
-                profile_id = tgt_ds.get('profile_id')
                 rp_ref = vim_util.get_moref(tgt_ds['resource_pool'],
                                             'ResourcePool')
                 self.volumeops.relocate_one_disk(attachedvm,
