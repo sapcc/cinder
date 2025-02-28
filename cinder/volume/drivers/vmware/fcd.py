@@ -233,9 +233,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         disk_type = self._get_disk_type(volume)
         ds_ref = self._select_ds_fcd(volume)
         profile_id = self._get_storage_profile_id(volume)
+        key_id = self._register_kmip_key_id(volume)
         fcd_loc = self.volumeops.create_fcd(
             volume.id, volume.name, volume.size * units.Ki, ds_ref,
-            disk_type, profile_id=profile_id)
+            disk_type, profile_id=profile_id, key_id=key_id)
 
         # Convert the provider_location from the moref format to the
         # datastore name format to store in the cinder DB.
@@ -340,6 +341,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 'datacenter': datacenter,
             }
         }
+
+        kmip_key_id = self._get_kmip_key_id(volume)
+        if kmip_key_id:
+            connection_info['data']['kmip_key_id'] = kmip_key_id
 
         # This is needed by the backup process (os-brick)
         if self._is_os_brick_connector(connector):
@@ -498,7 +503,16 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         profile_id = self._get_storage_profile_id(volume)
         if profile_id:
-            self.volumeops.update_fcd_policy(fcd_loc, profile_id)
+            key_id = self._register_kmip_key_id(volume)
+            self.volumeops.update_fcd_policy(
+                fcd_loc, profile_id, key_id=key_id, is_new=True)
+            if key_id:
+                # VMware moves the disk to another path after encryption
+                vmdk_path = self._volumeops.get_vmdk_path_for_fcd(
+                    fcd_loc=fcd_loc)
+
+        self.volumeops.update_fcd_vmdk_uuid(ds_ref,
+                                            vmdk_path, volume.id)
 
         # Extend the volume if needed
         # break this up to 2 lines to pass pep8
@@ -509,14 +523,27 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 fcd_loc=fcd_loc) / units.Gi)
         image_size = 1 if image_gib == 0 else image_gib
         self._extend_if_needed(fcd_loc, image_size, volume.size)
-        self.volumeops.update_fcd_vmdk_uuid(ds_ref,
-                                            vmdk_path, volume.id)
 
         provider_location = self._provider_location_to_ds_name_location(
             fcd_loc.provider_location()
         )
         volume.update({'provider_location': provider_location})
         volume.save()
+
+    def _register_kmip_key_id(self, obj):
+        if getattr(obj, 'encryption_key_id', None):
+            owner = self.configuration.vmware_host_ip
+            return self._kmip_api.kmip_register(
+                obj.encryption_key_id,
+                owner,
+                "default")
+        return None
+
+    def _get_kmip_key_id(self, obj):
+        barbican_id = getattr(obj, 'encryption_key_id', None)
+        if barbican_id:
+            return self._kmip_api.get_kmip_id(barbican_id)
+        return None
 
     @volume_utils.trace
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
@@ -595,7 +622,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
     def _clone_fcd(self, provider_loc, volume, dest_ds_ref,
                    disk_type=vops.VirtualDiskType.THIN,
-                   profile_id=None):
+                   profile_id=None, key_id=None):
         # Must pass in the moref format for the provider location
         fcd_loc = vops.FcdLocation.from_provider_location(provider_loc)
         cf = self._session.vim.client.factory
@@ -612,7 +639,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         else:
             return self.volumeops.clone_fcd(
                 volume, fcd_loc, dest_ds_ref,
-                disk_type, profile_id=profile_id
+                disk_type, profile_id=profile_id, key_id=key_id
             )
 
     @volume_utils.trace
@@ -642,7 +669,11 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         provider_location = self._provider_location_to_moref_location(
             snapshot.volume.provider_location
         )
-        cloned_fcd_loc = self._clone_fcd(provider_location, snapshot, ds_ref)
+        profile_id = self._get_storage_profile_id(snapshot.volume)
+        key_id = self._register_kmip_key_id(snapshot)
+        cloned_fcd_loc = self._clone_fcd(provider_location, snapshot, ds_ref,
+                                         profile_id=profile_id,
+                                         key_id=key_id)
         # Now convert the fcd snapshot provider location to the
         # datastore format
         provider_location = self._provider_location_to_ds_name_location(
@@ -688,9 +719,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         provider_loc = self._provider_location_to_moref_location(
             provider_location
         )
+        key_id = self._register_kmip_key_id(volume)
         cloned_fcd_loc = self._clone_fcd(
             provider_loc, volume, ds_ref, disk_type=disk_type,
-            profile_id=profile_id)
+            profile_id=profile_id, key_id=key_id)
         self._extend_if_needed(cloned_fcd_loc, cur_size, volume.size)
         # Convert the provider location from the moref format to the
         # datastore name format to store in the cinder DB.
@@ -715,8 +747,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             fcd_snap_loc = vops.FcdSnapshotLocation.from_provider_location(
                 snap_location)
             profile_id = self._get_storage_profile_id(volume)
+            key_id = self._register_kmip_key_id(volume)
             fcd_loc = self.volumeops.create_fcd_from_snapshot(
-                fcd_snap_loc, volume.name, volume.id, profile_id=profile_id)
+                fcd_snap_loc, volume.name, volume.id, profile_id=profile_id,
+                key_id=key_id)
             self._extend_if_needed(fcd_loc, snapshot.volume_size, volume.size)
             # Convert the provider location from the moref format to the
             # datastore name format to store in the cinder DB.
@@ -872,7 +906,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         if ds_info['datastore_url'] != src_ds_info['url']:
             self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                        service_locator)
+                                        service_locator, new_profile_id)
 
         # if we are migrating to a different DS on the same host
         # there is no reason to call the remote_api to get the
@@ -892,13 +926,15 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         volume.update({'provider_location': prov_loc})
         volume.save()
+        key_id = self._get_kmip_key_id(volume)
         if cross_vc:
             if self._use_fcd_cross_vc_migration:
                 # Use the native FCD cross vc migration from 8.0U3 and >
                 fcd_loc_moid = vops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
                 prov_loc_moid = fcd_loc_moid.provider_location()
                 self._remote_api.update_fcd_policy(
-                    context, dest_host, prov_loc_moid, new_profile_id)
+                    context, dest_host, prov_loc_moid, new_profile_id,
+                    key_id=key_id)
             else:
                 # TODO(hemna): Add the temporary shadow migration
                 LOG.error("TODO: Need to add shadow migration for cross vc.")
@@ -906,7 +942,8 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         # todo-update policy-onremote vc and move it to folder
         else:
             fcd_loc_moid = vops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
-            self.volumeops.update_fcd_policy(fcd_loc_moid, new_profile_id)
+            self.volumeops.update_fcd_policy(fcd_loc_moid, new_profile_id,
+                                             key_id=key_id)
 
         return (True, None)
 
