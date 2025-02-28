@@ -70,6 +70,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self._config.vmware_storage_profile = None
         self._config.reserved_percentage = self.RESERVED_PERCENTAGE
         self._config.vmware_datastores_as_pools = False
+        self._config.kmip_api_url = mock.sentinel.kmip_api_url
+        self._config.barbican_url = mock.sentinel.barbican_url
         self._config.vmware_snapshot_format = "COW"
         self._config.sap_netapp_credentials = {}
         self._driver = fcd.VMwareVStorageObjectDriver(
@@ -231,7 +233,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             vops.create_fcd.assert_called_once_with(
                 volume.id, volume.name, volume.size * units.Ki,
                 ds_ref, disk_type,
-                profile_id=profile_id)
+                profile_id=profile_id,
+                key_id=None)
         else:
             self.assertIsNone(ret)
             select_ds_fcd.assert_not_called()
@@ -438,7 +441,9 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             str(ds_url),
             volume.name,
             datastore)
-        vops.update_fcd_policy.assert_called_once_with(fcd_loc, profile_id)
+        vops.update_fcd_policy.assert_called_once_with(fcd_loc, profile_id,
+                                                       key_id=None,
+                                                       is_new=True)
         volume_update.assert_called_once_with(
             {'provider_location': provider_location}
         )
@@ -547,8 +552,10 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
                                       name, dest_ds_ref, disk_type)
         self.assertEqual(dest_fcd_loc, ret)
         vops.clone_fcd.assert_called_once_with(
-            name, fcd_loc, dest_ds_ref, disk_type, profile_id=None)
+            name, fcd_loc, dest_ds_ref, disk_type,
+            profile_id=None, key_id=None)
 
+    @mock.patch.object(FCD_DRIVER, '_get_storage_profile_id')
     @mock.patch.object(FCD_DRIVER,
                        '_snap_provider_location_to_ds_name_location')
     @mock.patch.object(FCD_DRIVER,
@@ -563,6 +570,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             provider_loc_to_moref,
             provider_loc_to_ds_name_loc,
             snap_provider_loc_to_ds_name_loc,
+            _get_storage_profile_id,
             use_fcd_snapshot=False):
         self._driver._use_fcd_snapshot = use_fcd_snapshot
 
@@ -587,6 +595,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             provider_loc_to_moref.return_value = None
             from_provider_loc.return_value = dest_fcd_loc
             provider_loc_to_ds_name_loc.return_value = provider_location
+            _get_storage_profile_id.return_value = mock.sentinel.profile_id
 
         volume = self._create_volume_obj()
         snapshot = fake_snapshot.fake_snapshot_obj(
@@ -600,7 +609,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         else:
             select_ds_fcd.assert_called_once_with(snapshot.volume)
             clone_fcd.assert_called_once_with(
-                volume.provider_location, snapshot, ds_ref)
+                volume.provider_location, snapshot, ds_ref,
+                profile_id=mock.sentinel.profile_id, key_id=None)
 
     def test_create_snapshot_legacy(self):
         self._test_create_snapshot()
@@ -698,7 +708,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         get_disk_type.test_assert_called_once_with(volume)
         clone_fcd.assert_called_once_with(provider_loc, volume,
                                           ds_ref, disk_type=disk_type,
-                                          profile_id=profile_id)
+                                          profile_id=profile_id,
+                                          key_id=None)
         extend_if_needed.assert_called_once_with(
             cloned_fcd_loc, cur_size, volume.size)
 
@@ -744,7 +755,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         if use_fcd_snapshot:
             self.assertEqual({'provider_location': provider_loc}, ret)
             vops.create_fcd_from_snapshot.assert_called_once_with(
-                fcd_snap_loc, volume.name, volume.id, profile_id=profile_id)
+                fcd_snap_loc, volume.name, volume.id, profile_id=profile_id,
+                key_id=None)
             extend_if_needed.assert_called_once_with(
                 fcd_loc, snapshot.volume_size, volume.size)
         else:

@@ -37,9 +37,12 @@ class VolumeOpsTestCase(test.TestCase):
     def setUp(self):
         super(VolumeOpsTestCase, self).setUp()
         self.session = mock.MagicMock()
+        configuration = mock.Mock(
+            vmware_host_ip='vsphwere')
+        kmip_api = mock.Mock()
         self.vops = volumeops.VMwareVolumeOps(
             self.session, self.MAX_OBJECTS, mock.sentinel.extension_key,
-            mock.sentinel.extension_type)
+            mock.sentinel.extension_type, configuration, kmip_api)
 
     def test_split_datastore_path(self):
         test1 = '[datastore1] myfolder/mysubfolder/myvm.vmx'
@@ -2334,6 +2337,7 @@ class VolumeOpsTestCase(test.TestCase):
             datastore=ds_ref,
             snapshotId=fcd_snap_id,
             name=name,
+            crypto=None,
             profile=[profile_spec],
             path=name + '/')
         self.session.wait_for_task.assert_called_once_with(task)
