@@ -43,6 +43,7 @@ VM_NUM_CPUS = 1
 VM_MEMORY_MB = 128
 VMX_VERSION = 'vmx-17'
 CONTROLLER_DEVICE_BUS_NUMBER = 0
+KEY_PROVIDER_ID = "kmip"
 
 
 def split_datastore_path(datastore_path):
@@ -288,7 +289,8 @@ class ControllerType(object):
 class VMwareVolumeOps(object):
     """Manages volume operations."""
 
-    def __init__(self, session, max_objects, extension_key, extension_type):
+    def __init__(self, session, max_objects, extension_key, extension_type,
+                 configuration, kmip_api):
         self._session = session
         self._max_objects = max_objects
         self._extension_key = extension_key
@@ -296,6 +298,8 @@ class VMwareVolumeOps(object):
         self._folder_cache = {}
         self._backing_ref_cache = {}
         self._vmx_version = None
+        self._configuration = configuration
+        self._kmip_api = kmip_api
 
     def set_vmx_version(self, vmx_version):
         self._vmx_version = vmx_version
@@ -1084,6 +1088,10 @@ class VMwareVolumeOps(object):
         relocate_spec.pool = resource_pool
         relocate_spec.host = host
         relocate_spec.diskMoveType = disk_move_type
+
+        if profile_id:
+            profile_spec = self._create_profile_spec(cf, profile_id)
+            relocate_spec.profile = [profile_spec]
 
         # Either we want to convert the disk by specifing the disk_type
         # or we need to determine the profile-id in the disk-locator
@@ -2210,7 +2218,8 @@ class VMwareVolumeOps(object):
         return profile_spec
 
     def create_fcd(self, cinder_uuid, name, size_mb,
-                   ds_ref, disk_type, profile_id=None):
+                   ds_ref, disk_type, profile_id=None,
+                   key_id=None):
         cf = self._session.vim.client.factory
         spec = cf.create('ns0:VslmCreateSpec')
         spec.capacityInMB = size_mb
@@ -2223,7 +2232,10 @@ class VMwareVolumeOps(object):
                                            'name')
         self.create_datastore_folder(ds_name, name, dc_ref)
 
-        if profile_id:
+        # Encrypted volumes must have the profile set later in the
+        # update_fcd_policy along with the key_id, otherwise VMware
+        # will create a new key in the KMIP provider.
+        if profile_id and not key_id:
             profile_spec = self._create_profile_spec(cf, profile_id)
             spec.profile = [profile_spec]
 
@@ -2240,6 +2252,11 @@ class VMwareVolumeOps(object):
         vmdk_path = fcd_obj.config.backing.filePath
         self.update_fcd_vmdk_uuid(ds_ref, vmdk_path, cinder_uuid)
         LOG.debug("Created fcd: %s.", fcd_loc)
+
+        if profile_id and key_id:
+            self.update_fcd_policy(fcd_loc, profile_id, key_id=key_id,
+                                   is_new=True)
+
         return fcd_loc
 
     def delete_fcd(self, fcd_location, delete_folder=False):
@@ -2278,7 +2295,7 @@ class VMwareVolumeOps(object):
 
     def clone_fcd(
             self, volume, fcd_location, dest_ds_ref,
-            disk_type, profile_id=None):
+            disk_type, profile_id=None, key_id=None):
         cf = self._session.vim.client.factory
         spec = cf.create('ns0:VslmCloneSpec')
         spec.name = volume.name
@@ -2295,6 +2312,17 @@ class VMwareVolumeOps(object):
         if profile_id:
             profile_spec = self._create_profile_spec(cf, profile_id)
             spec.profile = [profile_spec]
+
+        if key_id:
+            crypto_spec = cf.create('ns0:CryptoSpecShallowRecrypt')
+            crypto_key_id = cf.create('ns0:CryptoKeyId')
+            crypto_key_id.keyId = key_id
+            crypto_key_id.providerId = cf.create('ns0:KeyProviderId')
+            crypto_key_id.providerId.id = KEY_PROVIDER_ID
+            crypto_spec.newKeyId = crypto_key_id
+            disks_crypto = cf.create('ns0:DiskCryptoSpec')
+            disks_crypto.crypto = crypto_spec
+            spec.disksCrypto = disks_crypto
 
         LOG.debug("Copying fcd: %(fcd_loc)s to datastore: %(ds_ref)s with "
                   "spec: %(spec)s.",
@@ -2470,7 +2498,7 @@ class VMwareVolumeOps(object):
         self._session.wait_for_task(task)
 
     def create_fcd_from_snapshot(self, fcd_snap_loc, name,
-                                 cinder_uuid, profile_id=None):
+                                 cinder_uuid, profile_id=None, key_id=None):
         LOG.debug("Creating fcd with name: %(name)s from fcd snapshot: "
                   "%(snap)s.", {'name': name, 'snap': fcd_snap_loc.snap_id})
 
@@ -2487,6 +2515,17 @@ class VMwareVolumeOps(object):
             profile = [self._create_profile_spec(cf, profile_id)]
         else:
             profile = None
+
+        if key_id:
+            crypto_spec = cf.create('ns0:CryptoSpecShallowRecrypt')
+            crypto_key_id = cf.create('ns0:CryptoKeyId')
+            crypto_key_id.keyId = key_id
+            crypto_key_id.providerId = cf.create('ns0:KeyProviderId')
+            crypto_key_id.providerId.id = KEY_PROVIDER_ID
+            crypto_spec.newKeyId = crypto_key_id
+        else:
+            crypto_spec = None
+
         task = self._session.invoke_api(
             self._session.vim,
             'CreateDiskFromSnapshot_Task',
@@ -2496,6 +2535,7 @@ class VMwareVolumeOps(object):
             snapshotId=fcd_snap_loc.id(cf),
             name=name,
             profile=profile,
+            crypto=crypto_spec,
             path=name + '/')
         task_info = self._session.wait_for_task(task)
         self.update_fcd_vmdk_uuid(fcd_snap_loc.fcd_loc.ds_ref(),
@@ -2508,7 +2548,8 @@ class VMwareVolumeOps(object):
         return fcd_loc
 
     @volume_utils.trace
-    def update_fcd_policy(self, fcd_location, profile_id):
+    def update_fcd_policy(self, fcd_location, profile_id,
+                          key_id=None, is_new=False):
         LOG.debug("Changing fcd: %(fcd_loc)s storage policy to %(policy)s.",
                   {'fcd_loc': fcd_location.fcd_id, 'policy': profile_id})
 
@@ -2518,13 +2559,32 @@ class VMwareVolumeOps(object):
             profile_spec = cf.create('ns0:VirtualMachineEmptyProfileSpec')
         else:
             profile_spec = self._create_profile_spec(cf, profile_id)
+
+        task_name = 'UpdateVStorageObjectPolicy_Task'
+        extra_args = {}
+        if key_id:
+            LOG.debug("Encrypting FCD using keyId %s", key_id)
+            task_name = 'UpdateVStorageObjectCrypto_Task'
+            crypto_key_id = cf.create('ns0:CryptoKeyId')
+            crypto_key_id.keyId = key_id
+            crypto_key_id.providerId = cf.create('ns0:KeyProviderId')
+            crypto_key_id.providerId.id = KEY_PROVIDER_ID
+            crypto_type = ('CryptoSpecEncrypt'
+                           if is_new else 'CryptoSpecRegister')
+            crypto_spec = cf.create('ns0:%s' % crypto_type)
+            crypto_spec.cryptoKeyId = crypto_key_id
+            disks_crypto = cf.create('ns0:DiskCryptoSpec')
+            disks_crypto.crypto = crypto_spec
+            extra_args['disksCrypto'] = disks_crypto
+
         task = self._session.invoke_api(
             self._session.vim,
-            'UpdateVStorageObjectPolicy_Task',
+            task_name,
             vstorage_mgr,
             id=fcd_location.id(cf),
             datastore=fcd_location.ds_ref(),
-            profile=[profile_spec])
+            profile=[profile_spec],
+            **extra_args)
         self._session.wait_for_task(task)
 
         LOG.debug("Updated fcd storage policy to %s.", profile_id)
@@ -2536,19 +2596,25 @@ class VMwareVolumeOps(object):
         backingspec.path = path
         return backingspec
 
-    def _get_VslmRelocateSpec(self, datastore, path, service_locator=None):
+    def _get_VslmRelocateSpec(self, datastore, path, service_locator=None,
+                              profile_id=None):
         cf = self._session.vim.client.factory
         relocate_spec = cf.create("ns0:VslmRelocateSpec")
         relocate_spec.backingSpec = self._VslmCreateSpecDiskFileBackingSpec(
             datastore,
             path)
+        if profile_id:
+            relocate_spec.profile = [
+                self._create_profile_spec(cf, profile_id)]
+
         if service_locator:
             relocate_spec.service = self._get_service_locator_spec(
                 service_locator)
         return relocate_spec
 
     @volume_utils.trace
-    def relocate_fcd(self, fcd_loc, datastore, path, service=None):
+    def relocate_fcd(self, fcd_loc, datastore, path, service=None,
+                     profile_id=None):
         """Relocates fcd to the input datastore.
 
         :param fcd_loc: Reference to the fcd_obj
@@ -2562,7 +2628,8 @@ class VMwareVolumeOps(object):
         # In case of a cross-vcenter vmotion with a profile-id
         # changing the profile-id happens post relocate
 
-        relocate_spec = self._get_VslmRelocateSpec(datastore, path, service)
+        relocate_spec = self._get_VslmRelocateSpec(datastore, path, service,
+                                                   profile_id)
         vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
         cf = self._session.vim.client.factory
         # For cross vc vmotion we don't create folder
