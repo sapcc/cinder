@@ -59,6 +59,7 @@ class SAPFCDFilter(filters.BaseBackendFilter):
         # This is the original host, backend and pool that the volume
         # was created on.
         orig_host = vol.get('host')
+        orig_host_name = extract_host(orig_host, 'host')
         orig_backend = extract_host(orig_host, 'backend')
         orig_pool = extract_host(orig_host, 'pool')
 
@@ -71,12 +72,16 @@ class SAPFCDFilter(filters.BaseBackendFilter):
         # if it's on the same host.
         destination_host = spec.get('destination_host')
         dest_backend = extract_host(destination_host, 'backend')
+        dest_host_name = extract_host(destination_host, 'host')
 
         if orig_backend != dest_backend:
+            return True
+
+        if orig_backend == dest_backend and orig_host_name != dest_host_name:
             # We only want to pass if the pool is the same as the original pool
             # This is to ensure that a cross vcenter migration lands on the
             # same pool as the source vcenter.  This prevents data movement.
-            if filter_backend == dest_backend and filter_pool == orig_pool:
+            if filter_pool == orig_pool:
                 # We will allow a migration to the same pool on a different
                 # backend host.
                 LOG.debug("Allow migration to %s", backend_state.host)
