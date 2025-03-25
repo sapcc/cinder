@@ -63,6 +63,8 @@ from oslo_db import exception as db_exc
 from oslo_db.sqlalchemy import migration
 from oslo_log import log as logging
 from oslo_utils import timeutils
+from sqlalchemy import and_
+from sqlalchemy import update
 import tabulate
 
 # Need to register global_opts
@@ -865,6 +867,126 @@ class ConsistencyGroupCommands(object):
 
 class SapCommands:
     """Methods added for SAP-specific purposes"""
+
+    def _get_quota_usages_to_sync(self, ctxt, project_id, print_table=True):
+        """Checks if their is a mismatch between quota usage and real usage.
+
+        Returns a dictionary of resources that need to be synced.
+        """
+        query = db_api.model_query(ctxt, models.VolumeType, read_deleted="no")
+        volume_types = {row.id: row.name for row in query.all()}
+        query = db_api.model_query(ctxt, models.QuotaUsage.resource,
+                                   read_deleted="no").distinct()
+        resource_types = [row[0] for row in query.all()]
+
+        query = db_api.model_query(
+            ctxt, models.QuotaUsage, read_deleted="no").filter_by(
+            project_id=project_id)
+        quota_usages = {row.resource: row.in_use for row in query.all()}
+
+        query = db_api.model_query(
+            ctxt, models.Volume, read_deleted="no").filter_by(
+            project_id=project_id)
+        volume_usages = {row.volume_type_id: row.size for row in query.all()}
+        real_usages = collections.defaultdict(int)
+        for type_id, size in volume_usages.items():
+            real_usages["volumes"] += 1
+            real_usages[f"volumes_{volume_types[type_id]}"] += 1
+            real_usages["gigabytes"] += size
+            real_usages[f"gigabytes_{volume_types[type_id]}"] += size
+
+        query = db_api.model_query(
+            ctxt, models.Snapshot, read_deleted="no").filter_by(
+            project_id=project_id)
+        snapshot_usages = {
+            row.volume_type_id: row.volume_size for row in query.all()
+        }
+        for type_id, size in snapshot_usages.items():
+            real_usages["snapshots"] += 1
+            real_usages[f"snapshots_{volume_types[type_id]}"] += 1
+            real_usages["gigabytes"] += size
+            real_usages[f"gigabytes_{volume_types[type_id]}"] += size
+
+        # find discrepancies between quota usage and real usage
+        quota_usages_to_sync = {}
+        table = []
+        for resource in resource_types:
+            try:
+                if real_usages[resource] != quota_usages[resource]:
+                    quota_usages_to_sync[resource] = real_usages[resource]
+                    table.append([
+                        project_id,
+                        resource,
+                        f"{quota_usages[resource]} -> {real_usages[resource]}",
+                        '\033[1m\033[91mMISMATCH\033[0m']
+                    )
+                else:
+                    table.append([
+                        project_id,
+                        resource,
+                        f"{quota_usages[resource]} -> {real_usages[resource]}",
+                        '\033[1m\033[92mOK\033[0m']
+                    )
+            except KeyError:
+                pass
+
+        header = ["Project ID", "Resource", "Quota -> Real", "Sync Status"]
+        if len(quota_usages) and print_table:
+            print(tabulate.tabulate(table, headers=header, tablefmt='psql'))
+        return quota_usages_to_sync
+
+    def _sync_quota_usage_project(self, ctxt, project_id,
+                                  quota_usages_to_sync):
+        print(f"Syncing quota usage for project: {project_id}")
+        session = db_api.get_session()
+        now = timeutils.utcnow()
+        for resource, quota_ in quota_usages_to_sync.items():
+            session.execute(
+                update(models.QuotaUsage)
+                .where(
+                    and_(
+                        models.QuotaUsage.project_id == project_id,
+                        models.QuotaUsage.resource == resource
+                    )
+                )
+                .values(updated_at=now, in_use=quota_)
+            )
+            session.commit()
+
+    @args('--dry-run', action='store_true', default=False,
+          help='Do not update database.')
+    @args('--project-id', type=str, default=None,
+          help='Process a specific project.\
+            Specify either --project-id or --all-projects.')
+    @args('--all-projects', action='store_true', default=None,
+          help='Process all projects.\
+            Specify either --project-id or --all-projects.')
+    def quota_usage_sync(self, dry_run, project_id, all_projects):
+        """List quota usage and actual usage, correct if necessary.
+
+        Can be run with either a single project id or all projects.
+        """
+        if project_id is None and all_projects is None:
+            print("Specify either --project-id or --all_projects.")
+            return
+        if project_id and all_projects:
+            print("Specify either --project-id or --all_projects, not both")
+            return
+        if dry_run:
+            print("Starting in DRY-RUN mode")
+        ctxt = context.get_admin_context()
+        if project_id:
+            project_ids = [project_id]
+        else:
+            query = db_api.model_query(ctxt, models.QuotaUsage.id).distinct()
+            project_ids = [row[0] for row in query.all()]
+
+        for project_id in project_ids:
+            quota_usages_to_sync = self._get_quota_usages_to_sync(ctxt,
+                                                                  project_id)
+            if not dry_run:
+                self._sync_quota_usage_project(ctxt, project_id,
+                                               quota_usages_to_sync)
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not delete any files.')
