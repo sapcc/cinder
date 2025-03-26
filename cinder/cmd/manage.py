@@ -868,16 +868,12 @@ class ConsistencyGroupCommands(object):
 class SapCommands:
     """Methods added for SAP-specific purposes"""
 
-    def _get_quota_usages_to_sync(self, ctxt, project_id, print_table=True):
+    def _get_quota_usages_to_sync(self, ctxt, volume_types, resource_types,
+                                  project_id, print_table=True):
         """Checks if their is a mismatch between quota usage and real usage.
 
         Returns a dictionary of resources that need to be synced.
         """
-        query = db_api.model_query(ctxt, models.VolumeType, read_deleted="no")
-        volume_types = {row.id: row.name for row in query.all()}
-        query = db_api.model_query(ctxt, models.QuotaUsage.resource,
-                                   read_deleted="no").distinct()
-        resource_types = [row[0] for row in query.all()]
 
         query = db_api.model_query(
             ctxt, models.QuotaUsage, read_deleted="no").filter_by(
@@ -935,8 +931,7 @@ class SapCommands:
             print(tabulate.tabulate(table, headers=header, tablefmt='psql'))
         return quota_usages_to_sync
 
-    def _sync_quota_usage_project(self, ctxt, project_id,
-                                  quota_usages_to_sync):
+    def _sync_quota_usage_project(self, project_id, quota_usages_to_sync):
         print(f"Syncing quota usage for project: {project_id}")
         session = db_api.get_session()
         now = timeutils.utcnow()
@@ -967,10 +962,10 @@ class SapCommands:
         Can be run with either a single project id or all projects.
         """
         if project_id is None and all_projects is None:
-            print("Specify either --project-id or --all_projects.")
+            print("Specify either --project-id or --all-projects.")
             return
         if project_id and all_projects:
-            print("Specify either --project-id or --all_projects, not both")
+            print("Specify either --project-id or --all-projects, not both")
             return
         if dry_run:
             print("Starting in DRY-RUN mode")
@@ -978,12 +973,18 @@ class SapCommands:
         if project_id:
             project_ids = [project_id]
         else:
-            query = db_api.model_query(ctxt, models.QuotaUsage.id).distinct()
+            query = db_api.model_query(ctxt, 
+                                       models.QuotaUsage.project_id).distinct()
             project_ids = [row[0] for row in query.all()]
+        query = db_api.model_query(ctxt, models.VolumeType, read_deleted="no")
+        volume_types = {row.id: row.name for row in query.all()}
+        query = db_api.model_query(ctxt, models.QuotaUsage.resource,
+                                   read_deleted="no").distinct()
+        resource_types = [row[0] for row in query.all()]
 
         for project_id in project_ids:
-            quota_usages_to_sync = self._get_quota_usages_to_sync(ctxt,
-                                                                  project_id)
+            quota_usages_to_sync = self._get_quota_usages_to_sync(
+                ctxt, volume_types, resource_types, project_id)
             if not dry_run:
                 self._sync_quota_usage_project(ctxt, project_id,
                                                quota_usages_to_sync)
