@@ -2026,6 +2026,7 @@ class VolumeOpsTestCase(test.TestCase):
             self.session.vim.service_content.vStorageObjectManager,
             spec=spec)
         self.session.wait_for_task.assert_called_once_with(task)
+
     @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
                 'file_list_in_folder')
     @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
