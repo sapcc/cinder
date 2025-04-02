@@ -959,7 +959,7 @@ class SapCommands:
     def quota_usage_sync(self, dry_run, project_id, all_projects):
         """List quota usage and actual usage, correct if necessary.
 
-        Can be run with either a single project id or all projects.
+        Can be run with either a single project id or for all projects.
         """
         if project_id is None and all_projects is None:
             print("Specify either --project-id or --all-projects.")
@@ -973,7 +973,7 @@ class SapCommands:
         if project_id:
             project_ids = [project_id]
         else:
-            query = db_api.model_query(ctxt, 
+            query = db_api.model_query(ctxt,
                                        models.QuotaUsage.project_id).distinct()
             project_ids = [row[0] for row in query.all()]
         query = db_api.model_query(ctxt, models.VolumeType, read_deleted="no")
