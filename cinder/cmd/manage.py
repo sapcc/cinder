@@ -985,8 +985,11 @@ class SapCommands:
         for project_id in project_ids:
             quota_usages_to_sync = self._get_quota_usages_to_sync(
                 ctxt, volume_types, resource_types, project_id)
+            if not quota_usages_to_sync:
+                print(f"Nothing to be done/synced for project {project_id}")
+                continue
             if not dry_run:
-                self._sync_quota_usage_project(ctxt, project_id,
+                self._sync_quota_usage_project(project_id,
                                                quota_usages_to_sync)
 
     @args('--dry-run', action='store_true', default=False,
