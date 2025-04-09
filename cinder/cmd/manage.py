@@ -886,13 +886,13 @@ class SapCommands:
                   ({len(orphan_attachments_instance_ids)} > {fix_limit})")
             return
         now = timeutils.utcnow()
-        session.execute(
-            update(models.VolumeAttachment)
-            .where(models.VolumeAttachment.instance_uuid.in_(
-                orphan_attachments_instance_ids))
-            .values(updated_at=now, deleted_at=now, deleted=1)
-        )
-        session.commit()
+        with session.begin():
+            session.execute(
+                update(models.VolumeAttachment)
+                .where(models.VolumeAttachment.instance_uuid.in_(
+                    orphan_attachments_instance_ids))
+                .values(updated_at=now, deleted_at=now, deleted=1)
+            )
 
     @staticmethod
     def _get_orphan_attachments(ctxt):
@@ -974,7 +974,8 @@ class SapCommands:
         if len(ids) == 0:
             print("No volumes in state `error_deleting` found")
         else:
-            print(f"found volumes {ids.join(', ')} in state `error_deleting`")
+            print(f"found {len(ids)} volumes in state `error_deleting`:"
+                 f"{(', ').join(ids)}")
         return
 
     @staticmethod
@@ -987,7 +988,8 @@ class SapCommands:
         if len(ids) == 0:
             print("No snapshots in state `error_deleting` found")
         else:
-            print(f"found snapshots {ids.join(', ')} in state `error_deleting`")
+            print(f"found {len(ids)} snapshots in state"
+                  f"`error_deleting`:{(', ').join(ids)}")
         return ids
     
     @staticmethod
@@ -1004,13 +1006,13 @@ class SapCommands:
         if len(ids) == 0:
             print("No admin metadata found that is linked to deleted volumes")
         else:
-            print(f"found admin metadata {ids.join(', ')} for\
-                  volumes that are already deleted")
+            print(f"found {len(ids)} admin metadata of volumes that are "
+                  f"already deleted: {(', ').join(str(x) for x in ids)}")
         return ids
     
     @staticmethod
-    def _get_glance_metadata_ids_of_deleted_volumes(ctxt: context.RequestContext
-                                                ) -> list[int]:
+    def _get_glance_metadata_ids_of_deleted_volumes(
+            ctxt: context.RequestContext) -> list[int]:
         query = db_api.model_query(ctxt, models.VolumeGlanceMetadata.id,
                                    read_deleted="no").\
             join(models.Volume,
@@ -1023,13 +1025,13 @@ class SapCommands:
         if len(ids) == 0:
             print("No glance metadata found that is linked to deleted volumes")
         else:
-            print(f"found glance metadata {ids.join(', ')} of volumes that are"
-                  "already deleted")
+            print(f"found {len(ids) }glance metadata of volumes that are"
+                  f"already deleted: {(', ').join(str(x) for x in ids)}")
         return ids
     
     @staticmethod
     def _get_glance_metadata_ids_of_deleted_snapshots(
-        ctxt: context.RequestContext) -> list[int]
+            ctxt: context.RequestContext) -> list[int]:
         query = db_api.model_query(ctxt, models.VolumeGlanceMetadata.id,
                                    read_deleted="no").\
             join(models.Snapshot,
@@ -1042,12 +1044,13 @@ class SapCommands:
         if len(ids) == 0:
             print("No glance metadata found that is linked to deleted volumes")
         else:
-            print(f"found glance metadata {ids.join(', ')} of snapshots "
-                  "that are already deleted")
+            print(f"found {len(ids)} glance metadata of snapshots that are "
+                  f"already deleted: {ids.join(', ')}")
         return ids
     
     @staticmethod
-    def _get_metadata_ids_of_deleted_volumes(ctxt: context.RequestContext) -> list[int]:
+    def _get_metadata_ids_of_deleted_volumes(ctxt: context.RequestContext
+                                             ) -> list[int]:
         query = db_api.model_query(ctxt, models.VolumeMetadata.id,
                                    read_deleted="no").\
             join(models.Volume,
@@ -1059,8 +1062,8 @@ class SapCommands:
         if len(ids) == 0:
             print("No metadata found that is linked to deleted volumes")
         else:
-            print(f"found metadata {ids.join(', ')} of volumes "
-                  "that are already deleted")
+            print(f"found {len(ids)} metadata of volumes that are already"
+                  f"deleted: {(', ').join(str(x) for x in ids)}")
         return ids
     
     @staticmethod
@@ -1078,8 +1081,8 @@ class SapCommands:
             print("No volume attachment found that is linked to deleted"
                   " volume")
         else:
-            print(f"found attachments {ids.join(', ')} for\
-                  volumes that are already deleted")
+            print(f"found {len(ids)} attachments for volumes that are already "
+                  f"deleted: {(', ').join(ids)}")
         return ids
     
     @staticmethod
@@ -1097,8 +1100,9 @@ class SapCommands:
             print("No group volume type mapping found that is linked to" 
                   "deleted group")
         else:
-            print(f"found group volume type mapping {ids.join(', ')} for "
-                  "groups that are already deleted")
+            print(f"found {len(ids)} group volume type mappings for groups"
+                  "that are already deleted:  "
+                  f"{(', ').join(str(x) for x in ids)}")
         return ids
 
     @staticmethod
@@ -1115,8 +1119,8 @@ class SapCommands:
         if len(ids) == 0:
             print("No service found that is linked to deleted volumes")
         else:
-            print(f"found service {ids.join(', ')} for volumes that are "
-                  "already deleted")
+            print(f"found {len(ids)} services for volumes that are already 
+                  f"deleted: {(', ').join(str(x) for x in ids)}")
         return ids
 
     @staticmethod
@@ -1170,7 +1174,7 @@ class SapCommands:
         
         glance_metadata_ids =\
             self._get_glance_metadata_ids_of_deleted_volumes(ctxt)
-        if not dry_run and len(glance_metadata_ids2) > 0:
+        if not dry_run and len(glance_metadata_ids) > 0:
             SapCommands._mark_deleted_by_ids(session,
                                              models.VolumeGlanceMetadata,
                                              glance_metadata_ids)

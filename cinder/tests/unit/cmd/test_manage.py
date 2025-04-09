@@ -103,3 +103,31 @@ class SapCommandsTests(test.TestCase):
             filter_by(deleted=1).count()
         self.assertEqual(len(already_deleted_idx) + len(should_be_deleted_idx),
                          count_deleted_volumes)
+        
+    def test_get_admin_metadata(self):
+        n_volumes = 10
+        metadata_ids_expected = []
+        volume_ids_joined_index = [1, 2, 3, 4, 5, 6]
+        with self.session.begin():
+            for metadata_id in range(n_volumes):
+                volume_id = str(uuid.uuid4())
+                # mark every second volume as deleted
+                deleted = 0 if metadata_id % 2 == 0 else 1
+                # keep track of metadata ids that can be joined to deleted
+                # volumes for test assertion
+                if deleted == 1 and metadata_id in volume_ids_joined_index:
+                    metadata_ids_expected.append(metadata_id)
+                self.session.execute(insert(models.Volume).values(
+                    id=volume_id, volume_type_id="fake_volume_type_id",
+                    deleted=deleted))
+                if metadata_id in volume_ids_joined_index:
+                    volume_id_reference = volume_id 
+                else:
+                    volume_id_reference = str(uuid.uuid4())
+                # mark no volume_admin_metadata as deleted
+                self.session.execute(insert(models.VolumeAdminMetadata).values(
+                    id=metadata_id, volume_id=volume_id_reference, deleted=0))
+        sap_commands = SapCommands()
+        ids_result = sap_commands._get_admin_metadata_ids_of_deleted_volumes(
+            self.context)
+        self.assertSetEqual(set(ids_result), set(metadata_ids_expected))
