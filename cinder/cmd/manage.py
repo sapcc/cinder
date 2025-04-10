@@ -54,13 +54,12 @@ from __future__ import annotations
 import collections
 import collections.abc as collections_abc
 import logging as python_logging
-import os
 from pathlib import Path
 import re
 import sys
 import time
+from typing import TYPE_CHECKING, Optional, Type, TypeVar   # noqa: H301
 
-# from cinder.compute import nova
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_db.sqlalchemy import migration
@@ -68,14 +67,13 @@ from oslo_log import log as logging
 from oslo_utils import timeutils
 from sqlalchemy import and_
 from sqlalchemy import update
-from typing import TYPE_CHECKING, Optional, Type, TypeVar   # noqa: H301
-# from openstack import connection
 import tabulate
 
 # Need to register global_opts
 from cinder.backup import rpcapi as backup_rpcapi
 from cinder.common import config  # noqa
 from cinder.common import constants
+from cinder.compute import nova
 from cinder import context
 from cinder import coordination
 from cinder import db
@@ -878,7 +876,7 @@ class SapCommands:
     """Methods added for SAP-specific purposes"""
 
     @staticmethod
-    def _fix_orphan_attachments(session, 
+    def _fix_orphan_attachments(session,
                                 orphan_attachments_instance_ids: list[str],
                                 fix_limit: int):
         if len(orphan_attachments_instance_ids) > fix_limit:
@@ -895,25 +893,13 @@ class SapCommands:
             )
 
     @staticmethod
-    def _get_orphan_attachments(ctxt):
+    def _get_orphan_attachments(ctxt) -> dict[str, str]:
         query = db_api.model_query(ctxt, models.VolumeAttachment,
                                    read_deleted="no")
         volume_attachments = {va.id: va.instance_uuid for va in query.all()}
-        # TODO: openstack sdk not available in tox testing env, use
-        # cinder.compute.nova or DB
-        conn = connection.Connection(
-            auth_url=os.getenv('OS_AUTH_URL'),
-            project_name=os.getenv('OS_PROJECT_NAME'),
-            project_domain_name=os.getenv('OS_PROJECT_DOMAIN_NAME'),
-            username=os.getenv('OS_USERNAME'),
-            user_domain_name=os.getenv('OS_USER_DOMAIN_NAME'),
-            password=os.getenv('OS_PASSWORD'),
-            identity_api_version="3"
-        )
-        # Question: Is the openstack sdk doing sth. different than db lookup?
-        # Is a db lookup an alternative?
+        # TODO: test how to get nova client and get all servers
         nova_instances = {instance.id: instance for instance in
-                          conn.compute.servers(details=False, all_projects=1)}
+                          nova.novaclient().servers()}
         # filter volume_attachment dict by existing nova instances
         orphan_attachments = {
             attachment_id: server_id for attachment_id, server_id in
@@ -947,7 +933,7 @@ class SapCommands:
                 .where(models.Volume.id.in_(volume_ids))
                 .values(updated_at=now, deleted_at=now, deleted=1)
             )
- 
+
     @staticmethod
     def _mark_deleted_by_ids(session,
                              model: Type[CinderBaseModelType],
@@ -966,8 +952,8 @@ class SapCommands:
             )
 
     @staticmethod
-    def _get_volumes_ids_in_state_error_deleting(ctxt: context.RequestContext
-                                             ) -> list[str]:
+    def _get_volumes_ids_in_state_error_deleting(
+            ctxt: context.RequestContext) -> list[str]:
         query = db_api.model_query(ctxt, models.Volume.id, read_deleted="no").\
             filter_by(status="error_deleting")
         ids = [v[0] for v in query.all()]
@@ -975,12 +961,12 @@ class SapCommands:
             print("No volumes in state `error_deleting` found")
         else:
             print(f"found {len(ids)} volumes in state `error_deleting`:"
-                 f"{(', ').join(ids)}")
+                  f"{(', ').join(ids)}")
         return
 
     @staticmethod
-    def _get_snapshots_ids_in_state_error_deleting(ctxt: context.RequestContext
-                                               ) -> list[str]:
+    def _get_snapshots_ids_in_state_error_deleting(
+            ctxt: context.RequestContext) -> list[str]:
         query = db_api.model_query(ctxt, models.Snapshot.id,
                                    read_deleted="no").filter_by(
                                        status="error_deleting")
@@ -991,10 +977,10 @@ class SapCommands:
             print(f"found {len(ids)} snapshots in state"
                   f"`error_deleting`:{(', ').join(ids)}")
         return ids
-    
+
     @staticmethod
-    def _get_admin_metadata_ids_of_deleted_volumes(ctxt: context.RequestContext
-                                               ) -> list[int]:
+    def _get_admin_metadata_ids_of_deleted_volumes(
+            ctxt: context.RequestContext) -> list[int]:
         query = db_api.model_query(ctxt, models.VolumeAdminMetadata.id,
                                    read_deleted="no").\
             join(models.Volume,
@@ -1009,7 +995,7 @@ class SapCommands:
             print(f"found {len(ids)} admin metadata of volumes that are "
                   f"already deleted: {(', ').join(str(x) for x in ids)}")
         return ids
-    
+
     @staticmethod
     def _get_glance_metadata_ids_of_deleted_volumes(
             ctxt: context.RequestContext) -> list[int]:
@@ -1028,14 +1014,15 @@ class SapCommands:
             print(f"found {len(ids) }glance metadata of volumes that are"
                   f"already deleted: {(', ').join(str(x) for x in ids)}")
         return ids
-    
+
     @staticmethod
     def _get_glance_metadata_ids_of_deleted_snapshots(
             ctxt: context.RequestContext) -> list[int]:
         query = db_api.model_query(ctxt, models.VolumeGlanceMetadata.id,
                                    read_deleted="no").\
             join(models.Snapshot,
-                 models.VolumeGlanceMetadata.snapshot_id == models.Snapshot.id).\
+                 models.VolumeGlanceMetadata.snapshot_id
+                 == models.Snapshot.id).\
             filter(
                 and_(models.Snapshot.deleted == 1,
                      models.VolumeGlanceMetadata.deleted == 0))
@@ -1047,7 +1034,7 @@ class SapCommands:
             print(f"found {len(ids)} glance metadata of snapshots that are "
                   f"already deleted: {ids.join(', ')}")
         return ids
-    
+
     @staticmethod
     def _get_metadata_ids_of_deleted_volumes(ctxt: context.RequestContext
                                              ) -> list[int]:
@@ -1065,7 +1052,7 @@ class SapCommands:
             print(f"found {len(ids)} metadata of volumes that are already"
                   f"deleted: {(', ').join(str(x) for x in ids)}")
         return ids
-    
+
     @staticmethod
     def _get_volume_attachments_of_deleted_volumes(
             ctxt: context.RequestContext) -> list[str]:
@@ -1084,7 +1071,7 @@ class SapCommands:
             print(f"found {len(ids)} attachments for volumes that are already "
                   f"deleted: {(', ').join(ids)}")
         return ids
-    
+
     @staticmethod
     def _get_group_volume_type_mapping_of_deleted_groups(
             ctxt: context.RequestContext) -> list[int]:
@@ -1097,7 +1084,7 @@ class SapCommands:
                      models.GroupVolumeTypeMapping.deleted == 0))
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
-            print("No group volume type mapping found that is linked to" 
+            print("No group volume type mapping found that is linked to "
                   "deleted group")
         else:
             print(f"found {len(ids)} group volume type mappings for groups"
@@ -1119,18 +1106,18 @@ class SapCommands:
         if len(ids) == 0:
             print("No service found that is linked to deleted volumes")
         else:
-            print(f"found {len(ids)} services for volumes that are already 
+            print(f"found {len(ids)} services for volumes that are already "
                   f"deleted: {(', ').join(str(x) for x in ids)}")
         return ids
 
     @staticmethod
     def _get_ids_set_deleted_flag_and_unset_deleted_at(
-            ctxt: context.RequestContext, model: Type[CinderBaseModelType]
-            ) -> list[str | int]:
+            ctxt: context.RequestContext,
+            model: Type[CinderBaseModelType]) -> list[str | int]:
         query = db_api.model_query(ctxt, model.id, read_deleted="no").\
             filter(
                 and_(model.deleted == 1,
-                     model.deleted_at == None))
+                     model.deleted_at == None))  # noqa: E711
         return [v[0] for v in query.all()]
 
     @args('--fix-limit', default=25,
@@ -1141,6 +1128,8 @@ class SapCommands:
         ctxt = context.get_admin_context()
         session = db_api.get_session()
         """
+        Uncomment once fetching nova instances is working
+
         # Remove volume attachments to non existing instances
         orphan_attachments = self._get_orphan_attachments(ctxt)
         print(f"Found {len(orphan_attachments)} orphaned volume attachments \
@@ -1152,18 +1141,19 @@ class SapCommands:
             print(f"Marked volume attachments\
                   {list(orphan_attachments.keys()).join(', ')} as deleted.")
         """
-        volume_metadata_ids = self._get_volumes_ids_in_state_error_deleting(ctxt)
+        volume_metadata_ids =\
+            self._get_volumes_ids_in_state_error_deleting(ctxt)
         if not dry_run and len(volume_metadata_ids) > 0:
             SapCommands._mark_deleted_by_ids(session, models.VolumeMetadata,
                                              volume_metadata_ids)
             print("Volumes in state error_deleting marked as deleted")
-        
+
         snapshot_ids = self._get_snapshots_ids_in_state_error_deleting(ctxt)
         if not dry_run and len(snapshot_ids) > 0:
             SapCommands._mark_deleted_by_ids(session, models.Snapshot,
                                              snapshot_ids)
             print("Snapshots in state error_deleting marked as deleted")
-        
+
         admin_metadata_ids =\
             self._get_admin_metadata_ids_of_deleted_volumes(ctxt)
         if not dry_run and len(admin_metadata_ids) > 0:
@@ -1171,7 +1161,7 @@ class SapCommands:
                                              models.VolumeAdminMetadata,
                                              admin_metadata_ids)
             print("Admin metadata of deleted volumes marked as deleted")
-        
+
         glance_metadata_ids =\
             self._get_glance_metadata_ids_of_deleted_volumes(ctxt)
         if not dry_run and len(glance_metadata_ids) > 0:
@@ -1179,7 +1169,7 @@ class SapCommands:
                                              models.VolumeGlanceMetadata,
                                              glance_metadata_ids)
             print("Glance metadata of deleted volumes marked deleted")
-        
+
         glance_metadata_ids2 =\
             self._get_glance_metadata_ids_of_deleted_snapshots(session)
         if not dry_run and len(glance_metadata_ids2) > 0:
@@ -1187,13 +1177,13 @@ class SapCommands:
                                              models.VolumeGlanceMetadata,
                                              glance_metadata_ids2)
             print("Glance metadata of deleted snapshots marked as deleted")
-        
+
         metadata_ids = self._get_metadata_ids_of_deleted_volumes(ctxt)
         if not dry_run and len(metadata_ids) > 0:
             SapCommands._mark_deleted_by_ids(session, models.VolumeMetadata,
                                              metadata_ids)
             print("Metadata of deleted volumes marked as deleted")
-        
+
         volume_attachment_ids =\
             self._get_volume_attachments_of_deleted_volumes(ctxt)
         if not dry_run and len(volume_attachment_ids) > 0:
@@ -1220,14 +1210,13 @@ class SapCommands:
                 self._mark_deleted_by_ids(session, model, ids)
                 print("Rows with set deleted flag and unset deleted_at of "
                       "model{model.__name__} marked as deleted")
-        
+
         service_ids = self._get_service_ids_linked_to_deleted_volumes(ctxt)
         print(f"Found {len(service_ids)} services linked to deleted volumes: "
-              f" {serivce_ids}")
+              f" {service_ids}")
         if not dry_run and len(service_ids) > 0:
             self._mark_deleted_by_ids(session, models.Service, service_ids)
             print("Services linked to deleted volumes marked as deleted")
-
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not delete any files.')

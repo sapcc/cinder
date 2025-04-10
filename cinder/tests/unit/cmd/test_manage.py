@@ -1,18 +1,27 @@
-import uuid
-import random
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
 
-from sqlalchemy import insert
-from sqlalchemy import and_
-from oslo_db.sqlalchemy import utils as sqlalchemyutils
+
+import random
+import uuid
+
 from oslo_utils import timeutils
+from sqlalchemy import insert
 
 from cinder.cmd.manage import SapCommands
-from cinder.db.sqlalchemy import api as db_api
-from cinder.tests.unit import test
-from cinder.tests.unit import fake_volume
 from cinder import context
-from cinder.db.sqlalchemy import models
 from cinder.db.sqlalchemy import api as db_api
+from cinder.db.sqlalchemy import models
+from cinder.tests.unit import test
 
 
 class SapCommandsTests(test.TestCase):
@@ -20,7 +29,7 @@ class SapCommandsTests(test.TestCase):
         super(SapCommandsTests, self).setUp()
         self.context = context.get_admin_context()
         self.session = db_api.get_session()
-    
+
     def test_mark_deleted_by_ids_volume(self):
         n_volumes = 10
         mark_as_deleted_ids, ids = [], []
@@ -68,6 +77,8 @@ class SapCommandsTests(test.TestCase):
                          count_deleted_volumes)
 
     def test_mark_deleted_by_ids_volume_metadata(self):
+        # create some volume_metadata, some of them should be flagged as
+        # deleted, some of them should not because they are already deleted
         n_volumes = 10
         mark_as_deleted_ids, ids = [], []
         already_deleted_idx = [0, 1, 2]
@@ -103,7 +114,7 @@ class SapCommandsTests(test.TestCase):
             filter_by(deleted=1).count()
         self.assertEqual(len(already_deleted_idx) + len(should_be_deleted_idx),
                          count_deleted_volumes)
-        
+
     def test_get_admin_metadata(self):
         n_volumes = 10
         metadata_ids_expected = []
@@ -121,7 +132,7 @@ class SapCommandsTests(test.TestCase):
                     id=volume_id, volume_type_id="fake_volume_type_id",
                     deleted=deleted))
                 if metadata_id in volume_ids_joined_index:
-                    volume_id_reference = volume_id 
+                    volume_id_reference = volume_id
                 else:
                     volume_id_reference = str(uuid.uuid4())
                 # mark no volume_admin_metadata as deleted
