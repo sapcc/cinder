@@ -868,8 +868,12 @@ class ConsistencyGroupCommands(object):
 class SapCommands:
     """Methods added for SAP-specific purposes"""
 
-    def _get_quota_usages_to_sync(self, ctxt, volume_types, resource_types,
-                                  project_id, print_table=True):
+    def _get_quota_usages_to_sync(self,
+                                  ctxt: context.RequestContext,
+                                  volume_types: dict[str, int],
+                                  resource_types: list[str],
+                                  project_id: str,
+                                  print_table=True) -> dict[str, int]:
         """Checks if their is a mismatch between quota usage and real usage.
 
         Returns a dictionary of resources that need to be synced.
@@ -931,22 +935,24 @@ class SapCommands:
             print(tabulate.tabulate(table, headers=header, tablefmt='psql'))
         return quota_usages_to_sync
 
-    def _sync_quota_usage_project(self, project_id, quota_usages_to_sync):
+    def _sync_quota_usage_project(self, project_id: str,
+                                  quota_usages_to_sync: dict[str, int]
+                                  ) -> None:
         print(f"Syncing quota usage for project: {project_id}")
         session = db_api.get_session()
         now = timeutils.utcnow()
         for resource, quota_ in quota_usages_to_sync.items():
-            session.execute(
-                update(models.QuotaUsage)
-                .where(
-                    and_(
-                        models.QuotaUsage.project_id == project_id,
-                        models.QuotaUsage.resource == resource
+            with session.begin():
+                session.execute(
+                    update(models.QuotaUsage)
+                    .where(
+                        and_(
+                            models.QuotaUsage.project_id == project_id,
+                            models.QuotaUsage.resource == resource
+                        )
                     )
+                    .values(updated_at=now, in_use=quota_)
                 )
-                .values(updated_at=now, in_use=quota_)
-            )
-            session.commit()
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not update database.')
@@ -956,7 +962,8 @@ class SapCommands:
     @args('--all-projects', action='store_true', default=None,
           help='Process all projects.\
             Specify either --project-id or --all-projects.')
-    def quota_usage_sync(self, dry_run, project_id, all_projects):
+    def quota_usage_sync(self, dry_run: bool, project_id: str,
+                         all_projects: bool) -> None:
         """List quota usage and actual usage, correct if necessary.
 
         Can be run with either a single project id or for all projects.
