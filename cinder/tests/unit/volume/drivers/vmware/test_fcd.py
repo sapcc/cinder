@@ -336,6 +336,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
 
     @mock.patch.object(FCD_DRIVER, '_get_adapter_type')
     @mock.patch('cinder.objects.Volume.update')
+    @mock.patch('cinder.db.sqlalchemy.api.volume_update')
     @mock.patch.object(FCD_DRIVER, '_fetch_stream_optimized_image')
     @mock.patch.object(FCD_DRIVER, '_provider_location_to_ds_name_location')
     @mock.patch.object(FCD_DRIVER, '_get_temp_image_folder_from_volume')
@@ -357,6 +358,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
                                   get_temp_image_folder,
                                   provider_loc_to_ds_name_loc,
                                   _fetch_stream_optimized_image,
+                                  db_volume_update,
                                   volume_update,
                                   get_adapter_type):
         image_meta = self._create_image_meta(vmware_disktype=disk_type)
