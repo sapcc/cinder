@@ -893,7 +893,8 @@ class SapCommands:
             )
 
     @staticmethod
-    def _get_orphan_attachments(ctxt) -> dict[str, str]:
+    def _get_orphan_attachments(ctxt: context.RequestContext
+                                ) -> dict[str, str]:
         query = db_api.model_query(ctxt, models.VolumeAttachment,
                                    read_deleted="no")
         volume_attachments = {va.id: va.instance_uuid for va in query.all()}
@@ -906,33 +907,6 @@ class SapCommands:
             volume_attachments.items() if server_id not in nova_instances
         }
         return orphan_attachments
-
-    @staticmethod
-    def _delete_error_deleting_volumes(session, volume_ids: list[str],
-                                       now: Optional[datetime] = None) -> None:
-        if now is None:
-            now = timeutils.utcnow()
-        with session.begin():
-            session.execute(
-                update(models.VolumeAdminMetadata)
-                .where(models.VolumeAdminMetadata.volume_id.in_(volume_ids))
-                .values(updated_at=now, deleted_at=now, deleted=1)
-            )
-            session.execute(
-                update(models.VolumeMetadata)
-                .where(models.VolumeMetadata.volume_id.in_(volume_ids))
-                .values(updated_at=now, deleted_at=now, deleted=1)
-            )
-            session.execute(
-                update(models.VolumeAttachment)
-                .where(models.VolumeAttachment.volume_id.in_(volume_ids))
-                .values(updated_at=now, deleted_at=now, deleted=1)
-            )
-            session.execute(
-                update(models.Volume)
-                .where(models.Volume.id.in_(volume_ids))
-                .values(updated_at=now, deleted_at=now, deleted=1)
-            )
 
     @staticmethod
     def _mark_deleted_by_ids(session,
@@ -962,7 +936,7 @@ class SapCommands:
         else:
             print(f"found {len(ids)} volumes in state `error_deleting`:"
                   f"{(', ').join(ids)}")
-        return
+        return ids
 
     @staticmethod
     def _get_snapshots_ids_in_state_error_deleting(
@@ -1127,6 +1101,7 @@ class SapCommands:
     def consistency(self, dry_run: bool, fix_limit: int) -> None:
         ctxt = context.get_admin_context()
         session = db_api.get_session()
+        print(ctxt.to_dict())
         """
         Uncomment once fetching nova instances is working
 
@@ -1144,44 +1119,45 @@ class SapCommands:
         volume_metadata_ids =\
             self._get_volumes_ids_in_state_error_deleting(ctxt)
         if not dry_run and len(volume_metadata_ids) > 0:
-            SapCommands._mark_deleted_by_ids(session, models.VolumeMetadata,
-                                             volume_metadata_ids)
-            print("Volumes in state error_deleting marked as deleted")
+            volume_commands = VolumeCommands()
+            [volume_commands.delete(volume_id) for volume_id in
+             volume_metadata_ids]
+            print("Volumes in state error_deleting deleted")
 
         snapshot_ids = self._get_snapshots_ids_in_state_error_deleting(ctxt)
         if not dry_run and len(snapshot_ids) > 0:
-            SapCommands._mark_deleted_by_ids(session, models.Snapshot,
-                                             snapshot_ids)
+            self._mark_deleted_by_ids(session, models.Snapshot,
+                                      snapshot_ids)
             print("Snapshots in state error_deleting marked as deleted")
 
         admin_metadata_ids =\
             self._get_admin_metadata_ids_of_deleted_volumes(ctxt)
         if not dry_run and len(admin_metadata_ids) > 0:
-            SapCommands._mark_deleted_by_ids(session,
-                                             models.VolumeAdminMetadata,
-                                             admin_metadata_ids)
+            self._mark_deleted_by_ids(session,
+                                      models.VolumeAdminMetadata,
+                                      admin_metadata_ids)
             print("Admin metadata of deleted volumes marked as deleted")
 
         glance_metadata_ids =\
             self._get_glance_metadata_ids_of_deleted_volumes(ctxt)
         if not dry_run and len(glance_metadata_ids) > 0:
-            SapCommands._mark_deleted_by_ids(session,
-                                             models.VolumeGlanceMetadata,
-                                             glance_metadata_ids)
+            self._mark_deleted_by_ids(session,
+                                      models.VolumeGlanceMetadata,
+                                      glance_metadata_ids)
             print("Glance metadata of deleted volumes marked deleted")
 
         glance_metadata_ids2 =\
             self._get_glance_metadata_ids_of_deleted_snapshots(session)
         if not dry_run and len(glance_metadata_ids2) > 0:
-            SapCommands._mark_deleted_by_ids(session,
-                                             models.VolumeGlanceMetadata,
-                                             glance_metadata_ids2)
+            self._mark_deleted_by_ids(session,
+                                      models.VolumeGlanceMetadata,
+                                      glance_metadata_ids2)
             print("Glance metadata of deleted snapshots marked as deleted")
 
         metadata_ids = self._get_metadata_ids_of_deleted_volumes(ctxt)
         if not dry_run and len(metadata_ids) > 0:
-            SapCommands._mark_deleted_by_ids(session, models.VolumeMetadata,
-                                             metadata_ids)
+            self._mark_deleted_by_ids(session, models.VolumeMetadata,
+                                      metadata_ids)
             print("Metadata of deleted volumes marked as deleted")
 
         volume_attachment_ids =\

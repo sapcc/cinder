@@ -30,7 +30,14 @@ class SapCommandsTests(test.TestCase):
         self.context = context.get_admin_context()
         self.session = db_api.get_session()
 
+    def test_smoke_nothing_to_do(self):
+        sap_commands = SapCommands()
+        sap_commands.consistency(dry_run=True, fix_limit=10000)
+        sap_commands.consistency(dry_run=False, fix_limit=10000)
+
     def test_mark_deleted_by_ids_volume(self):
+        # Create a couple of volumes - some should be deleted, others are
+        # already deleted
         n_volumes = 10
         mark_as_deleted_ids, ids = [], []
         already_deleted_idx = [0, 1, 2]
@@ -46,12 +53,14 @@ class SapCommandsTests(test.TestCase):
                 self.session.execute(insert(models.Volume).values(
                     id=id, status="available", volume_type_id=volume_type_id,
                     deleted=deleted))
+        # Check that the volumes were created correctly
         count_total_volumes = self.session.query(models.Volume).count()
         self.assertEqual(n_volumes, count_total_volumes)
         count_already_deleted_volumes = self.session.query(models.Volume).\
             filter_by(deleted=1).count()
         self.assertEqual(len(already_deleted_idx),
                          count_already_deleted_volumes)
+        # Check if date has been updated properly for to-be-deleted volumes
         sap_commands = SapCommands()
         now = timeutils.utcnow()
         sap_commands._mark_deleted_by_ids(self.session,
@@ -62,11 +71,12 @@ class SapCommandsTests(test.TestCase):
             filter_by(updated_at=now, deleted_at=now).\
             count()
         self.assertEqual(len(should_be_deleted_idx), count_by_date)
+        # check total deleted flag count
         count_deleted_volumes = self.session.query(models.Volume).\
             filter_by(deleted=1).count()
         self.assertEqual(len(already_deleted_idx) + len(should_be_deleted_idx),
                          count_deleted_volumes)
-        # Nothing should be changed
+        # Nothing should be changed if id list is empty
         sap_commands._mark_deleted_by_ids(self.session,
                                           models.Volume,
                                           [],
@@ -79,6 +89,8 @@ class SapCommandsTests(test.TestCase):
     def test_mark_deleted_by_ids_volume_metadata(self):
         # create some volume_metadata, some of them should be flagged as
         # deleted, some of them should not because they are already deleted
+        # almost identical to test_mark_deleted_by_ids_volume but with
+        # different model
         n_volumes = 10
         mark_as_deleted_ids, ids = [], []
         already_deleted_idx = [0, 1, 2]
