@@ -60,20 +60,23 @@ import sys
 import time
 from typing import TYPE_CHECKING, Optional, Type, TypeVar   # noqa: H301
 
+from keystoneauth1 import loading as ks_loading
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_db.sqlalchemy import migration
 from oslo_log import log as logging
 from oslo_utils import timeutils
+import requests
 from sqlalchemy import and_
 from sqlalchemy import update
 import tabulate
 
-# Need to register global_opts
 from cinder.backup import rpcapi as backup_rpcapi
+# Need to register global_opts
 from cinder.common import config  # noqa
 from cinder.common import constants
-from cinder.compute import nova
+# Need to register nova specific options for nova api call
+from cinder.compute import nova  # noqa
 from cinder import context
 from cinder import coordination
 from cinder import db
@@ -88,8 +91,10 @@ from cinder import quota
 from cinder import rpc
 from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder import version
+from cinder.volume import API as volume_api
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import volume_utils
+
 
 if TYPE_CHECKING:
     CinderBaseModelType = TypeVar('T', bound=models.CinderBase)
@@ -97,6 +102,10 @@ if TYPE_CHECKING:
 
 
 CONF = cfg.CONF
+CONF(default_config_files=[
+    '/etc/cinder/cinder.conf',
+    '/etc/cinder/cinder.conf.d/secrets.conf'
+])
 
 LOG = logging.getLogger(__name__)
 
@@ -898,13 +907,22 @@ class SapCommands:
         query = db_api.model_query(ctxt, models.VolumeAttachment,
                                    read_deleted="no")
         volume_attachments = {va.id: va.instance_uuid for va in query.all()}
-        # TODO: test how to get nova client and get all servers
-        nova_instances = {instance.id: instance for instance in
-                          nova.novaclient().servers()}
+        n_auth = ks_loading.load_auth_from_conf_options(CONF, 'nova')
+        keystone_session = ks_loading.load_session_from_conf_options(
+            CONF, 'nova', auth=n_auth)
+        nova_endpoint = keystone_session.get_endpoint(service_type='compute',
+                                                      interface='public')
+        url = f"{nova_endpoint}sap/all_instance_uuids"
+        headers = {"X-Auth-Token": keystone_session.get_token()}
+        r = requests.get(url, headers=headers)
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"Failed to get nova instance uuids from nova api: {r.json()}")
+        instance_uuids = r.json()['instance_uuids']
         # filter volume_attachment dict by existing nova instances
         orphan_attachments = {
             attachment_id: server_id for attachment_id, server_id in
-            volume_attachments.items() if server_id not in nova_instances
+            volume_attachments.items() if server_id not in instance_uuids
         }
         return orphan_attachments
 
@@ -1101,9 +1119,6 @@ class SapCommands:
     def consistency(self, dry_run: bool, fix_limit: int) -> None:
         ctxt = context.get_admin_context()
         session = db_api.get_session()
-        print(ctxt.to_dict())
-        """
-        Uncomment once fetching nova instances is working
 
         # Remove volume attachments to non existing instances
         orphan_attachments = self._get_orphan_attachments(ctxt)
@@ -1115,13 +1130,13 @@ class SapCommands:
                                          fix_limit)
             print(f"Marked volume attachments\
                   {list(orphan_attachments.keys()).join(', ')} as deleted.")
-        """
-        volume_metadata_ids =\
+        volume_ids =\
             self._get_volumes_ids_in_state_error_deleting(ctxt)
-        if not dry_run and len(volume_metadata_ids) > 0:
-            volume_commands = VolumeCommands()
-            [volume_commands.delete(volume_id) for volume_id in
-             volume_metadata_ids]
+        if not dry_run and len(volume_ids) > 0:
+            v_api = volume_api()
+            for uuid in volume_ids:
+                volume = objects.Volume.get_by_id(ctxt, uuid)
+                v_api.delete(ctxt, volume, force=True)
             print("Volumes in state error_deleting deleted")
 
         snapshot_ids = self._get_snapshots_ids_in_state_error_deleting(ctxt)
