@@ -57,6 +57,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -866,6 +867,37 @@ class ConsistencyGroupCommands(object):
 
 class SapCommands:
     """Methods added for SAP-specific purposes"""
+
+    @args('--dry-run', action='store_true', default=False,
+          help='Do not sync any quotas.')
+    @args('--silent', action='store_true', default=False,
+          help='A single failing project sync does not raise exception.')
+    def quota_sync(self, dry_run: bool, silent: bool) -> None:
+        """Sync quotas for all projects.
+
+        Wrapper for Quota Commands that continues to run if a quota check
+        for a single project failed.
+        """
+        last_exception = None
+        failed_projects = {}
+        project_ids = QuotaCommands()._get_quota_projects(ctxt=None,
+                                                          project_id=None)
+        for project_id in project_ids:
+            try:
+                QuotaCommands()._check_sync(project_id, do_fix=not dry_run)
+            except Exception as e:
+                print("Failed to sync quotas for project "
+                      f"{project_id}: {type(e)} {e}")
+                last_exception = e
+                failed_projects[project_id] = traceback.format_exc()
+        for project_id, tb in failed_projects.items():
+            print(f"Project {project_id} failed with traceback: {tb}")
+        if last_exception:
+            print("Failed syncing the following projects: "
+                  f"{failed_projects.keys()}. See tracebacks above.")
+            if not silent:
+                print("Raising last exception:")
+                raise last_exception
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not delete any files.')
