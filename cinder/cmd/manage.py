@@ -912,7 +912,7 @@ class SapCommands:
         headers = {"X-Auth-Token": keystone_session.get_token()}
         r = requests.get(url, headers=headers)
         if r.status_code != 200:
-            raise RuntimeError(
+            raise requests.HTTPError(
                 f"Failed to get nova instance uuids from nova api: {r.json()}")
         instance_uuids = r.json()['instance_uuids']
         # filter volume_attachment dict by existing nova instances
