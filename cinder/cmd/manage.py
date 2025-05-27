@@ -102,10 +102,6 @@ if TYPE_CHECKING:
 
 
 CONF = cfg.CONF
-CONF(default_config_files=[
-    '/etc/cinder/cinder.conf',
-    '/etc/cinder/cinder.conf.d/secrets.conf'
-])
 
 LOG = logging.getLogger(__name__)
 
@@ -924,6 +920,8 @@ class SapCommands:
             attachment_id: server_id for attachment_id, server_id in
             volume_attachments.items() if server_id not in instance_uuids
         }
+        print(f"Found {len(orphan_attachments)} orphaned volume attachments \
+              (volume attachments to non-existing VM's).")
         return orphan_attachments
 
     @staticmethod
@@ -979,7 +977,7 @@ class SapCommands:
                  models.VolumeAdminMetadata.volume_id == models.Volume.id).\
             filter(
                 and_(models.Volume.deleted == 1,
-                     models.VolumeAdminMetadata.deleted == 0))
+                     models.VolumeAdminMetadata.deleted == 0)).distinct()
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
             print("No admin metadata found that is linked to deleted volumes")
@@ -997,7 +995,7 @@ class SapCommands:
                  models.VolumeGlanceMetadata.volume_id == models.Volume.id).\
             filter(
                 and_(models.Volume.deleted == 1,
-                     models.VolumeGlanceMetadata.deleted == 0))
+                     models.VolumeGlanceMetadata.deleted == 0)).distinct()
         # check if the attributes of the joined query are accessed correct!
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
@@ -1017,7 +1015,7 @@ class SapCommands:
                  == models.Snapshot.id).\
             filter(
                 and_(models.Snapshot.deleted == 1,
-                     models.VolumeGlanceMetadata.deleted == 0))
+                     models.VolumeGlanceMetadata.deleted == 0)).distinct()
         # check if the attributes of the joined query are accessed correct!
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
@@ -1036,7 +1034,7 @@ class SapCommands:
                  models.VolumeMetadata.volume_id == models.Volume.id).\
             filter(
                 and_(models.Volume.deleted == 1,
-                     models.VolumeMetadata.deleted == 0))
+                     models.VolumeMetadata.deleted == 0)).distinct()
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
             print("No metadata found that is linked to deleted volumes")
@@ -1054,7 +1052,7 @@ class SapCommands:
                  models.VolumeAttachment.volume_id == models.Volume.id).\
             filter(
                 and_(models.Volume.deleted == 1,
-                     models.VolumeAttachment.deleted == 0))
+                     models.VolumeAttachment.deleted == 0)).distinct()
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
             print("No volume attachment found that is linked to deleted"
@@ -1073,7 +1071,7 @@ class SapCommands:
                  models.GroupVolumeTypeMapping.group_id == models.Group.id).\
             filter(
                 and_(models.Group.deleted == 1,
-                     models.GroupVolumeTypeMapping.deleted == 0))
+                     models.GroupVolumeTypeMapping.deleted == 0)).distinct()
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
             print("No group volume type mapping found that is linked to "
@@ -1093,7 +1091,7 @@ class SapCommands:
                  models.Service.uuid == models.Volume.service_uuid).\
             filter(
                 and_(models.Volume.deleted == 1,
-                     models.Service.deleted == 0))
+                     models.Service.deleted == 0)).distinct()
         ids = [v[0] for v in query.all()]
         if len(ids) == 0:
             print("No service found that is linked to deleted volumes")
@@ -1122,9 +1120,7 @@ class SapCommands:
 
         # Remove volume attachments to non existing instances
         orphan_attachments = self._get_orphan_attachments(ctxt)
-        print(f"Found {len(orphan_attachments)} orphaned volume attachments \
-              (volume attachments to non-existing VM's).")
-        if not dry_run and len(orphan_attachments > 0):
+        if not dry_run and len(orphan_attachments) > 0:
             print("Try to fix orphan attachments")
             self._fix_orphan_attachments(orphan_attachments.values(),
                                          fix_limit)
@@ -1195,16 +1191,12 @@ class SapCommands:
         for model in [models.VolumeAttachment, models.Snapshot]:
             ids = self._get_ids_set_deleted_flag_and_unset_deleted_at(
                 ctxt, model)
-            print(f"Found {len(ids)} rows with set deleted flag and unset"
-                  f"deleted_at for table {model} ")
             if not dry_run and len(ids) > 0:
                 self._mark_deleted_by_ids(session, model, ids)
                 print("Rows with set deleted flag and unset deleted_at of "
                       "model{model.__name__} marked as deleted")
 
         service_ids = self._get_service_ids_linked_to_deleted_volumes(ctxt)
-        print(f"Found {len(service_ids)} services linked to deleted volumes: "
-              f" {service_ids}")
         if not dry_run and len(service_ids) > 0:
             self._mark_deleted_by_ids(session, models.Service, service_ids)
             print("Services linked to deleted volumes marked as deleted")
