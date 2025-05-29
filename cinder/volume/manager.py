@@ -900,16 +900,6 @@ class VolumeManager(manager.CleanableManager,
         snapshot_id = request_spec.get('snapshot_id')
         source_volid = request_spec.get('source_volid')
 
-        locked_action: ty.Optional[str]
-        if snapshot_id is not None:
-            # Make sure the snapshot is not deleted until we are done with it.
-            locked_action = "%s-%s" % (snapshot_id, 'delete_snapshot')
-        elif source_volid is not None:
-            # Make sure the volume is not deleted until we are done with it.
-            locked_action = "%s-%s" % (source_volid, 'delete_volume')
-        else:
-            locked_action = None
-
         def _run_flow() -> None:
             # This code executes create volume flow. If something goes wrong,
             # flow reverts all job that was done and reraises an exception.
@@ -923,11 +913,7 @@ class VolumeManager(manager.CleanableManager,
         rescheduled = False
 
         try:
-            if locked_action is None:
-                _run_flow()
-            else:
-                with coordination.COORDINATOR.get_lock(locked_action):
-                    _run_flow()
+            _run_flow()
         finally:
             try:
                 flow_engine.storage.fetch('refreshed')

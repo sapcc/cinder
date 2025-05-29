@@ -1424,8 +1424,6 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         orig_flow = engine.ActionEngine.run
 
         def mock_flow_run(*args, **kwargs):
-            # ensure the lock has been taken
-            mock_lock.assert_called_with('%s-delete_snapshot' % snap_id)
             # now proceed with the flow.
             ret = orig_flow(*args, **kwargs)
             return ret
@@ -1450,26 +1448,20 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # mock the flow runner so we can do some checks
         self.mock_object(engine.ActionEngine, 'run', mock_flow_run)
 
-        # locked
         self.volume.create_volume(self.context, dst_vol,
                                   request_spec={'snapshot_id': snap_id})
-        mock_lock.assert_called_with('%s-delete_snapshot' % snap_id)
         self.assertEqual(dst_vol.id, db.volume_get(admin_ctxt, dst_vol.id).id)
         self.assertEqual(snap_id,
                          db.volume_get(admin_ctxt, dst_vol.id).snapshot_id)
 
         # locked
         self.volume.delete_volume(self.context, dst_vol)
-        mock_lock.assert_any_call('%s-delete_volume' % dst_vol.id)
         mock_lock.assert_any_call('volume-stats-%s' % self.volume.host)
 
-        # locked
         self.volume.delete_snapshot(self.context, snapshot_obj)
-        mock_lock.assert_called_with('%s-delete_snapshot' % snap_id)
 
         # locked
         self.volume.delete_volume(self.context, src_vol)
-        mock_lock.assert_any_call('%s-delete_volume' % src_vol.id)
         mock_lock.assert_any_call('volume-stats-%s' % self.volume.host)
 
         self.assertTrue(mock_lvm_create.called)
@@ -1482,8 +1474,6 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         orig_flow = engine.ActionEngine.run
 
         def mock_flow_run(*args, **kwargs):
-            # ensure the lock has been taken
-            mock_lock.assert_called_with('%s-delete_volume' % src_vol_id)
             # now proceed with the flow.
             ret = orig_flow(*args, **kwargs)
             return ret
@@ -1505,22 +1495,16 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # mock the flow runner so we can do some checks
         self.mock_object(engine.ActionEngine, 'run', mock_flow_run)
 
-        # locked
         self.volume.create_volume(self.context, dst_vol,
                                   request_spec={'source_volid': src_vol_id})
-        mock_lock.assert_called_with('%s-delete_volume' % src_vol_id)
         self.assertEqual(dst_vol_id, db.volume_get(admin_ctxt, dst_vol_id).id)
         self.assertEqual(src_vol_id,
                          db.volume_get(admin_ctxt, dst_vol_id).source_volid)
 
-        # locked
         self.volume.delete_volume(self.context, dst_vol)
-        mock_lock.assert_any_call('%s-delete_volume' % dst_vol_id)
         mock_lock.assert_any_call('volume-stats-%s' % self.volume.host)
 
-        # locked
         self.volume.delete_volume(self.context, src_vol)
-        mock_lock.assert_any_call('%s-delete_volume' % src_vol_id)
 
     def _raise_metadata_copy_failure(self, method, dst_vol):
         # MetadataCopyFailure exception will be raised if DB service is Down
