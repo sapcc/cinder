@@ -19,6 +19,7 @@
 import ast
 import collections
 import datetime
+import typing as ty
 
 from castellan import key_manager
 from oslo_config import cfg
@@ -355,6 +356,23 @@ class API(base.Base):
             LOG.exception(msg)
             raise exception.CinderException(msg)
 
+        locked_action: ty.Optional[str]
+        if hasattr(snapshot, 'id'):
+            # Make sure the snapshot is not deleted until we are done with it.
+            locked_action = "%s-%s" % (snapshot.id, 'delete_snapshot')
+        elif hasattr(source_volume, 'id'):
+            # Make sure the volume is not deleted until we are done with it.
+            locked_action = "%s-%s" % (source_volume.id, 'delete_volume')
+        else:
+            locked_action = None
+
+        if locked_action is None:
+            return self._run_create_flow(flow_engine)
+        else:
+            with coordination.COORDINATOR.get_lock(locked_action):
+                return self._run_create_flow(flow_engine)
+
+    def _run_create_flow(self, flow_engine):
         # Attaching this listener will capture all of the notifications that
         # taskflow sends out and redirect them to a more useful log for
         # cinders debugging (or error reporting) usage.
@@ -411,6 +429,16 @@ class API(base.Base):
             project_id = volume.project_id
         else:
             project_id = context.project_id
+
+        vols = db.volume_get_all(
+            context.elevated(),
+            limit=1,
+            filters={'source_volid': volume.id,
+                     'status': 'creating'})
+        if len(vols):
+            msg = _('Volume is busy being cloned to other volumes. '
+                    'Please try again later.')
+            raise exception.InvalidVolume(reason=msg)
 
         if not volume.host:
             volume_utils.notify_about_volume_usage(context,
@@ -1196,6 +1224,16 @@ class API(base.Base):
                           target_obj=snapshot)
         if not unmanage_only:
             snapshot.assert_not_frozen()
+
+        vols = db.volume_get_all(
+            context.elevated(),
+            limit=1,
+            filters={'snapshot_id': snapshot.id,
+                     'status': 'creating'})
+        if len(vols):
+            msg = _('Snapshot is in use by other volumes '
+                    'that are being created. Please try again later.')
+            raise exception.InvalidSnapshot(reason=msg)
 
         # Build required conditions for conditional update
         expected = {'cgsnapshot_id': None,
