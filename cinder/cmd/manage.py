@@ -63,6 +63,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 import typing
 from typing import Any, Callable, Optional, Tuple, Union  # noqa: H301
 
@@ -70,6 +71,7 @@ from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import timeutils
+import sqlalchemy as sa
 import tabulate
 
 # Need to register global_opts
@@ -1042,6 +1044,47 @@ class UtilCommands(object):
 
 class SapCommands:
     """Methods added for SAP-specific purposes"""
+
+    @args('--dry-run', action='store_true', default=False,
+          help='Do not sync any quotas.')
+    @args('--silent', action='store_true', default=False,
+          help='A single failing project sync does not raise exception.')
+    def quota_sync(self, dry_run: bool, silent: bool) -> None:
+        """Sync quotas for all projects.
+
+        Wrapper for Quota Commands: Continues to run even if single project
+        failed.
+
+        Furthermore, quota sync is bugged in antelope. Fetching all project ids
+        crashes. There is a bugfix (August 2024), but it introduces a merge
+        conflict in the db api (bug #2077643, fix-commit:
+        82be2371fc47a485722dfa84427888f24a377612). Consider removing this
+        command once the merge conflict is resolved in future releases.
+        """
+        last_exception = None
+        failed_projects = {}
+        ctxt = context.get_admin_context()
+        with db_api.main_context_manager.reader.using(ctxt):
+            query_results = db_api.model_query(ctxt, models.QuotaUsage,
+                read_deleted="no").with_entities(sa.Column('project_id'))\
+                    .distinct().all()
+        project_ids = [row[0] for row in query_results]
+        for project_id in project_ids:
+            try:
+                QuotaCommands()._check_sync(project_id, do_fix=not dry_run)
+            except Exception as e:
+                print("Failed to sync quotas for project "
+                      f"{project_id}: {type(e)} {e}")
+                last_exception = e
+                failed_projects[project_id] = traceback.format_exc()
+        for project_id, tb in failed_projects.items():
+            print(f"Project {project_id} failed with traceback: {tb}")
+        if last_exception:
+            print("Failed syncing the following projects: "
+                  f"{failed_projects.keys()}. See tracebacks above.")
+            if not silent:
+                print("Raising last exception:")
+                raise last_exception
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not delete any files.')
