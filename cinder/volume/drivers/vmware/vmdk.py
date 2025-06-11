@@ -28,6 +28,7 @@ import ssl
 
 import OpenSSL
 from oslo_config import cfg
+from oslo_config import types
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import units
@@ -220,6 +221,17 @@ vmdk_opts = [
                'cinder-volume container having to proxy the image between '
                'glance and VMware.'
                ),
+    cfg.MultiOpt(
+        'sap_netapp_credentials',
+        item_type=types.Dict(
+            types.Dict(types.String(), bounds=True)
+        ),
+        default={},
+        help='A dictionary of netapp host connection credentials. '
+        'the format is this: '
+        'sap_netapp_credentials = netapp_1: {user: foo, password: bar},'
+        'netapp_2: {user: baz, password: qux}'
+    ),
 ]
 
 CONF = cfg.CONF
@@ -380,6 +392,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._remote_api = remote_api.VmdkDriverRemoteApi()
         self._storage_profiles = []
         self._volume_type_by_backend = None
+        self._sap_netapp_credentials = {}
+
+        if CONF.sap_netapp_credentials:
+            # This is an artifact of the way the config parser works.
+            # It will return a list of dictionaries, the list will contain
+            # only one item, so we need to get the first one.
+            self._sap_netapp_credentials = CONF.sap_netapp_credentials[0]
 
     @staticmethod
     def get_driver_options():
