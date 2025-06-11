@@ -28,6 +28,7 @@ import ssl
 
 import OpenSSL
 from oslo_config import cfg
+from oslo_config import types
 from oslo_log import log as logging
 from oslo_service import loopingcall
 from oslo_utils import excutils
@@ -246,6 +247,17 @@ vmdk_opts = [
     cfg.IntOpt('image_cache_age_seconds', default=3600 * 24,
                help='Minimum number of seconds after which a cached image '
                     'has to be deleted.'),
+    cfg.MultiOpt(
+        'sap_netapp_credentials',
+        item_type=types.Dict(
+            types.Dict(types.String(), bounds=True)
+        ),
+        default={},
+        help='A dictionary of netapp host connection credentials. '
+        'the format is this: '
+        'sap_netapp_credentials = netapp_1: {user: foo, password: bar},'
+        'netapp_2: {user: baz, password: qux}'
+    ),
 ]
 
 CONF = cfg.CONF
@@ -422,6 +434,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self._kmip_api = kmip.KMIPRestApiClient(
             kmip_url=self.configuration.kmip_api_url,
             barbican_url=self.configuration.barbican_url)
+
+        if self.configuration.sap_netapp_credentials:
+            # This is an artifact of the way the config parser works.
+            # It will return a list of dictionaries, the list will contain
+            # only one item, so we need to get the first one.
+            _conf = self.configuration
+            self._sap_netapp_credentials = _conf.sap_netapp_credentials[0]
 
     @staticmethod
     def get_driver_options():
