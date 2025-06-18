@@ -63,6 +63,7 @@ from pathlib import Path
 import re
 import sys
 import time
+import traceback
 import typing
 from typing import Any, Callable, Optional, Tuple, Union  # noqa: H301
 
@@ -358,7 +359,7 @@ class QuotaCommands(object):
         pass
 
     @args('--project-id', default=None,
-          help=('The ID of the project where we want to sync the quotas '
+          help=('The ID of the project where we want to check the quotas '
                 '(defaults to all projects).'))
     def check(self, project_id: Optional[str]) -> None:
         """Check if quotas and reservations are correct
@@ -398,13 +399,13 @@ class QuotaCommands(object):
 
     @db_api.main_context_manager.reader
     def _get_quota_projects(self,
-                            context: context.RequestContext,
+                            ctxt: context.RequestContext,
                             project_id: Optional[str]) -> list[str]:
         """Get project ids that have quota_usage entries."""
         if project_id:
             model = models.QuotaUsage
             # If the project does not exist
-            if not context.session.query(
+            if not ctxt.session.query(
                 db_api.sql.exists()
                 .where(
                     db_api.and_(
@@ -421,7 +422,7 @@ class QuotaCommands(object):
             return [project_id]
 
         projects = db_api.model_query(
-            context,
+            ctxt,
             models.QuotaUsage,
             read_deleted="no"
         ).with_entities('project_id').distinct().all()
@@ -434,10 +435,10 @@ class QuotaCommands(object):
                     project_id: str) -> list:
         """Get data necessary to check out of sync quota usage.
 
-        Returns a list QuotaUsage instances for the specific project
+        Returns a list of QuotaUsage instances for the specific project
         """
         usages = db_api.model_query(
-            context,
+            ctxt,
             db_api.models.QuotaUsage,
             read_deleted="no",
         ).filter_by(project_id=project_id).with_for_update().all()
@@ -450,7 +451,7 @@ class QuotaCommands(object):
         """Get reservations for a given project and usage id."""
         reservations = (
             db_api.model_query(
-                context,
+                ctxt,
                 models.Reservation,
                 read_deleted="no",
             )
@@ -461,7 +462,7 @@ class QuotaCommands(object):
         return reservations
 
     def _check_duplicates(self,
-                          context: context.RequestContext,
+                          ctxt: context.RequestContext,
                           usages,
                           do_fix: bool) -> tuple[list, bool]:
         """Look for duplicated quota used entries (bug#1484343)
@@ -488,7 +489,7 @@ class QuotaCommands(object):
                     reassigned = 0
                     for usage in resource_usages[1:]:
                         reservations = self._get_reservations(
-                            context,
+                            ctxt,
                             usage.project_id,
                             usage.id,
                         )
@@ -497,7 +498,7 @@ class QuotaCommands(object):
                             reservation.usage_id = keep_usage.id
                         keep_usage.in_use += usage.in_use
                         keep_usage.reserved += usage.reserved
-                        usage.delete(context.session)
+                        usage.delete(ctxt.session)
                     print('duplicates removed & %s reservations reassigned' %
                           reassigned)
                 else:
@@ -511,6 +512,7 @@ class QuotaCommands(object):
         ctxt = context.get_admin_context()
         # Get the quota usage types and their sync methods
         resources = quota.QUOTAS.resources
+        resources.update(quota.GROUP_QUOTAS.resources)
 
         # Get all project ids that have quota usage. Method doesn't lock
         # projects, since newly added projects should not be out of sync and
@@ -532,7 +534,7 @@ class QuotaCommands(object):
 
     @db_api.main_context_manager.reader
     def _check_project_sync(self,
-                            context: context.RequestContext,
+                            ctxt: context.RequestContext,
                             project: str,
                             do_fix: bool,
                             resources) -> bool:
@@ -546,11 +548,11 @@ class QuotaCommands(object):
         # running Cinder services.
 
         # We only want to sync existing quota usage rows
-        usages = self._get_usages(context, resources, project)
+        usages = self._get_usages(ctxt, resources, project)
 
         # Check for duplicated entries (bug#1484343)
         usages, duplicates_found = self._check_duplicates(
-            context, usages, do_fix,
+            ctxt, usages, do_fix,
         )
         if duplicates_found:
             discrepancy = True
@@ -560,7 +562,7 @@ class QuotaCommands(object):
             resource_name = usage.resource
             # Get the correct value for this quota usage resource
             updates = db_api._get_sync_updates(
-                context,
+                ctxt,
                 project,
                 resources,
                 resource_name,
@@ -576,7 +578,7 @@ class QuotaCommands(object):
                     usage.in_use = in_use
 
             reservations = self._get_reservations(
-                context,
+                ctxt,
                 project,
                 usage.id,
             )
@@ -1385,6 +1387,49 @@ class SapCommands:
         if not dry_run and len(service_ids) > 0:
             self._mark_deleted_by_ids(ctxt, models.Service, service_ids)
             print("Services linked to deleted volumes marked as deleted")
+
+    @args('--dry-run', action='store_true', default=False,
+          help='Do not sync any quotas.')
+    @args('--silent', action='store_true', default=False,
+          help='A single failing project sync does not raise exception.')
+    def quota_sync(self, dry_run: bool, silent: bool) -> None:
+        """Sync quotas for all projects.
+
+        Wrapper for Quota Commands: Continues to run even if single project
+        failed.
+
+        Furthermore, quota sync is bugged in antelope. Fetching all project ids
+        with `_get_quota_projects` crashes. There is a bugfix (August 2024),
+        but it introduces a merge conflict in the db api (bug #2077643,
+        fix-commit: 82be2371fc47a485722dfa84427888f24a377612).
+        """
+        last_exception = None
+        failed_projects = {}
+        ctxt = context.get_admin_context()
+        with db_api.main_context_manager.reader.using(ctxt):
+            query_results = (
+                db_api.model_query(ctxt, models.QuotaUsage, read_deleted="no")
+                .with_entities(sa.Column('project_id'))
+                .distinct()
+                .all()
+            )
+        project_ids = [row[0] for row in query_results]
+        for project_id in project_ids:
+            try:
+                QuotaCommands()._check_sync(project_id, do_fix=not dry_run)
+            except Exception as e:
+                print("Failed to sync quotas for project "
+                      f"{project_id}: {type(e)} {e}")
+                last_exception = e
+                failed_projects[project_id] = traceback.format_exc()
+        for project_id, tb in failed_projects.items():
+            print(f"Project {project_id} failed with traceback: {tb}")
+        if last_exception:
+            print("Failed syncing the following projects: "
+                  f"{failed_projects.keys()}. See tracebacks above.")
+            if not silent:
+                print("Raising last exception:")
+                raise last_exception
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not delete any files.')

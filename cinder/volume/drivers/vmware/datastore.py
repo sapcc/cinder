@@ -128,8 +128,6 @@ class DatastoreSelector(object):
 
         attrs = self._vops.get_cluster_custom_attributes(
             host_cluster_ref, props=cluster_cache.get(host_cluster_value))
-        LOG.debug("Cluster %s custom attributes: %s",
-                  host_cluster_value, attrs)
 
         if not attrs or 'buildup' not in attrs:
             return False
