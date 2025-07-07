@@ -399,7 +399,14 @@ class VMwareVolumeOps(object):
         return self._session.invoke_api(vim_util, 'get_object_property',
                                         self._session.vim, instance,
                                         'runtime.host')
-
+    def get_managed_by(self, instance):
+        """Get ManagedByInfo info from vm instance 
+        :param instance: Managed object reference of the instance VM
+        :return: summary.config.managedBy
+        """
+        return self._session.invoke_api(vim_util, 'get_object_property',
+                                        self._session.vim, instance,
+                                        'summary.config.managedBy')
     def get_hosts(self):
         """Get all host from the inventory.
 
@@ -2230,6 +2237,14 @@ class VMwareVolumeOps(object):
     def delete_fcd(self, fcd_location, delete_folder=True):
         cf = self._session.vim.client.factory
         vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
+        consumer = self.get_fcd_consumer(fcd_location.ds_ref(), fcd_location.id(cf))
+        if consumer:
+            instance = self.get_backing_by_uuid(consumer)
+            self.detach_fcd(instance, fcd_location)
+            managed_by = self.get_managed_by(instance)
+            if ((managed_by.extensionKey == self._extension_key) and 
+            (managed_by.type == self._extension_type)):
+                self.delete_backing(instance)
         vmdk_file = self.get_vmdk_path_for_fcd(fcd_location.ds_ref(),
                                                fcd_location.id(cf))
         dc_ref = self.get_dc(fcd_location.ds_ref())
