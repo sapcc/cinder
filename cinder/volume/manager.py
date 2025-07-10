@@ -2881,29 +2881,34 @@ class VolumeManager(manager.CleanableManager,
 
         volume.migration_status = 'migrating'
         volume.save()
-        LOG.debug(f"migrate_volume: force_host_copy: {force_host_copy}, new_type_id: {new_type_id}")
+
         # Hack to allow migration to a different host if the storage protocol
         # is vmdk -> vstorageobject
         # We know the vmdk driver can migrate to an fcd.
         def _can_host_migrate(volume, force_host_copy, new_type_id):
             if not force_host_copy and new_type_id:
-                # now check to see if the storage protocols between source and destination
-                # can tolerate the migration.
-                source_volume_type = objects.VolumeType.get_by_id(ctxt, volume.volume_type_id)
-                dest_volume_type = objects.VolumeType.get_by_id(ctxt, new_type_id)
-                LOG.debug(f"migrate_volume: source_volume_type: {source_volume_type}, dest_volume_type: {dest_volume_type}")
+                # now check to see if the storage protocols between
+                # source and destination can tolerate the migration
+                source_volume_type = objects.VolumeType.get_by_id(
+                    ctxt, volume.volume_type_id)
+                dest_volume_type = objects.VolumeType.get_by_id(
+                    ctxt, new_type_id)
 
                 # We only allow vmdk -> fcd migration currently.
-                if (source_volume_type.extra_specs.get('storage_protocol') == 'vmdk' and
-                    dest_volume_type.extra_specs.get('storage_protocol') == 'vstorageobject'):
+                src_storage_protocol = source_volume_type.extra_specs.get(
+                    'storage_protocol')
+                dest_storage_protocol = dest_volume_type.extra_specs.get(
+                    'storage_protocol')
+                if (src_storage_protocol == 'vmdk' and
+                        dest_storage_protocol == 'vstorageobject'):
                     return True
             elif not force_host_copy and not new_type_id:
-                # If no new_type_id is specified, we allow migration to any host.
+                # If no new_type_id is specified, we allow migration
+                # to any host.
                 return True
             return False
 
         if _can_host_migrate(volume, force_host_copy, new_type_id):
-            LOG.debug(f"migrate_volume: can migrate volume {volume.id} to {host['host']}")
             try:
                 LOG.debug("Issue driver.migrate_volume.", resource=volume)
                 # Update the remote host's allocated_capacity_gb first
