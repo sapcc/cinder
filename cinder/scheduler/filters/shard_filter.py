@@ -246,3 +246,55 @@ class ShardFilter(filters.BaseBackendFilter):
                        'backend_shards': configured_shards_set,
                        'project_shards': shards})
             return False
+
+
+class SAPShardRetypeMigrationFilter(ShardFilter):
+    """Filters backends by shard of the project
+
+    When a volume is retyping or migrating from vmdk -> vstorageobject, we want
+    to ensure that the volume is migrated to the same shard as the original
+    volume.
+
+    """
+
+    def backend_passes(self, backend_state, filter_properties):
+        # We only need the shard filter for vmware based pools
+        if backend_state.vendor_name != 'VMware':
+            LOG.info(
+                "Shard Filter ignoring backend %s as it's not vmware based"
+                " driver", backend_state.backend_id)
+            return True
+
+        spec = filter_properties.get('request_spec', {})
+        vol = spec.get('volume_properties', {})
+
+        # Any retyping of a vmware based volume should land on the same shard.
+        if spec.get('operation') == 'retype_volume':
+            # The backend can only be on the same shard as
+            # the volume is currently on.
+            vol_shard = self._extract_shard_from_host(vol['host'])
+            backend_shard = self._extract_shard_from_host(backend_state.host)
+            if vol_shard == backend_shard:
+                return True
+            else:
+                return False
+
+        # A migration for vmdk -> fcd(vstorageobject) should land
+        # on the same shard.
+        if spec.get('operation') == 'migrate_volume':
+            # The backend can only be on the same shard as
+            # the volume is currently on.
+            # host entries for vmdk base volumes are
+            #    '<system_name>@vmware#pool'
+            # host entries for fcd base volumes are
+            #    '<system_name>@vmware_fcd#pool'
+            vol_backend = cinder_utils.extract_host(
+                vol['host'], 'backend').split('@')[1]
+            backend_backend = cinder_utils.extract_host(
+                backend_state.host, 'backend').split('@')[1]
+            vol_shard = self._extract_shard_from_host(vol['host'])
+            backend_shard = self._extract_shard_from_host(backend_state.host)
+            if (vol_backend == 'vmware' and backend_backend == 'vmware_fcd' and
+                    vol_shard == backend_shard):
+                return True
+            return False
