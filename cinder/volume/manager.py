@@ -2846,6 +2846,21 @@ class VolumeManager(manager.CleanableManager,
                  resource=volume)
         return volume.id
 
+    def _sap_can_use_driver_migration(self, diff, force_host_copy):
+        # Hack to allow migration to a different host if the storage
+        # protocol is vmdk -> vstorageobject.
+        # We know the vmdk driver can migrate to an fcd.
+        if diff and not force_host_copy:
+            # now check to see if the storage protocols between
+            # source and destination can tolerate the migration.
+            extra_specs = diff.get('extra_specs', {})
+            (src_protocol, dest_protocol) = extra_specs.get(
+                'storage_protocol', (None, None))
+            # We only allow vmdk -> fcd migration currently.
+            if src_protocol == 'vmdk' and dest_protocol == 'vstorageobject':
+                return True
+        return False
+
     def _can_use_driver_migration(self, diff):
         """Return when we can use driver assisted migration on a retype."""
         # We can if there's no retype or there are no difference in the types
@@ -2895,12 +2910,14 @@ class VolumeManager(manager.CleanableManager,
 
         volume.migration_status = 'migrating'
         volume.save()
+
         # Do not attempt driver assisted migration when the volume has
         # attachments. Nova must be involved when migrating an attached
         # volume, and that's handled by the generic migration code.
-        if (len(volume.volume_attachment) == 0 and
-                not force_host_copy and
-                self._can_use_driver_migration(diff)):
+        if self._sap_can_use_driver_migration(diff, force_host_copy) or \
+                (len(volume.volume_attachment) == 0 and
+                 not force_host_copy and
+                 self._can_use_driver_migration(diff)):
             try:
                 LOG.debug("Issue driver.migrate_volume.", resource=volume)
                 # Update the remote host's allocated_capacity_gb first

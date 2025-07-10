@@ -116,8 +116,11 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
         self.assertEqual('fake-rsv', named_args['reservations'])
 
     @mock.patch('cinder.volume.manager.VolumeManager.'
+                '_sap_can_use_driver_migration', return_value=False)
+    @mock.patch('cinder.volume.manager.VolumeManager.'
                 '_can_use_driver_migration')
-    def test_migrate_volume_driver_for_retype(self, mock_can_use):
+    def test_migrate_volume_driver_for_retype(self, mock_can_use,
+                                              sap_can_use):
         """Test volume migration done by driver on a retype."""
         # Mock driver and rpc functions
         mock_driver = self.mock_object(self.volume.driver, 'migrate_volume',
@@ -139,11 +142,14 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
         self.assertEqual('success', volume.migration_status)
         self.assertEqual(fake.VOLUME_TYPE2_ID, volume.volume_type_id)
 
+    @mock.patch('cinder.volume.manager.VolumeManager.'
+                '_sap_can_use_driver_migration', return_value=False)
     @mock.patch('cinder.volume.manager.VolumeManager._migrate_volume_generic')
     @mock.patch('cinder.volume.manager.VolumeManager.'
                 '_can_use_driver_migration')
     def test_migrate_volume_driver_for_retype_generic(self, mock_can_use,
-                                                      mock_generic):
+                                                      mock_generic,
+                                                      mock_sap_can_use):
         """Test generic volume migration on a retype after driver can't."""
         # Mock driver and rpc functions
         mock_driver = self.mock_object(self.volume.driver, 'migrate_volume',
