@@ -25,12 +25,21 @@ LOG = logging.getLogger(__name__)
 class SAPPoolDownFilter(filters.BaseBackendFilter):
     """Filter out pools that are not marked 'up'."""
 
-    def backend_passes(self, backend_state, filter_properties):
+    def backend_passes(self, host_state, filter_properties):
+        valid_ops = ['migrate_volume', 'find_backend_for_connector']
+        spec = filter_properties.get('request_spec', {})
 
-        if backend_state.pool_state == 'up':
+        # For FCD based volumes, we want to allow a volume migration
+        # to the same pool, even if it's marked down draining.
+        # As the migration is nothing more than a registration to a
+        # new host.  The volume is already on the pool.
+        if host_state.pool_state == 'up':
+            return True
+        elif spec.get('operation') in valid_ops:
+            LOG.debug("Allow migration to a down/draining pool.")
             return True
         else:
             LOG.debug("%(id)s pool state is not 'up'. state='%(state)s'",
-                      {'id': backend_state.backend_id,
-                       'state': backend_state.pool_state})
+                      {'id': host_state.backend_id,
+                       'state': host_state.pool_state})
             return False
