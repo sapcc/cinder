@@ -22,6 +22,7 @@ from oslo_log import log as logging
 from cinder.scheduler import filters
 from cinder.service_auth import SERVICE_USER_GROUP
 from cinder import utils as cinder_utils
+from cinder.volume import volume_utils
 
 
 LOG = logging.getLogger(__name__)
@@ -290,9 +291,9 @@ class SAPShardRetypeMigrationFilter(ShardFilter):
             #    '<system_name>@vmware#pool'
             # host entries for fcd base volumes are
             #    '<system_name>@vmware_fcd#pool'
-            vol_backend = cinder_utils.extract_host(
+            vol_backend = volume_utils.extract_host(
                 vol['host'], 'backend').split('@')[1]
-            backend_backend = cinder_utils.extract_host(
+            backend_backend = volume_utils.extract_host(
                 backend_state.host, 'backend').split('@')[1]
             vol_shard = self._extract_shard_from_host(vol['host'])
             backend_shard = self._extract_shard_from_host(backend_state.host)
