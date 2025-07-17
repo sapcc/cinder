@@ -298,3 +298,5 @@ class SAPShardRetypeMigrationFilter(ShardFilter):
                     vol_shard == backend_shard):
                 return True
             return False
+        # Allow any other operation to work
+        return True
