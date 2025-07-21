@@ -665,6 +665,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         aggregate_id = \
                             custom_attributes['cinder_aggregate_id']
 
+                if summary.type == "NFS41":
+                    remote_path = summary.datastore.info.nas.remotePath
+                    remote_ip = summary.datastore.info.nas.remoteHost
+                    mount_path = "%s:%s" % (remote_ip, remote_path)
+                else:
+                    mount_path = ""
                 pool = {'pool_name': summary.name,
                         'total_capacity_gb': round(
                             summary.capacity / units.Gi),
@@ -686,6 +692,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         'pool_down_reason': pool_down_reason,
                         'custom_attributes': custom_attributes,
                         'independent_snapshots': independent_snapshot,
+                        'mount_path': mount_path,
                         }
                 if aggregate_id:
                     pool['aggregate_id'] = aggregate_id
