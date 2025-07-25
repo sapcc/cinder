@@ -1239,7 +1239,8 @@ class RestClient(object):
         body = {
             'qos_policy.name': qos_policy_group_name
         }
-
+        # We need to ESCAPE special chars in the url
+        file_path = file_path.replace('.', '%2E').replace('/', '%2F')
         self.send_request(
             f'/storage/volumes/{volume["uuid"]}/files/{file_path}',
             'patch', body=body, enable_tunneling=False)
