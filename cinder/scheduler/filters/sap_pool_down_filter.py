@@ -17,7 +17,7 @@
 from oslo_log import log as logging
 
 from cinder.scheduler import filters
-from cinder import utils as cinder_utils
+from cinder.volume import volume_utils
 
 
 LOG = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class SAPPoolDownFilter(filters.BaseBackendFilter):
     def backend_passes(self, host_state, filter_properties):
         valid_ops = ['migrate_volume', 'find_backend_for_connector']
         spec = filter_properties.get('request_spec', {})
-        backend = cinder_utils.extract_host(
+        backend = volume_utils.extract_host(
             host_state.host, 'backend').split('@')[1]
 
         # For FCD based volumes, we want to allow a volume migration
