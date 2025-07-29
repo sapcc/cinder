@@ -67,16 +67,20 @@ import traceback
 import typing
 from typing import Any, Callable, Optional, Tuple, Union  # noqa: H301
 
+from keystoneauth1 import loading as ks_loading
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import timeutils
+import requests
 import sqlalchemy as sa
 import tabulate
 
 # Need to register global_opts
 from cinder.backup import rpcapi as backup_rpcapi
 from cinder.common import config  # noqa
+# Need to register nova specific options for nova api call
+from cinder.compute import nova  # noqa
 from cinder import context
 from cinder import coordination
 from cinder import db
@@ -91,8 +95,13 @@ from cinder import quota
 from cinder import rpc
 from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder import version
+from cinder.volume import API as volume_api
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import volume_utils
+
+
+if typing.TYPE_CHECKING:
+    from datetime import datetime
 
 
 CONF = cfg.CONF
@@ -1043,7 +1052,441 @@ class UtilCommands(object):
 
 
 class SapCommands:
+
     """Methods added for SAP-specific purposes"""
+    @db_api.main_context_manager.writer
+    def _fix_orphan_attachments(self,
+                                ctxt: context.RequestContext,
+                                orphan_attachments_instance_ids: list[str],
+                                fix_limit: int):
+        if len(orphan_attachments_instance_ids) > fix_limit:
+            print(f"WARNING: More orphan attachments than fix_limit\
+                  ({len(orphan_attachments_instance_ids)} > {fix_limit})")
+            return
+        now = timeutils.utcnow()
+        ctxt.session.execute(
+            sa.update(models.VolumeAttachment)
+            .where(models.VolumeAttachment.instance_uuid.in_(
+                orphan_attachments_instance_ids))
+            .values(updated_at=now, deleted_at=now, deleted=1)
+        )
+
+    @db_api.main_context_manager.reader
+    def _get_orphan_attachments(self,
+                                ctxt: context.RequestContext
+                                ) -> dict[str, str]:
+        query = db_api.model_query(ctxt, models.VolumeAttachment,
+                                   read_deleted="no")
+        volume_attachments = {va.id: va.instance_uuid for va in query.all()}
+        n_auth = ks_loading.load_auth_from_conf_options(CONF, 'nova')
+        keystone_session = ks_loading.load_session_from_conf_options(
+            CONF, 'nova', auth=n_auth)
+        nova_endpoint = keystone_session.get_endpoint(service_type='compute',
+                                                      interface='public')
+        url = f"{nova_endpoint}sap/all_instance_uuids"
+        headers = {"X-Auth-Token": keystone_session.get_token()}
+        r = requests.get(url, headers=headers)
+        if not r.ok:
+            raise requests.HTTPError(
+                f"Failed to get nova instance uuids from nova api: {r.json()}")
+        instance_uuids = r.json()['instance_uuids']
+        # filter volume_attachment dict by existing nova instances
+        orphan_attachments = {
+            attachment_id: server_id for attachment_id, server_id in
+            volume_attachments.items() if server_id not in instance_uuids
+        }
+        print(f"Found {len(orphan_attachments)} orphaned volume attachments"
+              "(volume attachments to non-existing VM's). Orphaned attachment"
+              f" uuids: {(', ').join(orphan_attachments.keys())}")
+        return orphan_attachments
+
+    @db_api.main_context_manager.writer
+    def _set_deleted_by_ids(self,
+                            ctxt: context.RequestContext,
+                            model: models.CinderBase,
+                            ids: list[str | int],
+                            now: Optional[datetime] = None,
+                            deleted: int = 1) -> None:
+        if not ids:
+            print("No IDs provided to mark as deleted")
+            return
+        if now is None:
+            now = timeutils.utcnow()
+        if deleted == 1:
+            deleted_at = now
+        elif deleted == 0:
+            deleted_at = None
+        else:
+            raise ValueError("Invalid value for deleted, must be 0 or 1")
+        ctxt.session.execute(
+            sa.update(model)
+            .where(model.id.in_(ids))
+            .values(updated_at=now, deleted_at=deleted_at, deleted=deleted)
+        )
+
+    @db_api.main_context_manager.reader
+    def _get_volumes_ids_in_state_error_deleting(
+            self,
+            ctxt: context.RequestContext) -> list[str]:
+        query = db_api.model_query(ctxt, models.Volume.id, read_deleted="no").\
+            filter_by(status="error_deleting")
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No volumes in state `error_deleting` found")
+        else:
+            print(f"found {len(ids)} volumes in state `error_deleting`:"
+                  f"{(', ').join(ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_snapshots_ids_in_state_error_deleting(
+            self,
+            ctxt: context.RequestContext) -> list[str]:
+        query = db_api.model_query(ctxt, models.Snapshot.id,
+                                   read_deleted="no").filter_by(
+                                       status="error_deleting")
+        ids = [s[0] for s in query.all()]
+        if len(ids) == 0:
+            print("No snapshots in state `error_deleting` found")
+        else:
+            print(f"found {len(ids)} snapshots in state"
+                  f"`error_deleting`:{(', ').join(ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_admin_metadata_ids_of_deleted_volumes(
+            self,
+            ctxt: context.RequestContext) -> list[int]:
+        query = db_api.model_query(ctxt, models.VolumeAdminMetadata.id,
+                                   read_deleted="no").\
+            join(models.Volume,
+                 models.VolumeAdminMetadata.volume_id == models.Volume.id).\
+            filter(
+                sa.and_(models.Volume.deleted == 1,
+                        models.VolumeAdminMetadata.deleted == 0)).distinct()
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No admin metadata found that is linked to deleted volumes")
+        else:
+            print(f"found {len(ids)} admin metadata of volumes that are "
+                  f"already deleted: {(', ').join(str(x) for x in ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_glance_metadata_ids_of_deleted_volumes(
+            self,
+            ctxt: context.RequestContext) -> list[int]:
+        query = db_api.model_query(ctxt, models.VolumeGlanceMetadata.id,
+                                   read_deleted="no").\
+            join(models.Volume,
+                 models.VolumeGlanceMetadata.volume_id == models.Volume.id).\
+            filter(
+                sa.and_(models.Volume.deleted == 1,
+                        models.VolumeGlanceMetadata.deleted == 0)).distinct()
+        # check if the attributes of the joined query are accessed correct!
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No glance metadata found that is linked to deleted volumes")
+        else:
+            print(f"found {len(ids) }glance metadata of volumes that are"
+                  f"already deleted: {(', ').join(str(x) for x in ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_glance_metadata_ids_of_deleted_snapshots(
+            self,
+            ctxt: context.RequestContext) -> list[int]:
+        query = db_api.model_query(ctxt, models.VolumeGlanceMetadata.id,
+                                   read_deleted="no").\
+            join(models.Snapshot,
+                 models.VolumeGlanceMetadata.snapshot_id
+                 == models.Snapshot.id).\
+            filter(
+                sa.and_(models.Snapshot.deleted == 1,
+                        models.VolumeGlanceMetadata.deleted == 0)).distinct()
+        # check if the attributes of the joined query are accessed correct!
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No glance metadata found that is linked to deleted "
+                  "snapshots")
+        else:
+            print(f"found {len(ids)} glance metadata of snapshots that are "
+                  f"already deleted: {(', ').join(str(x) for x in ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_metadata_ids_of_deleted_volumes(
+            self,
+            ctxt: context.RequestContext) -> list[int]:
+        query = db_api.model_query(ctxt, models.VolumeMetadata.id,
+                                   read_deleted="no").\
+            join(models.Volume,
+                 models.VolumeMetadata.volume_id == models.Volume.id).\
+            filter(
+                sa.and_(models.Volume.deleted == 1,
+                        models.VolumeMetadata.deleted == 0)).distinct()
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No metadata found that is linked to deleted volumes")
+        else:
+            print(f"found {len(ids)} metadata of volumes that are already"
+                  f"deleted: {(', ').join(str(x) for x in ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_volume_attachments_of_deleted_volumes(
+            self,
+            ctxt: context.RequestContext) -> list[str]:
+        query = db_api.model_query(ctxt, models.VolumeAttachment.id,
+                                   read_deleted="no").\
+            join(models.Volume,
+                 models.VolumeAttachment.volume_id == models.Volume.id).\
+            filter(
+                sa.and_(models.Volume.deleted == 1,
+                        models.VolumeAttachment.deleted == 0)).distinct()
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No volume attachment found that is linked to deleted"
+                  " volume")
+        else:
+            print(f"found {len(ids)} attachments for volumes that are already "
+                  f"deleted: {(', ').join(ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_group_volume_type_mapping_of_deleted_groups(
+            self,
+            ctxt: context.RequestContext) -> list[int]:
+        query = db_api.model_query(ctxt, models.GroupVolumeTypeMapping.id,
+                                   read_deleted="no").\
+            join(models.Group,
+                 models.GroupVolumeTypeMapping.group_id == models.Group.id).\
+            filter(
+                sa.and_(models.Group.deleted == 1,
+                        models.GroupVolumeTypeMapping.deleted == 0)).distinct()
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No group volume type mapping found that is linked to "
+                  "deleted group")
+        else:
+            print(f"found {len(ids)} group volume type mappings for groups"
+                  "that are already deleted:  "
+                  f"{(', ').join(str(x) for x in ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_deleted_service_ids_linked_to_active_volumes(
+            self,
+            ctxt: context.RequestContext) -> list[int]:
+        query = db_api.model_query(ctxt, models.Service.id,
+                                   read_deleted="no").\
+            join(models.Volume,
+                 models.Service.uuid == models.Volume.service_uuid).\
+            filter(
+                sa.and_(models.Volume.deleted == 0,
+                        models.Service.deleted == 1)).distinct()
+        ids = [v[0] for v in query.all()]
+        if len(ids) == 0:
+            print("No deleted service found that is linked to active volumes")
+        else:
+            print(f"found {len(ids)} deleted services linked to active "
+                  f"volumes: {(', ').join(str(x) for x in ids)}")
+        return ids
+
+    @db_api.main_context_manager.reader
+    def _get_ids_set_deleted_flag_and_unset_deleted_at(
+            self,
+            ctxt: context.RequestContext,
+            model: models.CinderBase) -> list[str | int]:
+        query = db_api.model_query(ctxt, model.id, read_deleted="no").\
+            filter(
+                sa.and_(model.deleted == 1,
+                        model.deleted_at == None))  # noqa: E711
+        return [v[0] for v in query.all()]
+
+    def _parse_fix_flags(self, fix: str) -> dict[str, bool]:
+        """Parse the fix flags.
+
+        Returns a dict indicating which inconsistencies to fix.
+        """
+        fix_options_dict = {
+            'orphan_attachments': False,
+            'error_deleting_volumes': False,
+            'error_deleting_snapshots': False,
+            'metadata_volumes': False,
+            'admin_metadata_volumes': False,
+            'glance_metadata_volumes': False,
+            'glance_metadata_snapshots': False,
+            'attachment_deleted_volume': False,
+            'group_volume_types': False,
+            'deleted_at_timestamps': False,
+            'undelete_services': False
+        }
+        if fix == "":
+            return fix_options_dict
+        for flag in fix.split(','):
+            if flag not in fix_options_dict:
+                raise ValueError(f"Invalid fix flag: {flag}. "
+                                 "Valid options are: "
+                                 f"{', '.join(fix_options_dict.keys())}")
+            fix_options_dict[flag] = True
+        return fix_options_dict
+
+    @args('--fix-limit', default=25, type=int,
+          help='Maximum number of orphaned attachments to fix automatically.')
+    @args('--fix', type=str, default="",
+          help='Comma seperated list of inconsistencies to fix.'
+          'Possible values: orphan_attachments,error_deleting_volumes,'
+          'error_deleting_snapshots,metadata_volumes,'
+          'admin_metadata_volumes,glance_metadata_volumes,'
+          'glance_metadata_snapshots,attachment_deleted_volume,'
+          'group_volume_types,deleted_at_timestamps,undelete_services')
+    @args('--deletion-wait-seconds', default=120, type=int,
+          help='Time to wait after deleting volumes before checking again')
+    def consistency(self, fix_limit: int, fix: str,
+                    deletion_wait_seconds: int = 120) -> None:
+        """Check and fix inconsistencies in the Cinder database.
+
+        For most of the inconsistencies, this command will soft-delete
+        the rows that are linked to non-existing/deleted entities - Except
+        for volume and snapshots in state `error_deleting`, which will be
+        deleted using the volume_api to make sure that quota and the file in
+        the actual backend (e.g. netapp) are cleaned up.
+
+        This command is a refactored version of the cinder-consistency.py
+        script in https://github.com/sapcc/openstack-nannies/.
+        The main difference is that it uses cinder ORM's and methods for
+        accessing the database instead of raw SQL queries. Furthermore,
+        the old script soft-deleted volumes without deleting the files in the
+        backend. For fetching all active instances uuids, it uses a custom nova
+        admin sap api endpoint.
+
+        .. warning::
+            Deleting volumes/snapshots in state error_deleting are the only
+            parts that can be considered safe. They use the cinder volume-api
+            and are not plainly manipulating the database like the other parts.
+
+        .. note::
+            2025-07-22 (jagoleni) Check if this command or which parts,
+            are still needed. The original script was written many releases
+            ago.
+        """
+        fix_flags = self._parse_fix_flags(fix)
+
+        ctxt = context.get_admin_context()
+        if fix_flags["error_deleting_volumes"] or \
+           fix_flags["error_deleting_snapshots"]:
+            rpc.init(CONF)
+            v_api = volume_api()
+
+        # Remove volume attachments to non existing instances
+        orphan_attachments = self._get_orphan_attachments(ctxt)
+        if fix_flags["orphan_attachments"] and len(orphan_attachments) > 0:
+            print("Try to fix orphan attachments")
+            self._fix_orphan_attachments(ctxt,
+                                         orphan_attachments.values(),
+                                         fix_limit)
+            print(f"Marked volume attachments\
+                  {(', ').join(orphan_attachments.keys())} as deleted.")
+
+        volume_ids =\
+            self._get_volumes_ids_in_state_error_deleting(ctxt)
+        if fix_flags["error_deleting_volumes"] and len(volume_ids) > 0:
+            for uuid in volume_ids:
+                volume = objects.Volume.get_by_id(ctxt, uuid)
+                v_api.delete(ctxt, volume, force=True)
+            print(f"Waiting {deletion_wait_seconds} seconds "
+                  "for volumes to be deleted...")
+            time.sleep(deletion_wait_seconds)
+            v_ids_still_in_error_deleting =\
+                self._get_volumes_ids_in_state_error_deleting(ctxt)
+            if len(v_ids_still_in_error_deleting) > 0:
+                print("Volumes in state error_deleting still exist after "
+                      "deletion attempt. "
+                      f"Please check manually:{v_ids_still_in_error_deleting}")
+
+        snapshot_ids = self._get_snapshots_ids_in_state_error_deleting(ctxt)
+        if fix_flags["error_deleting_snapshots"] and len(snapshot_ids) > 0:
+            for uuid in snapshot_ids:
+                snapshot = objects.Snapshot.get_by_id(ctxt, uuid)
+                v_api.delete_snapshot(ctxt, snapshot, force=True)
+            print("Snapshots in state error_deleting marked as deleted: "
+                  f"{(', ').join(snapshot_ids)}")
+
+        admin_metadata_ids =\
+            self._get_admin_metadata_ids_of_deleted_volumes(ctxt)
+        if fix_flags["admin_metadata_volumes"] and len(admin_metadata_ids) > 0:
+            self._set_deleted_by_ids(ctxt,
+                                     models.VolumeAdminMetadata,
+                                     admin_metadata_ids)
+            print("Admin metadata of deleted volumes marked as deleted: "
+                  f"{(', ').join(str(x) for x in admin_metadata_ids)}")
+
+        glance_metadata_ids =\
+            self._get_glance_metadata_ids_of_deleted_volumes(ctxt)
+        if fix_flags["glance_metadata_volumes"] and \
+                len(glance_metadata_ids) > 0:
+            self._set_deleted_by_ids(ctxt,
+                                     models.VolumeGlanceMetadata,
+                                     glance_metadata_ids)
+            print("Glance metadata of deleted volumes marked deleted: "
+                  f"{(', ').join(str(x) for x in glance_metadata_ids)}")
+
+        glance_metadata_ids2 =\
+            self._get_glance_metadata_ids_of_deleted_snapshots(ctxt)
+        if fix_flags["glance_metadata_snapshots"] and \
+                len(glance_metadata_ids2) > 0:
+            self._set_deleted_by_ids(ctxt,
+                                     models.VolumeGlanceMetadata,
+                                     glance_metadata_ids2)
+            print("Glance metadata of deleted snapshots marked as deleted: "
+                  f"{(', ').join(str(x) for x in glance_metadata_ids2)}")
+
+        metadata_ids = self._get_metadata_ids_of_deleted_volumes(ctxt)
+        if fix_flags["metadata_volumes"] and len(metadata_ids) > 0:
+            self._set_deleted_by_ids(ctxt, models.VolumeMetadata,
+                                     metadata_ids)
+            print("Metadata of deleted volumes marked as deleted: "
+                  f"{(', ').join(str(x) for x in metadata_ids)}")
+
+        volume_attachment_ids =\
+            self._get_volume_attachments_of_deleted_volumes(ctxt)
+        if fix_flags["attachment_deleted_volume"] and \
+                len(volume_attachment_ids) > 0:
+            self._set_deleted_by_ids(ctxt, models.VolumeAttachment,
+                                     volume_attachment_ids)
+            print("Volume attachments of deleted volumes marked as deleted: "
+                  f"{(', ').join(volume_attachment_ids)}")
+
+        group_volume_type_mapping_ids =\
+            self._get_group_volume_type_mapping_of_deleted_groups(ctxt)
+        if fix_flags["group_volume_types"] and \
+                len(group_volume_type_mapping_ids) > 0:
+            self._set_deleted_by_ids(ctxt,
+                                     models.GroupVolumeTypeMapping,
+                                     group_volume_type_mapping_ids)
+            gvtm_ids_string = (', ')\
+                .join(str(x) for x in group_volume_type_mapping_ids)
+            print("Group volume type mapping of deleted groups marked as "
+                  f"deleted: {gvtm_ids_string}")
+
+        # Fix missing deleted_at timestamps
+        for model in [models.VolumeAttachment, models.Snapshot]:
+            ids = self._get_ids_set_deleted_flag_and_unset_deleted_at(
+                ctxt, model)
+            if fix_flags["deleted_at_timestamps"] and len(ids) > 0:
+                self._set_deleted_by_ids(ctxt, model, ids)
+                print("Rows with set deleted flag and unset deleted_at of "
+                      f"model{model.__name__} marked as deleted: "
+                      f"{(', ').join(str(x) for x in ids)}")
+
+        service_ids = self._get_deleted_service_ids_linked_to_active_volumes(
+            ctxt)
+        if fix_flags["undelete_services"] and len(service_ids) > 0:
+            self._set_deleted_by_ids(ctxt, models.Service, service_ids,
+                                     deleted=0)
+            print("Undeleted services linked to active volumes: "
+                  f"{(', ').join(str(x) for x in service_ids)}")
 
     @args('--dry-run', action='store_true', default=False,
           help='Do not sync any quotas.')
