@@ -45,6 +45,7 @@ from cinder.volume.drivers.netapp.dataontap.utils import utils as dot_utils
 from cinder.volume.drivers.netapp import options as na_opts
 from cinder.volume.drivers.netapp import utils as na_utils
 from cinder.volume import volume_utils
+from cinder.volume.drivers.netapp import remote as remote_api
 
 
 LOG = logging.getLogger(__name__)
@@ -105,6 +106,9 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
         # Performance monitoring library
         self.perf_library = perf_cmode.PerformanceCmodeLibrary(
             self.zapi_client)
+        self.additional_endpoints.extend([
+            remote_api.SAPNetappDriverRemoteService(self)
+        ])
 
     def _update_zapi_client(self, backend_name):
         """Set cDOT API client for the specified config backend stanza name."""

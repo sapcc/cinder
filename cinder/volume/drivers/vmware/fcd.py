@@ -844,6 +844,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         If the backing is not created, returns success.
         """
+        netapp_host = 'cinder-volume-netapp-b-0@stnpca2_st051_nfs'
+        self._remote_netapp_api.test(context, volume, netapp_host)
+
         false_ret = (False, None)
         allowed_statuses = ['available', 'reserved', 'in-use', 'maintenance',
                             'extending']

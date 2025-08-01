@@ -58,6 +58,7 @@ from cinder.volume.drivers.vmware import remote as remote_api
 from cinder.volume.drivers.vmware import volumeops
 from cinder.volume import volume_types
 from cinder.volume import volume_utils
+from cinder.volume.drivers.netapp import remote as netapp_remote_api
 
 LOG = logging.getLogger(__name__)
 
@@ -398,6 +399,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             remote_api.VmdkDriverRemoteService(self)
         ])
         self._remote_api = remote_api.VmdkDriverRemoteApi()
+        self._remote_netapp_api = netapp_remote_api.SAPNetappDriverRemoteApi()
         self._storage_profiles = []
         self._volume_type_by_backend = None
         self._sap_netapp_credentials = {}
