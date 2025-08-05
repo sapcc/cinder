@@ -1690,6 +1690,25 @@ class RestClient(object):
         }
         self.send_request('/storage/luns/', 'patch', query=query, body=body)
 
+    def file_exists(self, netapp_vol, file_path):
+
+        file_found = False
+        info_fields = {'type': 'file'}
+        file_elements = file_path.split('/')
+        if len(file_elements) == 1:
+            dir_path = ''
+        else:
+            dir_path = '/'.join(file_elements[:-1])
+        dir_path.replace('.', '%2E').replace('/', '%2F')
+        file_name = file_elements[-1]
+        query = f'/storage/volumes/{netapp_vol["uuid"]}/files/{dir_path}'
+        file_info = self.send_request(query, 'get', body=info_fields)
+        for file in file_info['records']:
+            if file['name'] == file_name:
+                file_found = True
+
+        return file_found
+
     def clone_file(self, flex_vol, src_path, dest_path, vserver,
                    dest_exists=False, source_snapshot=None, is_snapshot=False):
         """Clones file on vserver."""
@@ -1716,7 +1735,7 @@ class RestClient(object):
         if is_snapshot and self.features.BACKUP_CLONE_PARAM:
             body['is_backup'] = True
 
-        if dest_exists:
+        if dest_exists and self.file_exists(volume, dest_path):
             body['overwrite_destination'] = True
 
         self.send_request('/storage/file/clone', 'post', body=body)
