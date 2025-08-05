@@ -2345,6 +2345,8 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
                          return_value=fake_volume)
         self.mock_object(self.client.connection, 'get_api_version',
                          return_value=api_version)
+        self.mock_object(self.client, 'file_exists',
+                         return_vaule=True)
 
         self.client.clone_file(
             fake_volume['name'], fake_name, fake_new_name, fake.VSERVER_NAME,
