@@ -295,9 +295,17 @@ class SAPShardRetypeMigrationFilter(ShardFilter):
                 backend_state.host, 'backend').split('@')[1]
             vol_shard = self._extract_shard_from_host(vol['host'])
             backend_shard = self._extract_shard_from_host(backend_state.host)
-            if (vol_backend == 'vmware' and backend_backend == 'vmware_fcd' and
-                    vol_shard == backend_shard):
+            if vol_backend == backend_backend:
+                # If the source and destination host are the same,
+                # we can migrate.
                 return True
-            return False
+            elif (vol_backend == 'vmware' and
+                    backend_backend == 'vmware_fcd' and
+                    vol_shard == backend_shard):
+                # If the source and destination host are different,
+                # we can migrate. and they are migrating from vmdk -> fcd
+                return True
+            else:
+                return False
         # Allow any other operation to work
         return True
