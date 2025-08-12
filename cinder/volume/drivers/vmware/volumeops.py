@@ -2760,7 +2760,7 @@ class VMwareVolumeOps(object):
                                  transport_type="https",
                                  ssl_cert_path=ssl_cert_path,
                                  port="443")
-        relative_path = "%s/%s/%s" % (src_qtree, folder_path)
+        relative_path = "%s/%s" % (src_qtree, folder_path)
         relative_path = relative_path.replace('.', '%2E').replace('/', '%2F')
         info_fields = {'type': 'file',
                        'fields': 'constituent,size,bytes_used'}
@@ -2774,13 +2774,13 @@ class VMwareVolumeOps(object):
         rest_client.reanme_file(source_path, destination_path)
         rest_client.rename_file(dest_tmp, source_path)
         # Todo return some status if this success
-        tgt_rel_path = "%s/%s/%s" % (tgt_qtree, tgt_folder_path)
+        tgt_rel_path = "%s/%s" % (tgt_qtree, tgt_folder_path)
         tgt_rel_path = tgt_rel_path.replace('.', '%2E').replace('/', '%2F')
         query = "/storage/volumes/%s/files/%s" % (netapp_volume["uuid"],
                                                   tgt_rel_path)
         file_info_tgt = rest_client.send_request(query, 'get',
                                                  body=info_fields)
-        # If everything is ok, than the tgt file should have the 
+        # If everything is ok, than the tgt file should have the
         # size/constituent info from src
         src_info = None
         for file in file_info_src['records']:
@@ -2793,7 +2793,7 @@ class VMwareVolumeOps(object):
                 dst_info = file
                 break
         return src_info['size'] == dst_info['size'] and \
-        src_info['bytes_used'] == dst_info['bytes_used']
+            src_info['bytes_used'] == dst_info['bytes_used']
 
 
 class FcdLocation(object):

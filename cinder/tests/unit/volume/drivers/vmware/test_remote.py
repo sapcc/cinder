@@ -96,6 +96,7 @@ class VmdkDriverRemoteServiceTest(test.TestCase):
         self.assertEqual({
             'datastore_url': fake_summary.url,
             'host': fake_host.value,
+            'mount_path': '',
             'resource_pool': fake_rp.value,
             'folder': fake_folder.value,
             'profile_id': fake_profile_id,
