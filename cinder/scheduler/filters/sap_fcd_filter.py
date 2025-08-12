@@ -39,6 +39,8 @@ class SAPFCDFilter(filters.BaseBackendFilter):
     def backend_passes(self, backend_state, filter_properties):
 
         if not self._is_vmware_fcd(backend_state):
+            LOG.debug("SAP FCD Filter ignoring backend %s isn't vmware_fcd"
+                      " driver", backend_state.backend_id)
             return True
 
         spec = filter_properties.get('request_spec', {})
@@ -46,6 +48,8 @@ class SAPFCDFilter(filters.BaseBackendFilter):
 
         valid_ops = ['migrate_volume', 'find_backend_for_connector']
         if spec.get('operation') not in valid_ops:
+            LOG.debug("SAP FCD Filter ignoring operation %s",
+                      spec.get('operation'))
             return True
 
         # We are migrating a volume.  If we are migrating to a different
