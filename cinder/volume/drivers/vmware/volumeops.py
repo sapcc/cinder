@@ -28,9 +28,9 @@ import six
 from six.moves import urllib
 
 from cinder.i18n import _
+from cinder.volume.drivers.netapp.dataontap.client import client_cmode_rest
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 from cinder.volume import volume_utils
-
 
 LOG = logging.getLogger(__name__)
 LINKED_CLONE_TYPE = 'linked'
@@ -2715,6 +2715,85 @@ class VMwareVolumeOps(object):
                         res.append(i.folderPath + j.path)
 
         return res
+
+    def get_netapp_for_ds(self, ds_ref):
+        key_num = None
+        props = self.get_datastore_properties(ds_ref)
+        for v in props['availableField']:
+            if v.name == 'netapp_fqdn':
+                key_num = v.key
+        for attr in props['customValue']:
+            if attr.key == key_num:
+                return attr.value
+        return None
+
+    def migrate_unattached_qtree(self, fcd_loc, tgt_ds_mpath,
+                                 new_disk_path, creds):
+        src_ds_sum = self.get_summary(fcd_loc.ds_ref())
+        src_ds_mpath = src_ds_sum.datastore.info.nas.remotePath
+        src_qtree = src_ds_mpath.split('/')[2]
+        tgt_qtree = tgt_ds_mpath.split('/')[2]
+        src_vmdk_path = self.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+        _, folder_path, src_vmdk_file = split_datastore_path(src_vmdk_path)
+        _, tgt_folder_path, tgt_vmdk_file = split_datastore_path(new_disk_path)
+        netapp_vol = src_ds_mpath.split('/')[1]
+        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        tgt_flat_file = tgt_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        source_path = "/vol/%s/%s/%s/%s" % (netapp_vol, src_qtree,
+                                            folder_path,
+                                            src_flat_file)
+        destination_path = "/vol/%s/%s/%s/%s" % (netapp_vol, tgt_qtree,
+                                                 tgt_folder_path,
+                                                 tgt_flat_file)
+        dest_tmp = "/vol/%s/%s/%s/%s" % (netapp_vol, tgt_qtree,
+                                         tgt_folder_path, "temp.vmdk")
+
+        netapp_fqdn = self.get_netapp_for_ds(fcd_loc.ds_ref())
+        netapp_user = creds[netapp_fqdn]['user']
+        netapp_pass = creds[netapp_fqdn]['password']
+        ssl_cert_path = "/usr/local/share/ca-certificates/cacert.pem"
+        netapp_api = client_cmode_rest.RestClient
+        rest_client = netapp_api(hostname=netapp_fqdn,
+                                 username=netapp_user,
+                                 password=netapp_pass,
+                                 api_trace_pattern="cinder_qtree",
+                                 transport_type="https",
+                                 ssl_cert_path=ssl_cert_path,
+                                 port="443")
+        relative_path = "%s/%s/%s" % (src_qtree, folder_path)
+        relative_path = relative_path.replace('.', '%2E').replace('/', '%2F')
+        info_fields = {'type': 'file',
+                       'fields': 'constituent,size,bytes_used'}
+        netapp_volume = rest_client._get_volume_by_args(vol_name=netapp_vol)
+        query = "/storage/volumes/%s/files/%s" % (netapp_volume["uuid"],
+                                                  relative_path)
+        file_info_src = rest_client.send_request(query, 'get',
+                                                 body=info_fields)
+        # Switch source and destination via temp file
+        rest_client.rename_file(destination_path, dest_tmp)
+        rest_client.reanme_file(source_path, destination_path)
+        rest_client.rename_file(dest_tmp, source_path)
+        # Todo return some status if this success
+        tgt_rel_path = "%s/%s/%s" % (tgt_qtree, tgt_folder_path)
+        tgt_rel_path = tgt_rel_path.replace('.', '%2E').replace('/', '%2F')
+        query = "/storage/volumes/%s/files/%s" % (netapp_volume["uuid"],
+                                                  tgt_rel_path)
+        file_info_tgt = rest_client.send_request(query, 'get',
+                                                 body=info_fields)
+        # If everything is ok, than the tgt file should have the 
+        # size/constituent info from src
+        src_info = None
+        for file in file_info_src['records']:
+            if file['name'] == src_flat_file:
+                src_info = file
+                break
+        dst_info = None
+        for file in file_info_tgt['records']:
+            if file['name'] == tgt_flat_file:
+                dst_info = file
+                break
+        return src_info['size'] == dst_info['size'] and \
+        src_info['bytes_used'] == dst_info['bytes_used']
 
 
 class FcdLocation(object):

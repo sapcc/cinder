@@ -889,6 +889,18 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     def _migrate_unattached(self, context, dest_host, volume, fcd_loc,
                             cross_vc=False):
 
+        def _qtree_ds(remote_ds_info, local_ds_info):
+            if local_ds_info.type != "NFS41":
+                return False
+            try:
+                mpath = remote_ds_info['mount_path'].split(':')[1]
+                lpath = local_ds_info.datastore.info.nas.remotePath
+                if len(lpath.split('/')) == 3 and len(mpath.split('/')) == 3:
+                    if mpath.split('/')[1] == lpath.split('/')[1]:
+                        return True
+            except Exception:
+                return False
+
         ds_info = self._remote_api.select_ds_for_volume(context,
                                                         cinder_host=dest_host,
                                                         volume=volume)
@@ -896,6 +908,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             service_locator = self._remote_api.get_service_locator_info(
                 context,
                 dest_host)
+
         else:
             service_locator = None
 
@@ -905,8 +918,28 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         new_profile_id = ds_info.get('profile_id')
 
         if ds_info['datastore_url'] != src_ds_info['url']:
-            self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                        service_locator, new_profile_id)
+            if cross_vc and _qtree_ds(ds_info, src_ds_info):
+                creds = self._sap_netapp_credentials
+                disk_type = self._get_disk_type(volume)
+                key_id = self._register_kmip_key_id(volume)
+                new_fcd_loc, new_disk_path = self._remote_api.create_fcd(
+                    volume.id, volume.name, volume.size * units.Ki, ds_ref,
+                    disk_type, profile_id=new_profile_id, key_id=key_id)
+                tgt_ds_mpath = ds_info['mount_path'].split(':')[1]
+                self.volumeops.migrate_unattached_qtree(fcd_loc, tgt_ds_mpath,
+                                                        new_disk_path, creds)
+                # delete the source fcd after migration complete
+                self.volumeops.delete_fcd(fcd_loc)
+                remove_prov_loc = self._remote_api.get_fcd_provider_location
+                prov_loc = remove_prov_loc(context, dest_host,
+                                           new_fcd_loc.fcd_id,
+                                           ds_ref.value)
+                volume.update({'provider_location': prov_loc})
+                volume.save()
+                return (True, None)
+            else:
+                self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
+                                            service_locator, new_profile_id)
 
         # if we are migrating to a different DS on the same host
         # there is no reason to call the remote_api to get the

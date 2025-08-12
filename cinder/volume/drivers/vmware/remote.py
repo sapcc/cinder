@@ -80,6 +80,14 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
         return cctxt.call(ctxt, 'get_fcd_provider_location',
                           fcd_id=fcd_id, datastore_ref=datastore_ref)
 
+    def create_fcd(self, ctxt, host, volume_id, volume_name,
+                   size, ds_ref,
+                   disk_type, profile_id, key_id):
+        cctxt = self.get_cctxt(host)
+        return cctxt.call(ctxt, 'create_fcd',
+                          volume_id, volume_name, size,
+                          ds_ref, disk_type, profile_id, key_id)
+
 
 class VmdkDriverRemoteService(object):
     RPC_API_VERSION = VmdkDriverRemoteApi.RPC_API_VERSION
@@ -103,6 +111,12 @@ class VmdkDriverRemoteService(object):
             volume, cinder_host=cinder_host)
 
         profile_id = self._driver._get_storage_profile_id(volume)
+        if summary.type == "NFS41":
+            remote_path = summary.datastore.info.nas.remotePath
+            remote_ip = summary.datastore.info.nas.remoteHost
+            mount_path = "%s:%s" % (remote_ip, remote_path)
+        else:
+            mount_path = ""
 
         return {
             'host': host.value,
@@ -111,6 +125,7 @@ class VmdkDriverRemoteService(object):
             'datastore': summary.datastore.value,
             'datastore_url': summary.url,
             'profile_id': profile_id,
+            'mount_path': mount_path
         }
 
     def move_volume_backing_to_folder(self, ctxt, volume, folder):
@@ -149,3 +164,14 @@ class VmdkDriverRemoteService(object):
             fcd_loc_new.provider_location()
         )
         return prov_loc
+
+    def create_fcd(self, ctxt, volume_id, volume_name, size, ds_ref,
+                   disk_type, profile_id, key_id):
+        # Creating a new empty fcd on the remote volume mgr
+        # with the right disk_id
+        vops = self._driver.volumeops
+        new_fcd_loc = vops.create_fcd(volume_id, volume_name, size, ds_ref,
+                                      disk_type, profile_id, key_id)
+        disk_path = vops.get_vmdk_path_for_fcd(fcd_loc=new_fcd_loc)
+        vops.update_fcd_vmdk_uuid(ds_ref, disk_path, volume_id)
+        return new_fcd_loc, disk_path
