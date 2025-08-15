@@ -112,9 +112,8 @@ class VmdkDriverRemoteService(object):
 
         profile_id = self._driver._get_storage_profile_id(volume)
         if summary.type == "NFS41":
-            remote_path = summary.datastore.info.nas.remotePath
-            remote_ip = summary.datastore.info.nas.remoteHost
-            mount_path = "%s:%s" % (remote_ip, remote_path)
+            mount_path = self._driver.volumeops._get_mount_path(
+                summary.datastore)
         else:
             mount_path = ""
 

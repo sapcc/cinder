@@ -666,9 +666,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                             custom_attributes['cinder_aggregate_id']
 
                 if summary.type == "NFS41":
-                    remote_path = summary.datastore.info.nas.remotePath
-                    remote_ip = summary.datastore.info.nas.remoteHost
-                    mount_path = "%s:%s" % (remote_ip, remote_path)
+                    mount_path = self.volumeops._get_mount_path(
+                        summary.datastore)
                 else:
                     mount_path = ""
                 pool = {'pool_name': summary.name,

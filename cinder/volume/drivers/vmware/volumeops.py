@@ -483,6 +483,15 @@ class VMwareVolumeOps(object):
                                                'inMaintenance']
         return False
 
+    def _get_mount_path(self, datastore):
+        nas_info = self._session.invoke_api(vim_util, 'get_object_property',
+                                               self._session.vim, datastore,
+                                               'info.nas')
+        remote_path = nas_info.remotePath
+        remote_ip = nas_info.remoteHost
+        mount_path = "%s:%s" % (remote_ip, remote_path)
+        return mount_path
+
     def _get_parent(self, child, parent_type):
         """Get immediate parent of given type via 'parent' property.
 
@@ -2729,8 +2738,8 @@ class VMwareVolumeOps(object):
 
     def migrate_unattached_qtree(self, fcd_loc, tgt_ds_mpath,
                                  new_disk_path, creds):
-        src_ds_sum = self.get_summary(fcd_loc.ds_ref())
-        src_ds_mpath = src_ds_sum.datastore.info.nas.remotePath
+        src_mpath = self._get_mount_path(fcd_loc.ds_ref())
+        src_ds_mpath = src_mpath.split(':')[1]
         src_qtree = src_ds_mpath.split('/')[2]
         tgt_qtree = tgt_ds_mpath.split('/')[2]
         src_vmdk_path = self.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
