@@ -894,7 +894,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 return False
             try:
                 mpath = remote_ds_info['mount_path'].split(':')[1]
-                lpath = local_ds_info.datastore.info.nas.remotePath
+                lpath = self.volumeops._get_mount_path(
+                    local_ds_info.datastore)
+                lpath = lpath.split(':')[1]
                 if len(lpath.split('/')) == 3 and len(mpath.split('/')) == 3:
                     if mpath.split('/')[1] == lpath.split('/')[1]:
                         return True
