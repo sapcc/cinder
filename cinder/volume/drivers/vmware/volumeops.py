@@ -484,11 +484,11 @@ class VMwareVolumeOps(object):
         return False
 
     def _get_mount_path(self, datastore):
-        nas_info = self._session.invoke_api(vim_util, 'get_object_property',
-                                               self._session.vim, datastore,
-                                               'info.nas')
-        remote_path = nas_info.remotePath
-        remote_ip = nas_info.remoteHost
+        info = self._session.invoke_api(vim_util, 'get_object_property',
+                                        self._session.vim, datastore,
+                                        'info')
+        remote_path = info.nas.remotePath
+        remote_ip = info.nas.remoteHost
         mount_path = "%s:%s" % (remote_ip, remote_path)
         return mount_path
 
