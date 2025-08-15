@@ -925,8 +925,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 disk_type = self._get_disk_type(volume)
                 key_id = self._register_kmip_key_id(volume)
                 new_fcd_loc, new_disk_path = self._remote_api.create_fcd(
-                    volume.id, volume.name, volume.size * units.Ki, ds_ref,
-                    disk_type, profile_id=new_profile_id, key_id=key_id)
+                    context, dest_host, volume.id, volume.name, 
+                    volume.size * units.Ki, ds_ref, disk_type,
+                    profile_id=new_profile_id, key_id=key_id)
                 tgt_ds_mpath = ds_info['mount_path'].split(':')[1]
                 self.volumeops.migrate_unattached_qtree(fcd_loc, tgt_ds_mpath,
                                                         new_disk_path, creds)
