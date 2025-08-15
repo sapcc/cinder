@@ -21,6 +21,7 @@ import ddt
 from cinder import context
 from cinder import exception
 from cinder import objects
+from cinder.scheduler.base_weight import WeighedObject
 from cinder.scheduler import filter_scheduler
 from cinder.scheduler import host_manager
 from cinder.tests.unit import fake_constants as fake
@@ -56,6 +57,30 @@ class FilterSchedulerTestCase(test_scheduler.SchedulerTestCase):
                           sched.schedule_create_group,
                           fake_context, 'faki-id1', group_spec,
                           request_spec_list, {}, [])
+
+    @mock.patch('requests.post')
+    def test_external_scheduler_disabled(self, mock_post):
+        """Tests that the external scheduler is not called when disabled."""
+        sched = fakes.FakeFilterScheduler()
+        h1 = fakes.FakeBackendState('host1', {})
+        h2 = fakes.FakeBackendState('host2', {})
+        self.mock_object(
+            sched.host_manager, 'get_filtered_backends',
+            mock.Mock(return_value=[h1, h2]),
+        )
+        wh1 = WeighedObject(h1, 1.0)
+        wh2 = WeighedObject(h2, 1.0)
+        self.mock_object(
+            sched.host_manager, 'get_weighed_backends',
+            mock.Mock(return_value=[wh1, wh2]),
+        )
+        ctx = context.RequestContext('user', 'project', is_admin=True)
+        spec = {
+            'volume_properties': {'size': 1234},
+        }
+        self.flags(external_scheduler_api_url='')
+        _ = sched._get_weighted_candidates(ctx, spec, {})
+        mock_post.assert_not_called()
 
     @ddt.data(
         {'capabilities:consistent_group_snapshot_enabled': '<is> True'},

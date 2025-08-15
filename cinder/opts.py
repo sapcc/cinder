@@ -57,6 +57,7 @@ from cinder.keymgr import conf_key_mgr as cinder_keymgr_confkeymgr
 from cinder.message import api as cinder_message_api
 from cinder import quota as cinder_quota
 from cinder.scheduler import driver as cinder_scheduler_driver
+from cinder.scheduler import external as cinder_scheduler_external
 from cinder.scheduler.filters import shard_filter as \
     cinder_scheduler_filters_shardfilter
 from cinder.scheduler import host_manager as cinder_scheduler_hostmanager
@@ -274,6 +275,7 @@ def list_opts():
                 cinder_message_api.messages_opts,
                 cinder_quota.quota_opts,
                 cinder_scheduler_driver.scheduler_driver_opts,
+                cinder_scheduler_external.scheduler_external_opts,
                 cinder_scheduler_hostmanager.host_manager_opts,
                 cinder_scheduler_manager.scheduler_manager_opts,
                 [cinder_scheduler_scheduleroptions.

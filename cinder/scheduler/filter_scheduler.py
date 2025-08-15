@@ -33,6 +33,7 @@ from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.scheduler import driver
+from cinder.scheduler.external import call_external_scheduler_api
 from cinder.scheduler.host_manager import BackendState
 from cinder.scheduler import scheduler_options
 from cinder.scheduler.weights import WeighedHost
@@ -405,6 +406,13 @@ class FilterScheduler(driver.Scheduler):
         # backend for the job.
         weighed_backends = self.host_manager.get_weighed_backends(
             backends, filter_properties)
+
+        # Call an external service that can modify `weighed_hosts` once more.
+        # This service may filter out some hosts, or it may re-order them.
+        # Note: the result can also be empty.
+        weighed_backends = call_external_scheduler_api(
+            context, weighed_backends, request_spec)
+
         return weighed_backends
 
     def _get_weighted_candidates_generic_group(
