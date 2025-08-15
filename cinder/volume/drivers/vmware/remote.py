@@ -83,7 +83,7 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
     def create_fcd(self, ctxt, host, volume_id, volume_name,
                    size, ds_ref,
                    disk_type, profile_id, key_id):
-        cctxt = self.get_cctxt(host)
+        cctxt = self._get_cctxt(host)
         return cctxt.call(ctxt, 'create_fcd',
                           volume_id, volume_name, size,
                           ds_ref, disk_type, profile_id, key_id)
