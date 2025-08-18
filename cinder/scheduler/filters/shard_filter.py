@@ -278,6 +278,8 @@ class SAPShardRetypeMigrationFilter(ShardFilter):
             if vol_shard == backend_shard:
                 return True
             else:
+                LOG.debug('Retype Filtering out %s Not on same shard as %s',
+                          backend_state.host, vol['host'])
                 return False
 
         # A migration for vmdk -> fcd(vstorageobject) should land
@@ -295,9 +297,20 @@ class SAPShardRetypeMigrationFilter(ShardFilter):
                 backend_state.host, 'backend').split('@')[1]
             vol_shard = self._extract_shard_from_host(vol['host'])
             backend_shard = self._extract_shard_from_host(backend_state.host)
-            if (vol_backend == 'vmware' and backend_backend == 'vmware_fcd' and
-                    vol_shard == backend_shard):
+
+            # We only care about limiting vmware -> vmware_fcd migrations
+            # to the same shard.
+            if vol_backend != 'vmware':
                 return True
-            return False
-        # Allow any other operation to work
+
+            if backend_backend != 'vmware_fcd':
+                return True
+
+            # Now we know we are migrating from vmware to vmware_fcd,
+            # so we need to check if the shard is the same.
+            if vol_shard != backend_shard:
+                LOG.debug('Migrate Filtering out %s Not on same shard as %s',
+                          backend_state.host, vol['host'])
+                return False
+
         return True
