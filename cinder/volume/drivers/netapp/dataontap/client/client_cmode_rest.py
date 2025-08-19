@@ -2532,7 +2532,6 @@ class RestClient(object):
 
         # Path requires "%2E" to represent "." and "%2F" to represent "/".
         orig_file_name = orig_file_name.replace('.', '%2E').replace('/', '%2F')
-        new_file_name = new_file_name.replace('.', '%2E').replace('/', '%2F')
 
         body = {'path': new_file_name}
 
