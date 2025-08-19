@@ -44,7 +44,7 @@ class TestQemuImgInfo(test.TestCase):
 
         output = image_utils.qemu_img_info(test_path)
         mock_exec.assert_called_once_with(
-            'env', 'LC_ALL=C', 'qemu-img', 'info', '-f', 'mock_fmt',
+            'env', 'LC_ALL=C', 'qemu-img', 'info',
             '--output=json', test_path, run_as_root=True,
             prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
@@ -67,7 +67,7 @@ class TestQemuImgInfo(test.TestCase):
         output = image_utils.qemu_img_info(
             test_path, allow_qcow2_backing_file=True)
         mock_exec.assert_called_once_with(
-            'env', 'LC_ALL=C', 'qemu-img', 'info', '-f', 'qcow2',
+            'env', 'LC_ALL=C', 'qemu-img', 'info',
             '--output=json', test_path, run_as_root=True,
             prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
@@ -95,7 +95,7 @@ class TestQemuImgInfo(test.TestCase):
         mock_info.return_value = mock_data
 
         first = mock.call(
-            'env', 'LC_ALL=C', 'qemu-img', 'info', '-f', 'raw',
+            'env', 'LC_ALL=C', 'qemu-img', 'info',
             '--output=json', test_path, run_as_root=True,
             prlimit=image_utils.QEMU_IMG_LIMITS)
         second = mock.call(
@@ -131,7 +131,7 @@ class TestQemuImgInfo(test.TestCase):
         mock_info.side_effect = [mock_data1, mock_data2]
 
         first = mock.call(
-            'env', 'LC_ALL=C', 'qemu-img', 'info', '-f', 'raw',
+            'env', 'LC_ALL=C', 'qemu-img', 'info',
             '--output=json', test_path, run_as_root=True,
             prlimit=image_utils.QEMU_IMG_LIMITS)
         second = mock.call(
@@ -162,7 +162,7 @@ class TestQemuImgInfo(test.TestCase):
                                            force_share=False,
                                            run_as_root=False)
         mock_exec.assert_called_once_with(
-            'env', 'LC_ALL=C', 'qemu-img', 'info', '-f', 'mock_fmt',
+            'env', 'LC_ALL=C', 'qemu-img', 'info',
             '--output=json', test_path, run_as_root=False,
             prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
@@ -185,7 +185,7 @@ class TestQemuImgInfo(test.TestCase):
 
         output = image_utils.qemu_img_info(test_path)
         mock_exec.assert_called_once_with(
-            'qemu-img', 'info', '-f', 'mock_fmt', '--output=json',
+            'qemu-img', 'info', '--output=json',
             test_path, run_as_root=True, prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
         mock_detect.assert_called_once_with(path=test_path,

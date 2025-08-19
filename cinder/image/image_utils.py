@@ -176,8 +176,12 @@ def qemu_img_info(
         raise exception.Invalid(
             reason=_('Image/Volume failed safety check'))
 
-    cmd = ['env', 'LC_ALL=C', 'qemu-img', 'info',
-           '-f', format_name, '--output=json']
+    # NOTE(anokfireball): Upstream passes `'-f', format_name` here, but the
+    # format inspector does not reliably detect our VMDKs (returns 'raw'). In
+    # these cases, format checks fail due an inconsistecy between requested
+    # and detected format. NOT passing `-f` here allows qemu-img to detect the
+    # format automatically, which is more reliable for the formats we use.
+    cmd = ['env', 'LC_ALL=C', 'qemu-img', 'info', '--output=json']
     if force_share:
         cmd.append('--force-share')
     cmd.append(path)
