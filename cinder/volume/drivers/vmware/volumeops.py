@@ -2762,6 +2762,8 @@ class VMwareVolumeOps(object):
         netapp_pass = creds[netapp_fqdn]['password']
         ssl_cert_path = "/usr/local/share/ca-certificates/cacert.pem"
         netapp_api = client_cmode_rest.RestClient
+        LOG.debug("Moving src file %s to %s" % (source_path,
+                                                destination_path))
         rest_client = netapp_api(hostname=netapp_fqdn,
                                  username=netapp_user,
                                  password=netapp_pass,
@@ -2774,6 +2776,7 @@ class VMwareVolumeOps(object):
         info_fields = {'type': 'file',
                        'fields': 'constituent,size,bytes_used'}
         netapp_volume = rest_client._get_volume_by_args(vol_name=netapp_vol)
+        LOG.debug("Netapp volume uuid:%s" % (netapp_volume["uuid"]))
         query = "/storage/volumes/%s/files/%s" % (netapp_volume["uuid"],
                                                   relative_path)
         file_info_src = rest_client.send_request(query, 'get',
@@ -2801,6 +2804,14 @@ class VMwareVolumeOps(object):
             if file['name'] == tgt_flat_file:
                 dst_info = file
                 break
+        LOG.debug("Source file size:%s, bytes used:%s," \
+        "located on constituent:%s" % (src_info['size'],
+                                       src_info['bytes_used'],
+                                       src_info['constituent']))
+        LOG.debug("Destination file size:%s, bytes used:%s," \
+        "located on constituent:%s" % (dst_info['size'],
+                                       dst_info['bytes_used'],
+                                       dst_info['constituent']))
         return src_info['size'] == dst_info['size'] and \
             src_info['bytes_used'] == dst_info['bytes_used']
 
