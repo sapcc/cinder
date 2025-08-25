@@ -116,13 +116,20 @@ class SAPFCDFilter(filters.BaseBackendFilter):
         # we switch pools
 
         tpool_mpath = backend_state.capabilities.get('mount_path', '')
+        LOG.debug("tpool_mpath: %s", tpool_mpath)
         if tpool_mpath != "" and len(tpool_mpath.split('/')) == 3:
             # mount_path is qtree path
             # 192.168.8.1:/nfs_stnpca2_st051_ds03/nfs_stnpca2_st051_ds03_vc_b_2
             tpool_vol = tpool_mpath.split(':')[1].split('/')[1]
             orig_shard = self._extract_shard_from_host(orig_host)
+            LOG.debug("orig_shard: %s", orig_shard)
             orig_shard_ = orig_shard.replace('-', '_')
+            LOG.debug("orig_shard_: %s", orig_shard_)
+            LOG.debug("orig_pool: %s", orig_pool)
+            LOG.debug("tpool_vol: %s", tpool_vol)
             if orig_pool.replace("_%s" % orig_shard_, '') == tpool_vol:
+                LOG.debug("Allow migration to same pool %s %s %s",
+                          orig_pool, filter_pool, backend_state.host)
                 return True
 
         # if we move on the same host, it's fine if we switch pools

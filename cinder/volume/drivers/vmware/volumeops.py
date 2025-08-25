@@ -2226,6 +2226,7 @@ class VMwareVolumeOps(object):
         profile_spec.profileId = profile_id
         return profile_spec
 
+    @volume_utils.trace
     def create_fcd(self, cinder_uuid, name, size_mb,
                    ds_ref, disk_type, profile_id=None,
                    key_id=None):

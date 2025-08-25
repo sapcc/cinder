@@ -80,13 +80,19 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
         return cctxt.call(ctxt, 'get_fcd_provider_location',
                           fcd_id=fcd_id, datastore_ref=datastore_ref)
 
+    @volume_utils.trace
     def create_fcd(self, ctxt, host, volume_id, volume_name,
-                   size, ds_ref,
+                   size, ds_info,
                    disk_type, profile_id, key_id):
         cctxt = self._get_cctxt(host)
         return cctxt.call(ctxt, 'create_fcd',
-                          volume_id, volume_name, size,
-                          ds_ref, disk_type, profile_id, key_id)
+                          volume_id=volume_id,
+                          volume_name=volume_name,
+                          size=size,
+                          ds_info=ds_info,
+                          disk_type=disk_type,
+                          profile_id=profile_id,
+                          key_id=key_id)
 
 
 class VmdkDriverRemoteService(object):
@@ -164,11 +170,13 @@ class VmdkDriverRemoteService(object):
         )
         return prov_loc
 
-    def create_fcd(self, ctxt, volume_id, volume_name, size, ds_ref,
+    @volume_utils.trace
+    def create_fcd(self, ctxt, volume_id, volume_name, size, ds_info,
                    disk_type, profile_id, key_id):
         # Creating a new empty fcd on the remote volume mgr
         # with the right disk_id
         vops = self._driver.volumeops
+        ds_ref = vim_util.get_moref(ds_info, 'Datastore')
         new_fcd_loc = vops.create_fcd(volume_id, volume_name, size, ds_ref,
                                       disk_type, profile_id, key_id)
         disk_path = vops.get_vmdk_path_for_fcd(fcd_loc=new_fcd_loc)

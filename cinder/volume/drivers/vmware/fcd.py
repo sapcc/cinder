@@ -889,6 +889,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     def _migrate_unattached(self, context, dest_host, volume, fcd_loc,
                             cross_vc=False):
 
+        @volume_utils.trace
         def _qtree_ds(remote_ds_info, local_ds_info):
             if local_ds_info.type != "NFS41":
                 return False
@@ -917,6 +918,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         (_, _, _, src_ds_info) = self._select_ds_for_volume(volume)
 
         ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
+        LOG.error(f"DS_REF {ds_info} type {type(ds_info)} ds_info['datastore'] {ds_info['datastore']}")
         new_profile_id = ds_info.get('profile_id')
 
         if ds_info['datastore_url'] != src_ds_info['url']:
