@@ -655,6 +655,29 @@ class VolumeManager(manager.CleanableManager,
     def recount_host_stats(self, context):
         self._count_host_stats(context, export_volumes=False)
 
+    def set_pool_state(self, context, host, status):
+        # Set the pool state for the host.
+        # The status is either "available" or "drain".
+        # If the status is "drain", we will set the pool state to "down".
+        # If the status is "available", we will set the pool state to "up".
+        # We will also set the pool state reason to the status.
+
+        # extract the pool name from the host
+        pool_name = volume_utils.extract_host(host, 'pool')
+        pool_state = "up" if status == "available" else "down"
+        for pool in self.stats['pools']:
+            if pool['pool_name'] == pool_name:
+                pool['pool_state'] = pool_state
+                pool['pool_state_reason'] = status
+
+        # if the driver has the ability to set the pool state,
+        # we will call the driver to set the pool state.
+        if hasattr(self.driver, 'set_pool_state'):
+            self.driver.set_pool_state(context, pool_name, status)
+        else:
+            LOG.warning("Driver %s does not have the ability to set the pool state.",
+                        self.driver.__class__.__name__)
+
     @coordination.synchronized('volume-stats-{self.host}')
     def _count_host_stats(self, context, export_volumes=False):
         """Recount the number of volumes and allocated capacity."""

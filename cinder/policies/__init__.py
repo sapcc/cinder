@@ -48,6 +48,7 @@ from cinder.policies import volume_transfer
 from cinder.policies import volume_type
 from cinder.policies import volumes
 from cinder.policies import workers
+from cinder.policies import sap
 
 
 def list_rules():
@@ -85,4 +86,5 @@ def list_rules():
         type_extra_specs.list_rules(),
         volumes.list_rules(),
         default_types.list_rules(),
+        sap.list_rules(),
     )
