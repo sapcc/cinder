@@ -141,6 +141,7 @@ class VolumeAPI(rpc.RPCAPI):
         3.17 - Make get_backup_device a cast (async)
         3.17 - SAP - Added recount_host_stats (async)
         3.18 - Add reimage method
+        3.18 - SAP - Added set_pool_state (async)
     """
 
     RPC_API_VERSION = '3.18'
@@ -172,6 +173,11 @@ class VolumeAPI(rpc.RPCAPI):
     def recount_host_stats(self, ctxt, host):
         cctxt = self._get_cctxt(host=host)
         cctxt.cast(ctxt, 'recount_host_stats')
+
+    @rpc.assert_min_rpc_version('3.18')
+    def set_pool_state(self, ctxt, host, status):
+        cctxt = self._get_cctxt(host=host)
+        cctxt.cast(ctxt, 'set_pool_state', host=host, status=status)
 
     def create_volume(self,
                       ctxt: context.RequestContext,
