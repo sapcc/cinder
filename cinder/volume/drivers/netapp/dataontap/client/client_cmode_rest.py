@@ -2926,11 +2926,14 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         body = {'comment': comment}
         self.send_request(f'/storage/volumes/{uuid}', 'patch', body=body)
 
-    def get_volume_comment(self, volume_name):
+    def get_volume_comment(self, volume_name) -> str:
         """get comment on volume"""
 
         query = {'fields': 'name,comment'}
         query['name'] = volume_name
         volumes_response = self.send_request('/storage/volumes',
                                              'get', query=query)
-        return volumes_response['records'][0]['comment']
+        LOG.info('Volumes response: %s', volumes_response)
+        if (volumes_response and volumes_response.get('num_records', 0) > 0):
+            return volumes_response['records'][0]['comment']
+        return None

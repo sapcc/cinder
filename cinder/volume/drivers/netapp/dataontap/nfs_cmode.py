@@ -21,6 +21,7 @@
 Volume driver for NetApp NFS storage.
 """
 
+import json
 import os
 import uuid
 
@@ -347,6 +348,29 @@ class NetAppCmodeNfsDriver(
                                                               export_path)
         return vserver, exp_volume
 
+    @volume_utils.trace
+    def set_pool_state(self, pool_name, state, state_reason):
+        """Set the pool state for the volume."""
+
+        # The pool_name is in the format of
+        # <ip_address>:/<volume_name>   or
+        # <ip_address>:<volume_name>/<qtree_name>
+        # We have to extract the volume_name from the pool_name.
+        volume_name = pool_name.split('/')[1]
+
+        pool_json = json.dumps(
+            {'pool_state': state, 'pool_down_reason': state_reason}
+        )
+        LOG.info("Setting pool state for %s to '%s'", volume_name, pool_json)
+
+        # Set a json string in the comment field to keep track
+        # of the pool state and the reason for the pool state.
+        if hasattr(self.zapi_client, 'set_volume_comment'):
+            self.zapi_client.set_volume_comment(volume_name, pool_json)
+        else:
+            LOG.warning("Driver %s can't set the pool state",
+                        self.driver_name)
+
     def _update_volume_stats(self):
         """Retrieve stats info from vserver."""
 
@@ -368,6 +392,18 @@ class NetAppCmodeNfsDriver(
         data['replication_enabled'] = self.replication_enabled
 
         self._stats = data
+
+    @volume_utils.trace
+    def _get_volume_comment(self, volume_name):
+        """Get the comment for a volume."""
+        if hasattr(self.zapi_client, 'get_volume_comment'):
+            comments = self.zapi_client.get_volume_comment(volume_name)
+            try:
+                info = json.loads(comments)
+            except Exception:
+                return None
+            return info
+        return None
 
     def _get_pool_stats(self, filter_function=None, goodness_function=None):
         """Retrieve pool (Data ONTAP flexvol) stats.
@@ -466,6 +502,18 @@ class NetAppCmodeNfsDriver(
             pool['goodness_function'] = goodness_function
             netapp_server_fqdn = self.configuration.netapp_server_hostname
             pool['netapp_server_hostname'] = netapp_server_fqdn
+
+            # SAP
+            # Get the comment section of the volume and see if
+            # it's marked as down by an admin
+            pool['pool_state'] = 'up'
+            pool['pool_down_reason'] = ''
+            pool_info = self._get_volume_comment(ssc_vol_name)
+            if pool_info:
+                pool['pool_state'] = pool_info.get('pool_state', 'up')
+                pool['pool_down_reason'] = pool_info.get('pool_down_reason')
+            LOG.info('Pool state for volume %s: %s',
+                     ssc_vol_name, pool['pool_state'])
 
             # Add replication capabilities/stats
             pool.update(
