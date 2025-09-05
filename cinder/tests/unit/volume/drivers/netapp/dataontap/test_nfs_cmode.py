@@ -246,6 +246,8 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
 
         expected = [{
             'pool_name': '10.10.10.10:/vola',
+            'pool_state': 'up',
+            'pool_down_reason': '',
             'reserved_percentage': fake.RESERVED_PERCENTAGE,
             'max_over_subscription_ratio': fake.MAX_OVER_SUBSCRIPTION_RATIO,
             'multiattach': True,

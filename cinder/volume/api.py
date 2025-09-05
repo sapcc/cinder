@@ -52,6 +52,7 @@ from cinder.objects import base as objects_base
 from cinder.objects import fields
 from cinder.objects import volume_type
 from cinder.policies import attachments as attachment_policy
+from cinder.policies import sap as sap_policy
 from cinder.policies import services as svr_policy
 from cinder.policies import snapshot_metadata as s_meta_policy
 from cinder.policies import snapshots as snapshot_policy
@@ -2526,9 +2527,16 @@ class API(base.Base):
         return None
 
     def recount_host_stats(self, ctxt, host):
-        ctxt.authorize(svr_policy.RECOUNT_STATS_POLICY)
+        """SAP.  Recount the host stats for the host/pool."""
+        ctxt.authorize(sap_policy.RECOUNT_STATS_POLICY)
         ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
         self.volume_rpcapi.recount_host_stats(ctxt, host)
+
+    def set_pool_state(self, ctxt, host, status):
+        """SAP.  Set the pool state for the host/pool."""
+        ctxt.authorize(sap_policy.SET_POOL_STATE_POLICY)
+        ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
+        self.volume_rpcapi.set_pool_state(ctxt, host, status)
 
     def check_volume_filters(self,
                              filters: dict,

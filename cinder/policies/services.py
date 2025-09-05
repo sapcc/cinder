@@ -23,7 +23,6 @@ UPDATE_POLICY = "volume_extension:services:update"
 FAILOVER_POLICY = "volume:failover_host"
 FREEZE_POLICY = "volume:freeze_host"
 THAW_POLICY = "volume:thaw_host"
-RECOUNT_STATS_POLICY = "volume:recount_host_stats"
 
 services_policies = [
     policy.DocumentedRuleDefault(
@@ -75,16 +74,6 @@ services_policies = [
             {
                 'method': 'PUT',
                 'path': '/os-services/failover_host'
-            }
-        ]),
-    policy.DocumentedRuleDefault(
-        name=RECOUNT_STATS_POLICY,
-        check_str=base.RULE_ADMIN_API,
-        description="Recount host stats allocated capacity",
-        operations=[
-            {
-                'method': 'PUT',
-                'path': '/os-services/recount_host_stats'
             }
         ]),
 ]
