@@ -2811,3 +2811,20 @@ class RestClient(object):
         }
         self.send_request('/protocols/nvme/subsystem-maps', 'delete',
                           query=query)
+
+    def set_volume_comment(self, volume_name, comment):
+        """set comment on volume"""
+
+        volume = self._get_volume_by_args(vol_name=volume_name)
+        uuid = volume['uuid']
+        body = {'comment': comment}
+        self.send_request(f'/storage/volumes/{uuid}', 'patch', body=body)
+
+    def get_volume_comment(self, volume_name):
+        """get comment on volume"""
+
+        query = {'fields': 'name,comment'}
+        query['name'] = volume_name
+        volumes_response = self.send_request('/storage/volumes',
+                                             'get', query=query)
+        return volumes_response['records'][0]['comment']
