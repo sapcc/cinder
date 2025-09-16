@@ -68,6 +68,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     # FCD Cross vcenter migration is available in 8.0.3
     FCD_CROSS_VC_MIGRATION_VC_VERSION = '8.0.3'
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
     def _driver_name(self):
         return LOCATION_DRIVER_NAME
 
@@ -339,6 +346,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 'vmdk_size': volume.size * units.Gi,
                 'vmdk_path': vmdk_path,
                 'datacenter': datacenter,
+                'version': self.ATTACHMENT_VERSION,
             }
         }
 

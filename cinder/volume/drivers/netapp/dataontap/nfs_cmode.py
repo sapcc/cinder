@@ -73,6 +73,13 @@ class NetAppCmodeNfsDriver(
 
     VERSION = "4.0.0"
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
     REQUIRED_CMODE_FLAGS = ['netapp_vserver']
     SUPPORTS_ACTIVE_ACTIVE = True
 
@@ -1269,3 +1276,11 @@ class NetAppCmodeNfsDriver(
 
         return self.migrate_volume_ontap_assisted(
             volume, host, self.backend_name, self.configuration.netapp_vserver)
+
+    # SAP: the attachment version
+    # We override this so we can add the version to the connection info
+    # For the volume checker.
+    def initialize_connection(self, volume, connector):
+        conn_info = super().initialize_connection(volume, connector)
+        conn_info['data']['version'] = self.ATTACHMENT_VERSION
+        return conn_info

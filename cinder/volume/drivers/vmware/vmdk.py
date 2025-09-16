@@ -370,6 +370,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # flag this driver as supporting independent snapshots
     has_independent_snapshots = True
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
     def __init__(self, *args, **kwargs):
         super(VMwareVcVmdkDriver, self).__init__(*args, **kwargs)
 
@@ -1111,6 +1118,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             'name': volume.name,
             'profile_id': self._get_storage_profile_id(volume),
             'datastore': self.volumeops.get_datastore(backing).value,
+            'version': self.ATTACHMENT_VERSION,
         }
 
         # vmdk connector in os-brick needs additional connection info.
