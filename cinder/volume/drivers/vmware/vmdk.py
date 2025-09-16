@@ -49,6 +49,7 @@ from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
 from cinder.keymgr import kmip
+from cinder import utils
 from cinder.objects import snapshot as snapshot_obj
 from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder.volume import configuration
@@ -1864,6 +1865,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     self._delete_temp_disk(
                         vmdk_path.get_descriptor_ds_file_path(), dc_ref)
 
+    # Retry is needed for VolumeManager.reimage, which triggers the exception
+    # and a subsequent deletion of the backing. The retry reimages the volume.
+    @utils.retry(retry_param=exceptions.DuplicateName)
     def _fetch_stream_optimized_image(self, context, volume, image_service,
                                       image_id, image_size, adapter_type):
         """Creates volume from image using HttpNfc VM import.
