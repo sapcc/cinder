@@ -80,6 +80,13 @@ class NetAppCmodeNfsDriver(
     # 1.0.0 - initial version
     ATTACHMENT_VERSION = '1.0.0'
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
     REQUIRED_CMODE_FLAGS = ['netapp_vserver']
     SUPPORTS_ACTIVE_ACTIVE = True
 
