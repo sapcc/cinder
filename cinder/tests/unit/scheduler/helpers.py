@@ -21,6 +21,8 @@ from cinder.scheduler.filters import driver_filter
 from cinder.scheduler.filters import ignore_attempted_hosts_filter
 from cinder.scheduler.filters import instance_locality_filter
 from cinder.scheduler.filters import json_filter
+from cinder.scheduler.filters import sap_fcd_filter
+from cinder.scheduler.filters import shard_filter
 from cinder.scheduler.weights import capacity
 from cinder.scheduler.weights import chance
 from cinder.scheduler.weights import goodness
@@ -38,6 +40,10 @@ ALL_FILTER_CLASSES = [
     ignore_attempted_hosts_filter.IgnoreAttemptedHostsFilter,
     json_filter.JsonFilter,
     affinity_filter.SameBackendFilter,
+
+    # SAP Filters
+    sap_fcd_filter.SAPFCDFilter,
+    shard_filter.ShardFilter,
 ]
 
 ALL_FILTERS = [filter_cls.__name__ for filter_cls in ALL_FILTER_CLASSES]

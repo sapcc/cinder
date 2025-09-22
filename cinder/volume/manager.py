@@ -57,6 +57,7 @@ profiler = importutils.try_import('osprofiler.profiler')
 import requests
 from taskflow import exceptions as tfe
 
+from cinder import action_track
 from cinder.backup import rpcapi as backup_rpcapi
 from cinder.common import constants
 from cinder import compute
@@ -308,13 +309,17 @@ class VolumeManager(manager.CleanableManager,
             rpu.disable_warnings(rpu.exceptions.InsecurePlatformWarning)
 
         self.key_manager = key_manager.API(CONF)
+        # A driver can feed additional RPC endpoints into this list
+        driver_additional_endpoints = []
         self.driver = importutils.import_object(
             volume_driver,
             configuration=self.configuration,
             host=self.host,
             cluster_name=self.cluster,
             is_vol_db_empty=vol_db_empty,
-            active_backend_id=curr_active_backend_id)
+            active_backend_id=curr_active_backend_id,
+            additional_endpoints=driver_additional_endpoints)
+        self.additional_endpoints.extend(driver_additional_endpoints)
 
         if self.cluster and not self.driver.SUPPORTS_ACTIVE_ACTIVE:
             msg = _('Active-Active configuration is not currently supported '
@@ -364,8 +369,76 @@ class VolumeManager(manager.CleanableManager,
                      {'host': self.host})
             self.image_volume_cache = None
 
+    @volume_utils.trace
+    def _update_allocated_capacity(self,
+                                   vol: objects.Volume,
+                                   decrement: bool = False,
+                                   host: Optional[str] = None,
+                                   size=None) -> None:
+        """Update a pool's allocated capacity for a volume."""
+        # Update allocated capacity in volume stats
+        host = host or vol['host']
+        pool = volume_utils.extract_host(host, 'pool')
+        if pool is None:
+            # Legacy volume, put them into default pool
+            pool = self.driver.configuration.safe_get(
+                'volume_backend_name') or volume_utils.extract_host(host,
+                                                                    'pool',
+                                                                    True)
+
+        # if a size was passed in, we use that to increment/decrement
+        # instead of the size in the volume.
+        # This is for extend
+        if size:
+            vol_size = -size if decrement else size
+        else:
+            vol_size = -vol['size'] if decrement else vol['size']
+
+        self._update_pool_allocated_capacity(pool, vol_size)
+
+    def _update_pool_allocated_capacity(self, pool, size):
+        """Update a pool's allocated capacity by size."""
+        try:
+            pool_info = self.stats['pools'][pool]
+            curr_size = pool_info['allocated_capacity_gb']
+        except KeyError:
+            # First volume in the pool
+            self.stats['pools'][pool] = dict(
+                allocated_capacity_gb=0)
+            curr_size = 0
+            pool_info = self.stats['pools'][pool]
+
+        msg = "Decrementing " if size < 0 else "Incrementing "
+        msg += ("allocated_capacity_gb pool %(pool)s (%(curr_size)s) by "
+                "%(vol_size)s ")
+        LOG.debug(
+            msg,
+            {'pool': pool,
+             'curr_size': self.stats['pools'][pool]['allocated_capacity_gb'],
+             'vol_size': size})
+
+        pool_info['allocated_capacity_gb'] += size
+        self.stats['allocated_capacity_gb'] += size
+        if pool_info['allocated_capacity_gb'] < 0:
+            # Remove this once we find out why
+            new_size = pool_info['allocated_capacity_gb']
+            LOG.warning("allocated_capacity_gb now=%(new_size)s"
+                        " prev=%(prev_size)s "
+                        "for pool %(pool)s is negative,"
+                        "after being altered by %(size)s size. Reset to 0",
+                        {'new_size': new_size,
+                         'prev_size': curr_size,
+                         'size': size,
+                         'pool': pool})
+            pool_info['allocated_capacity_gb'] = 0
+
     def _count_allocated_capacity(self, ctxt: context.RequestContext,
                                   volume: objects.Volume) -> None:
+        """Count the capacity for a volume against a pool.
+
+           This is called at init_host time to count the capacity
+           but also to ensure that a pool/host is set for a volume
+        """
         pool = volume_utils.extract_host(volume['host'], 'pool')
         if pool is None:
             # No pool name encoded in host, so this is a legacy
@@ -392,18 +465,33 @@ class VolumeManager(manager.CleanableManager,
                 pool = (self.driver.configuration.safe_get(
                     'volume_backend_name') or volume_utils.extract_host(
                     volume['host'], 'pool', True))
-        try:
-            pool_stat = self.stats['pools'][pool]
-        except KeyError:
-            # First volume in the pool
-            self.stats['pools'][pool] = dict(
-                allocated_capacity_gb=0)
-            pool_stat = self.stats['pools'][pool]
-        pool_sum = pool_stat['allocated_capacity_gb']
-        pool_sum += volume['size']
 
-        self.stats['pools'][pool]['allocated_capacity_gb'] = pool_sum
-        self.stats['allocated_capacity_gb'] += volume['size']
+        self._update_pool_allocated_capacity(pool, volume['size'])
+
+    def _update_snapshot_allocated_capacity(self, ctxt: context.RequestContext,
+                                            snapshot: objects.Snapshot,
+                                            host: Optional[str],
+                                            decrement: bool = False) -> None:
+        """Use the size of the snapshot to adjust the allocated capacity.
+
+        This updates the pool stats allocated_capacity for the pool that owns
+        the snapshot.  The snapshot lives either in it's independent pool
+        or in the same pool as the source volume.
+
+        The scheduler updates the pool account at snapshot creation time.  This
+        ensures at volume service start time, the stats are adjusted as well.
+        """
+        size = snapshot.volume_size
+        if not host:
+            # get the source volume to find the host
+            volume = snapshot.volume
+            host = volume.host
+
+        pool = volume_utils.extract_host(host, 'pool')
+
+        if decrement:
+            size = -size
+        self._update_pool_allocated_capacity(pool, size)
 
     def _set_voldb_empty_at_startup_indicator(
             self,
@@ -533,6 +621,45 @@ class VolumeManager(manager.CleanableManager,
         # Initialize backend capabilities list
         self.driver.init_capabilities()
 
+        # collect and count all host volumes and snapshots
+        volumes_to_migrate = self._count_host_stats(ctxt, export_volumes=True)
+
+        self.driver.set_throttle()
+
+        # at this point the driver is considered initialized.
+        # NOTE(jdg): Careful though because that doesn't mean
+        # that an entry exists in the service table
+        self.driver.set_initialized()
+
+        # Keep the image tmp file clean when init host.
+        backend_name = volume_utils.extract_host(self.service_topic_queue)
+        assert backend_name is not None
+        image_utils.cleanup_temporary_file(backend_name)
+
+        # Migrate any ConfKeyManager keys based on fixed_key to the currently
+        # configured key manager.
+        self._add_to_threadpool(key_migration.migrate_fixed_key,
+                                volumes=volumes_to_migrate)
+
+        # collect and publish service capabilities
+        self.publish_service_capabilities(ctxt)
+        LOG.info("Driver initialization completed successfully.",
+                 resource={'type': 'driver',
+                           'id': self.driver.__class__.__name__})
+
+        # Make sure to call CleanableManager to do the cleanup
+        super(VolumeManager, self).init_host(added_to_cluster=added_to_cluster,
+                                             **kwargs)
+
+    def recount_host_stats(self, context):
+        self._count_host_stats(context, export_volumes=False)
+
+    @coordination.synchronized('volume-stats-{self.host}')
+    def _count_host_stats(self, context, export_volumes=False):
+        """Recount the number of volumes and allocated capacity."""
+        ctxt = context.elevated()
+        LOG.info("Recounting Allocated capacity")
+
         # Zero stats
         self.stats['pools'] = {}
         self.stats.update({'allocated_capacity_gb': 0})
@@ -561,7 +688,6 @@ class VolumeManager(manager.CleanableManager,
 
         req_offset: int
         for req_offset in req_range:
-
             # Retrieve 'req_limit' number of objects starting from
             # 'req_offset' position
             volumes, snapshots = [], []
@@ -578,6 +704,7 @@ class VolumeManager(manager.CleanableManager,
                                                        offset=req_offset)
                 else:
                     snapshots = objects.SnapshotList()
+
             # or retrieve all volumes and snapshots per single request
             else:
                 volumes = self._get_my_volumes(ctxt)
@@ -593,6 +720,7 @@ class VolumeManager(manager.CleanableManager,
                         # calculate allocated capacity for driver
                         self._count_allocated_capacity(ctxt, volume)
 
+                    if export_volumes:
                         try:
                             if volume['status'] in ['in-use']:
                                 self.driver.ensure_export(ctxt, volume)
@@ -602,13 +730,33 @@ class VolumeManager(manager.CleanableManager,
                                           resource=volume)
                             volume.conditional_update({'status': 'error'},
                                                       {'status': 'in-use'})
-                # All other cleanups are processed by parent class -
-                # CleanableManager
 
             except Exception:
                 LOG.exception("Error during re-export on driver init.",
                               resource=volume)
                 return
+
+            # SAP
+            # Account for the creation of snapshots on each pool
+            # this is only valid for vmware backends that are configured
+            # for clone based snapshots.  This only counts snapshots against
+            # the snapshot/source volume's pool if the snapshot is a clone
+            # of the source volume.
+            independent_snapshots = self.driver.capabilities.get(
+                'has_independent_snapshots')
+            if (self.driver.capabilities.get('snapshot_type') == 'clone' and
+                    independent_snapshots == 'true'):
+                try:
+                    for snapshot in snapshots:
+                        host = None
+                        key = objects.snapshot.SAP_HIDDEN_BACKEND_KEY
+                        if snapshot.metadata:
+                            host = snapshot.metadata.get(key)
+                        self._update_snapshot_allocated_capacity(
+                            ctxt, snapshot, host=host
+                        )
+                except Exception:
+                    LOG.exception("Error during snapshot calculation")
 
             if len(volumes):
                 volumes_to_migrate.append(volumes, ctxt)
@@ -616,32 +764,7 @@ class VolumeManager(manager.CleanableManager,
             del volumes
             del snapshots
 
-        self.driver.set_throttle()
-
-        # at this point the driver is considered initialized.
-        # NOTE(jdg): Careful though because that doesn't mean
-        # that an entry exists in the service table
-        self.driver.set_initialized()
-
-        # Keep the image tmp file clean when init host.
-        backend_name = volume_utils.extract_host(self.service_topic_queue)
-        assert backend_name is not None
-        image_utils.cleanup_temporary_file(backend_name)
-
-        # Migrate any ConfKeyManager keys based on fixed_key to the currently
-        # configured key manager.
-        self._add_to_threadpool(key_migration.migrate_fixed_key,
-                                volumes=volumes_to_migrate)
-
-        # collect and publish service capabilities
-        self.publish_service_capabilities(ctxt)
-        LOG.info("Driver initialization completed successfully.",
-                 resource={'type': 'driver',
-                           'id': self.driver.__class__.__name__})
-
-        # Make sure to call CleanableManager to do the cleanup
-        super(VolumeManager, self).init_host(added_to_cluster=added_to_cluster,
-                                             **kwargs)
+        return volumes_to_migrate
 
     def init_host_with_rpc(self) -> None:
         LOG.info("Initializing RPC dependent components of volume "
@@ -742,6 +865,37 @@ class VolumeManager(manager.CleanableManager,
             resource.host = volume_utils.append_host(self.host, pool)
             resource.save()
 
+    def _propagate_volume_scheduler_hints(self, context, volume):
+        """Ensure metadata hints are propagated to referenced volumes."""
+        hints = volume_utils.get_scheduler_hints_from_volume(volume)
+        if not hints:
+            return
+
+        LOG.debug("Found hints for %(volume)s - %(hints)s",
+                  {'volume': volume.id, 'hints': hints})
+        for hint_key in hints:
+            for vol_id in hints[hint_key]:
+                try:
+                    meta_vol = objects.Volume.get_by_id(context, vol_id)
+                    # Because pep8 length issues
+                    vut = volume_utils
+                    meta_vol_hints = vut.get_scheduler_hints_from_volume(
+                        meta_vol
+                    )
+                    meta_vol_hints.setdefault(hint_key, [])
+                    if volume.id not in meta_vol_hints[hint_key]:
+                        meta_vol_hints[hint_key].append(volume.id)
+
+                    md = vut.set_scheduler_hints_to_volume_metadata(
+                        meta_vol_hints, meta_vol.metadata
+                    )
+                    meta_vol.metadata = md
+                    meta_vol.save()
+                except Exception:
+                    LOG.exception("Failed to set scheduler hints.",
+                                  resource=meta_vol)
+
+    @action_track.track_decorator(action_track.ACTION_VOLUME_CREATE)
     @objects.Volume.set_workers
     def create_volume(self, context, volume, request_spec=None,
                       filter_properties=None,
@@ -853,7 +1007,14 @@ class VolumeManager(manager.CleanableManager,
         volume.service_uuid = self.service_uuid
         volume.save()
 
-        LOG.info("Created volume successfully.", resource=volume)
+        # propagate any scheduler hint affinity/anti-affinity metadata to
+        # other volumes.
+        self._propagate_volume_scheduler_hints(context, volume)
+
+        action_track.track(
+            context, action_track.ACTION_VOLUME_CREATE,
+            volume, "Created Volume successfully"
+        )
         return volume.id
 
     def _driver_shares_targets(self):
@@ -925,6 +1086,7 @@ class VolumeManager(manager.CleanableManager,
 
     @clean_volume_locks
     @coordination.synchronized('{volume.id}-delete_volume')
+    @action_track.track_decorator(action_track.ACTION_VOLUME_DELETE)
     @objects.Volume.set_workers
     def delete_volume(self,
                       context: context.RequestContext,
@@ -952,7 +1114,11 @@ class VolumeManager(manager.CleanableManager,
         except exception.VolumeNotFound:
             # NOTE(thingee): It could be possible for a volume to
             # be deleted when resuming deletes from init_host().
-            LOG.debug("Attempted delete of non-existent volume: %s", volume.id)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DELETE,
+                volume,
+                "Attempted delete of non-existent volume: %s" % volume.id,
+            )
             return None
 
         if context.project_id != volume.project_id:
@@ -1012,8 +1178,10 @@ class VolumeManager(manager.CleanableManager,
             else:
                 self.driver.delete_volume(volume)
         except exception.VolumeIsBusy:
-            LOG.error("Unable to delete busy volume.",
-                      resource=volume)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DELETE,
+                volume, "Unable to delete busy volume.", loglevel=logging.ERROR
+            )
             # If this is a destination volume, we have to clear the database
             # record to avoid user confusion.
             self._clear_db(volume, 'available')
@@ -1064,7 +1232,10 @@ class VolumeManager(manager.CleanableManager,
         msg = "Deleted volume successfully."
         if unmanage_only:
             msg = "Unmanaged volume successfully."
-        LOG.info(msg, resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DELETE,
+            volume, msg
+        )
         return None
 
     def _clear_db(self, volume_ref, status) -> None:
@@ -1102,9 +1273,11 @@ class VolumeManager(manager.CleanableManager,
             temp_vol = self.driver._create_temp_volume_from_snapshot(
                 ctxt, volume, snapshot, volume_options=v_options,
                 status=fields.VolumeStatus.IN_USE)
+            self._update_allocated_capacity(temp_vol)
             self._copy_volume_data(ctxt, temp_vol, volume)
             self.driver_delete_volume(temp_vol)
             temp_vol.destroy()
+            self._update_allocated_capacity(temp_vol, decrement=True)
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.exception(
@@ -1236,6 +1409,7 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_volume_usage(context, volume, "revert.end")
         self._notify_about_snapshot_usage(context, snapshot, "revert.end")
 
+    @action_track.track_decorator(action_track.ACTION_SNAPSHOT_CREATE)
     @objects.Snapshot.set_workers
     def create_snapshot(self, context, snapshot) -> ovo_fields.UUIDField:
         """Creates and exports the snapshot."""
@@ -1286,6 +1460,11 @@ class VolumeManager(manager.CleanableManager,
                               resource=snapshot)
                 snapshot.status = fields.SnapshotStatus.ERROR
                 snapshot.save()
+                action_track.track(
+                    context, action_track.ACTION_SNAPSHOT_CREATE,
+                    snapshot, "Failed updating snapshot metadata",
+                    loglevel=logging.ERROR
+                )
                 self.message_api.create(
                     context,
                     action=message_field.Action.SNAPSHOT_CREATE,
@@ -1304,13 +1483,30 @@ class VolumeManager(manager.CleanableManager,
         snapshot.encryption_key_id = vol_ref.encryption_key_id
         snapshot.save()
 
+        # For snapshots that have a hidden backend key
+        # we update the allocated capacity to account
+        # for the snapshot size on the backend.
+        # The hidden backend key is there for snapshots
+        # that are clones.
+        if (self.driver.capabilities.get('snapshot_type') == 'clone'
+                and snapshot.metadata):
+            key = objects.snapshot.SAP_HIDDEN_BACKEND_KEY
+            hidden_host = snapshot.metadata.get(key)
+            if hidden_host:
+                self._update_snapshot_allocated_capacity(
+                    context, snapshot, host=hidden_host
+                )
+
         self._notify_about_snapshot_usage(context, snapshot, "create.end")
-        LOG.info("Create snapshot completed successfully",
-                 resource=snapshot)
+        action_track.track(
+            context, action_track.ACTION_SNAPSHOT_CREATE,
+            snapshot, "Create snapshot completed successfully",
+        )
         return snapshot.id
 
     @clean_snapshot_locks
     @coordination.synchronized('{snapshot.id}-delete_snapshot')
+    @action_track.track_decorator(action_track.ACTION_SNAPSHOT_DELETE)
     def delete_snapshot(self,
                         context: context.RequestContext,
                         snapshot: objects.Snapshot,
@@ -1336,8 +1532,11 @@ class VolumeManager(manager.CleanableManager,
             else:
                 self.driver.delete_snapshot(snapshot)
         except exception.SnapshotIsBusy as busy_error:
-            LOG.error("Delete snapshot failed, due to snapshot busy.",
-                      resource=snapshot)
+            action_track.track(
+                context, action_track.ACTION_SNAPSHOT_DELETE,
+                snapshot, "Delete snapshot failed, due to snapshot busy.",
+                loglevel=logging.ERROR
+            )
             snapshot.status = fields.SnapshotStatus.AVAILABLE
             snapshot.save()
             self.message_api.create(
@@ -1381,6 +1580,22 @@ class VolumeManager(manager.CleanableManager,
             reservations = None
             LOG.exception("Update snapshot usages failed.",
                           resource=snapshot)
+
+        # For snapshots that have a hidden backend key
+        # we update the allocated capacity to account
+        # for the snapshot size on the backend.
+        # The hidden backend key is there for snapshots
+        # that are clones.
+        if (self.driver.capabilities.get('snapshot_type') == 'clone'
+                and snapshot.metadata):
+            key = objects.snapshot.SAP_HIDDEN_BACKEND_KEY
+            hidden_host = snapshot.metadata.get(key)
+            if hidden_host:
+                self._update_snapshot_allocated_capacity(
+                    context, snapshot, host=hidden_host,
+                    decrement=True
+                )
+
         self.db.volume_glance_metadata_delete_by_snapshot(context, snapshot.id)
         snapshot.destroy()
         self._notify_about_snapshot_usage(context, snapshot, "delete.end")
@@ -1392,10 +1607,14 @@ class VolumeManager(manager.CleanableManager,
         msg = "Delete snapshot completed successfully."
         if unmanage_only:
             msg = "Unmanage snapshot completed successfully."
-        LOG.info(msg, resource=snapshot)
+        action_track.track(
+            context, action_track.ACTION_SNAPSHOT_DELETE,
+            snapshot, msg,
+        )
         return None
 
     @coordination.synchronized('{volume_id}')
+    @action_track.track_decorator(action_track.ACTION_VOLUME_ATTACH)
     def attach_volume(self, context, volume_id, instance_uuid, host_name,
                       mountpoint, mode,
                       volume=None) -> objects.VolumeAttachment:
@@ -1456,12 +1675,15 @@ class VolumeManager(manager.CleanableManager,
                                                         volume_id=volume.id)
             volume_utils.require_driver_initialized(self.driver)
 
-            LOG.info('Attaching volume %(volume_id)s to instance '
-                     '%(instance)s at mountpoint %(mount)s on host '
-                     '%(host)s.',
-                     {'volume_id': volume_id, 'instance': instance_uuid,
-                      'mount': mountpoint, 'host': host_name_sanitized},
-                     resource=volume)
+            msg = ('Attaching volume %(volume_id)s to instance '
+                   '%(instance)s at mountpoint %(mount)s on host '
+                   '%(host)s.' %
+                   {'volume_id': volume_id, 'instance': instance_uuid,
+                    'mount': mountpoint, 'host': host_name_sanitized})
+            action_track.track(
+                context, action_track.ACTION_VOLUME_ATTACH,
+                volume, msg
+            )
         except Exception as excep:
             with excutils.save_and_reraise_exception():
                 self.message_api.create(
@@ -1480,11 +1702,14 @@ class VolumeManager(manager.CleanableManager,
             mode)
 
         self._notify_about_volume_usage(context, volume, "attach.end")
-        LOG.info("Attach volume completed successfully.",
-                 resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_ATTACH,
+            volume, "Attach volume completed successfully.",
+        )
         return attachment
 
     @coordination.synchronized('{volume_id}-{f_name}')
+    @action_track.track_decorator(action_track.ACTION_VOLUME_DETACH)
     def detach_volume(self, context, volume_id, attachment_id=None,
                       volume=None) -> None:
         """Updates db to show volume is detached."""
@@ -1748,6 +1973,7 @@ class VolumeManager(manager.CleanableManager,
                                        False)
         return True
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_COPY_TO_IMAGE)
     def copy_volume_to_image(self,
                              context: context.RequestContext,
                              volume_id: str,
@@ -1890,6 +2116,7 @@ class VolumeManager(manager.CleanableManager,
 
         return conn_info
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_ATTACH)
     def initialize_connection(self,
                               context,
                               volume: objects.Volume,
@@ -1970,6 +2197,9 @@ class VolumeManager(manager.CleanableManager,
 
         try:
             conn_info = self.driver.initialize_connection(volume, connector)
+        except exception.ConnectorRejected:
+            with excutils.save_and_reraise_exception():
+                LOG.info("The connector was rejected by the volume driver.")
         except Exception as err:
             err_msg = (_("Driver initialize connection failed "
                          "(error: %(err)s).") % {'err': err})
@@ -2049,6 +2279,7 @@ class VolumeManager(manager.CleanableManager,
                  resource=snapshot)
         return conn
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_DETACH)
     def terminate_connection(self,
                              context,
                              volume_id: ovo_fields.UUIDField,
@@ -2400,7 +2631,9 @@ class VolumeManager(manager.CleanableManager,
         # Copy the source volume to the destination volume
         try:
             attachments = volume.volume_attachment
-            if not attachments:
+            # A volume might have attachments created, but if it is reserved
+            # it means it's being migrated prior to the attachment completion.
+            if not attachments or volume.status == 'reserved':
                 # Pre- and post-copy driver-specific actions
                 self.driver.before_volume_copy(ctxt, volume, new_volume,
                                                remote='dest')
@@ -2613,6 +2846,21 @@ class VolumeManager(manager.CleanableManager,
                  resource=volume)
         return volume.id
 
+    def _sap_can_use_driver_migration(self, diff, force_host_copy):
+        # Hack to allow migration to a different host if the storage
+        # protocol is vmdk -> vstorageobject.
+        # We know the vmdk driver can migrate to an fcd.
+        if diff and not force_host_copy:
+            # now check to see if the storage protocols between
+            # source and destination can tolerate the migration.
+            extra_specs = diff.get('extra_specs', {})
+            (src_protocol, dest_protocol) = extra_specs.get(
+                'storage_protocol', (None, None))
+            # We only allow vmdk -> fcd migration currently.
+            if src_protocol == 'vmdk' and dest_protocol == 'vstorageobject':
+                return True
+        return False
+
     def _can_use_driver_migration(self, diff):
         """Return when we can use driver assisted migration on a retype."""
         # We can if there's no retype or there are no difference in the types
@@ -2635,13 +2883,15 @@ class VolumeManager(manager.CleanableManager,
         extra_specs.pop('RESKEY:availability_zones', None)
         return not extra_specs
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_MIGRATE)
     def migrate_volume(self,
                        ctxt: context.RequestContext,
                        volume,
                        host,
                        force_host_copy: bool = False,
                        new_type_id=None,
-                       diff=None) -> None:
+                       diff=None,
+                       extend_spec=None) -> None:
         """Migrate the volume to the specified host (called on source host)."""
         try:
             volume_utils.require_driver_initialized(self.driver)
@@ -2652,21 +2902,37 @@ class VolumeManager(manager.CleanableManager,
 
         model_update = None
         moved = False
+        rpcapi = volume_rpcapi.VolumeAPI()
 
         status_update = None
-        if volume.status in ('retyping', 'maintenance'):
+        if volume.status in ('retyping', 'maintenance', 'extending'):
             status_update = {'status': volume.previous_status}
 
         volume.migration_status = 'migrating'
         volume.save()
+
         # Do not attempt driver assisted migration when the volume has
         # attachments. Nova must be involved when migrating an attached
         # volume, and that's handled by the generic migration code.
-        if (len(volume.volume_attachment) == 0 and
-                not force_host_copy and
-                self._can_use_driver_migration(diff)):
+        if self._sap_can_use_driver_migration(diff, force_host_copy) or \
+                (len(volume.volume_attachment) == 0 and
+                 not force_host_copy and
+                 self._can_use_driver_migration(diff)):
             try:
                 LOG.debug("Issue driver.migrate_volume.", resource=volume)
+                # Update the remote host's allocated_capacity_gb first
+                # Because the migration can take a while, and the scheduler
+                # needs to account for the space consumed.
+                LOG.debug("Update remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': host['host']},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'])
+                action_track.track(
+                    context, action_track.ACTION_VOLUME_MIGRATE,
+                    volume, "calling driver migrate_volume"
+                )
                 moved, model_update = self.driver.migrate_volume(ctxt,
                                                                  volume,
                                                                  host)
@@ -2678,6 +2944,7 @@ class VolumeManager(manager.CleanableManager,
                         'migration_status': 'success',
                         'availability_zone': dst_service.availability_zone,
                         'previous_status': volume.status,
+                        'service_uuid': dst_service.uuid,
                     }
                     if status_update:
                         updates.update(status_update)
@@ -2685,9 +2952,21 @@ class VolumeManager(manager.CleanableManager,
                         updates.update(model_update)
                     if new_type_id:
                         updates['volume_type_id'] = new_type_id
+                    original_host = volume.host
                     volume.update(updates)
                     volume.save()
+                    self._update_allocated_capacity(volume, decrement=True,
+                                                    host=original_host)
+                    if extend_spec:
+                        rpcapi.extend_volume(ctxt, volume, **extend_spec)
             except Exception:
+                LOG.debug("Decrement remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': host['host']},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'],
+                                                       decrement=True)
                 with excutils.save_and_reraise_exception():
                     updates = {'migration_status': 'error'}
                     if status_update:
@@ -2696,16 +2975,43 @@ class VolumeManager(manager.CleanableManager,
                     volume.save()
         if not moved:
             try:
+                original_host = volume.host
+                LOG.debug("Update remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': volume.host},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'])
+                action_track.track(
+                    context, action_track.ACTION_VOLUME_MIGRATE,
+                    volume, "Call Generic migrate volume"
+                )
                 self._migrate_volume_generic(ctxt, volume, host, new_type_id)
+                self._update_allocated_capacity(volume, decrement=True,
+                                                host=original_host)
             except Exception:
+                LOG.debug("Decrement remote allocated_capacity_gb for "
+                          "host %(host)s",
+                          {'host': host['host']},
+                          resource=volume)
+                rpcapi.update_migrated_volume_capacity(ctxt, volume,
+                                                       host=host['host'],
+                                                       decrement=True)
                 with excutils.save_and_reraise_exception():
+                    action_track.track(
+                        context, action_track.ACTION_VOLUME_MIGRATE,
+                        volume, "Failed generic migration",
+                        loglevel=logging.ERROR
+                    )
                     updates = {'migration_status': 'error'}
                     if status_update:
                         updates.update(status_update)
                     volume.update(updates)
                     volume.save()
-        LOG.info("Migrate volume completed successfully.",
-                 resource=volume)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_MIGRATE,
+            volume, "Migrate volume completed successfully."
+        )
 
     def _report_driver_status(self, context: context.RequestContext) -> None:
         # It's possible during live db migration that the self.service_uuid
@@ -2756,6 +3062,11 @@ class VolumeManager(manager.CleanableManager,
                     pool.update(self.extra_capabilities)
             else:
                 volume_stats.update(self.extra_capabilities)
+                if "pools" in volume_stats:
+                    for pool in volume_stats["pools"]:
+                        pool.update(self.extra_capabilities)
+                else:
+                    volume_stats.update(self.extra_capabilities)
         if volume_stats:
 
             # NOTE(xyang): If driver reports replication_status to be
@@ -2822,6 +3133,70 @@ class VolumeManager(manager.CleanableManager,
             # queue it to be sent to the Schedulers.
             self.update_service_capabilities(volume_stats)
 
+    def _set_pool_state(self, pool):
+        """Check the pool stats to decide if the pool should be down.
+
+        When a pool is overcommited already, the pool should not be
+        available to accept new volumes, so we mark the pool down.
+        """
+        # Lets see if we should mark the pool as down
+        # if we are overcommited over the allowed amount
+        thin = pool.get('thin_provisioning_support', None)
+        thick = pool.get('thick_provisioning_support', None)
+        if not thin and not thick:
+            return
+
+        if thin:
+            max_over_subscription_ratio = pool.get(
+                'max_over_subscription_ratio',
+                float(self.configuration.max_over_subscription_ratio)
+            )
+            thin_factors = utils.calculate_capacity_factors(
+                pool['total_capacity_gb'],
+                pool['free_capacity_gb'],
+                pool['allocated_capacity_gb'],
+                True,
+                float(max_over_subscription_ratio),
+                pool['reserved_percentage'],
+                True
+            )
+            if thin_factors['virtual_free_capacity'] <= 0:
+                # The pool has no free space left or has been
+                # overcommited past what is allowed.
+                LOG.info("Pool(%(pool_name)s is overcommited!!",
+                         {'pool_name': pool['pool_name']})
+                pool['pool_state'] = 'down'
+                pool['pool_state_reason'] = (
+                    'Volume manager marked pool down for being'
+                    ' allocated beyond what is allowed for thin'
+                    ' provisioning.'
+                )
+        else:
+            # Thick provisioning won't allow max oversub
+            # So we force it to 1:1
+            max_oversubscription_ratio = 1
+            thick_factors = utils.calculate_capacity_factors(
+                pool['total_capacity_gb'],
+                pool['free_capacity_gb'],
+                pool['allocated_capacity_gb'],
+                False,
+                max_oversubscription_ratio,
+                pool['reserved_percentage'],
+                False
+            )
+            if thick_factors['virtual_free_capacity'] <= 0:
+                # The pool has no free space left or has been
+                # overcommited past what is allowed.
+                LOG.info("Pool(%(pool_name)s is overcommited!!",
+                         {'pool_name': pool['pool_name']})
+                pool['pool_state'] = 'down'
+                pool['pool_state_reason'] = (
+                    'Volume manager marked pool down for being'
+                    ' allocated beyond what is allowed for thick'
+                    ' provisioning'
+                )
+
+    @coordination.synchronized('volume-stats-{self.host}')
     def _append_volume_stats(self, vol_stats) -> None:
         pools = vol_stats.get('pools', None)
         if pools:
@@ -2835,6 +3210,8 @@ class VolumeManager(manager.CleanableManager,
                         pool_stats = dict(allocated_capacity_gb=0)
 
                     pool.update(pool_stats)
+                    self._set_pool_state(pool)
+
             else:
                 raise exception.ProgrammingError(
                     reason='Pools stats reported by the driver are not '
@@ -2931,6 +3308,7 @@ class VolumeManager(manager.CleanableManager,
                     context, snapshot, event_suffix,
                     extra_usage_info=extra_usage_info, host=self.host)
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_EXTEND)
     def extend_volume(self,
                       context: context.RequestContext,
                       volume: objects.Volume,
@@ -3016,11 +3394,7 @@ class VolumeManager(manager.CleanableManager,
                 'volume_backend_name') or volume_utils.extract_host(
                     volume.host, 'pool', True)
 
-        try:
-            self.stats['pools'][pool]['allocated_capacity_gb'] += size_increase
-        except KeyError:
-            self.stats['pools'][pool] = dict(
-                allocated_capacity_gb=size_increase)
+        self._update_allocated_capacity(volume, size=size_increase)
 
         self._notify_about_volume_usage(
             context, volume, "resize.end",
@@ -3035,6 +3409,7 @@ class VolumeManager(manager.CleanableManager,
                  volume_utils.hosts_are_equivalent(self.driver.cluster_name,
                                                    cluster_name)))
 
+    @action_track.track_decorator(action_track.ACTION_VOLUME_RETYPE)
     def retype(self,
                context: context.RequestContext,
                volume: objects.Volume,
@@ -3215,7 +3590,7 @@ class VolumeManager(manager.CleanableManager,
         vol_ref = self._run_manage_existing_flow_engine(
             ctxt, volume, ref)
 
-        self._update_stats_for_managed(vol_ref)
+        self._update_allocated_capacity(vol_ref)
 
         LOG.info("Manage existing volume completed successfully.",
                  resource=vol_ref)
@@ -3338,6 +3713,7 @@ class VolumeManager(manager.CleanableManager,
                               "to driver error.")
         return driver_entries
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_CREATE)
     def create_group(self,
                      context: context.RequestContext,
                      group) -> objects.Group:
@@ -3727,27 +4103,7 @@ class VolumeManager(manager.CleanableManager,
 
         self.db.volume_update(context, vol['id'], update)
 
-    def _update_allocated_capacity(self,
-                                   vol: objects.Volume,
-                                   decrement: bool = False,
-                                   host: Optional[str] = None) -> None:
-        # Update allocated capacity in volume stats
-        host = host or vol['host']
-        pool = volume_utils.extract_host(host, 'pool')
-        if pool is None:
-            # Legacy volume, put them into default pool
-            pool = self.driver.configuration.safe_get(
-                'volume_backend_name') or volume_utils.extract_host(host,
-                                                                    'pool',
-                                                                    True)
-
-        vol_size = -vol['size'] if decrement else vol['size']
-        try:
-            self.stats['pools'][pool]['allocated_capacity_gb'] += vol_size
-        except KeyError:
-            self.stats['pools'][pool] = dict(
-                allocated_capacity_gb=max(vol_size, 0))
-
+    @action_track.track_decorator(action_track.ACTION_GROUP_DELETE)
     def delete_group(self,
                      context: context.RequestContext,
                      group: objects.Group) -> None:
@@ -3865,7 +4221,7 @@ class VolumeManager(manager.CleanableManager,
             if reservations:
                 QUOTAS.commit(context, reservations, project_id=project_id)
 
-            self.stats['allocated_capacity_gb'] -= vol.size
+            self._update_allocated_capacity(vol, decrement=True)
 
         if grpreservations:
             GROUP_QUOTAS.commit(context, grpreservations,
@@ -4015,6 +4371,7 @@ class VolumeManager(manager.CleanableManager,
             volumes_ref.append(add_vol_ref)
         return volumes_ref
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_UPDATE)
     def update_group(self,
                      context: context.RequestContext,
                      group,
@@ -4118,6 +4475,7 @@ class VolumeManager(manager.CleanableManager,
                  resource={'type': 'group',
                            'id': group.id})
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_SNAPSHOT_CREATE)
     def create_group_snapshot(
             self,
             context: context.RequestContext,
@@ -4293,6 +4651,7 @@ class VolumeManager(manager.CleanableManager,
 
         return model_update, snapshot_model_updates
 
+    @action_track.track_decorator(action_track.ACTION_GROUP_SNAPSHOT_DELETE)
     def delete_group_snapshot(self,
                               context: context.RequestContext,
                               group_snapshot: objects.GroupSnapshot) -> None:
@@ -4416,6 +4775,12 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_group_snapshot_usage(context, group_snapshot,
                                                 "delete.end",
                                                 snapshots)
+
+    @volume_utils.trace
+    def update_migrated_volume_capacity(self, ctxt, volume, host,
+                                        decrement=False):
+        """Update allocated_capacity_gb for the migrated volume host."""
+        self._update_allocated_capacity(volume, host=host, decrement=decrement)
 
     def update_migrated_volume(self,
                                ctxt: context.RequestContext,
@@ -4840,19 +5205,33 @@ class VolumeManager(manager.CleanableManager,
         try:
             self.driver.validate_connector(connector)
         except exception.InvalidConnectorException as err:
+            action_track.track(
+                context, action_track.ACTION_VOLUME_ATTACH,
+                volume, str(err), loglevel=logging.ERROR
+            )
             raise exception.InvalidInput(reason=str(err))
         except Exception as err:
             err_msg = (_("Validate volume connection failed "
                          "(error: %(err)s).") % {'err': err})
-            LOG.error(err_msg, resource=volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
 
         try:
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, "call create_export"
+            )
             model_update = self.driver.create_export(ctxt.elevated(),
                                                      volume, connector)
         except exception.CinderException as ex:
             err_msg = (_("Create export for volume failed (%s).") % ex.msg)
-            LOG.exception(err_msg, resource=volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
 
         try:
@@ -4861,15 +5240,34 @@ class VolumeManager(manager.CleanableManager,
                 volume.save()
         except exception.CinderException as ex:
             LOG.exception("Model update failed.", resource=volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, f"Model update failed {str(ex)}",
+                loglevel=logging.ERROR
+            )
             raise exception.ExportFailure(reason=str(ex))
 
         try:
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, "call driver initialize_connection"
+            )
             conn_info = self.driver.initialize_connection(volume, connector)
+        except exception.ConnectorRejected:
+            with excutils.save_and_reraise_exception():
+                action_track.track(
+                    ctxt, action_track.ACTION_VOLUME_ATTACH,
+                    volume, "ConnectorRejected.  Volume needs to be migrated"
+                )
         except Exception as err:
             err_msg = (_("Driver initialize connection failed "
                          "(error: %(err)s).") % {'err': err})
             LOG.exception(err_msg, resource=volume)
             self.driver.remove_export(ctxt.elevated(), volume)
+            action_track.track(
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
         conn_info = self._parse_connection_options(ctxt, volume, conn_info)
 
@@ -4888,9 +5286,13 @@ class VolumeManager(manager.CleanableManager,
         # Append the enforce_multipath value if the connector has it
         connection_info['enforce_multipath'] = connector.get(
             'enforce_multipath', False)
-        LOG.debug("Connection info returned from driver %(connection_info)s",
-                  {'connection_info':
+        msg = ("Connection info returned from driver %(connection_info)s" %
+               {'connection_info':
                    strutils.mask_dict_password(connection_info)})
+        action_track.track(
+            ctxt, action_track.ACTION_VOLUME_ATTACH,
+            volume, msg
+        )
         return connection_info
 
     def attachment_update(self,
@@ -4914,6 +5316,10 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_volume_usage(context, vref, 'attach.start')
         attachment_ref = objects.VolumeAttachment.get_by_id(context,
                                                             attachment_id)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_ATTACH,
+            vref, "called"
+        )
 
         # Check to see if a mode parameter was set during attachment-create;
         # this seems kinda wonky, but it's how we're keeping back compatability
@@ -4936,6 +5342,11 @@ class VolumeManager(manager.CleanableManager,
                 context, message_field.Action.UPDATE_ATTACHMENT,
                 resource_uuid=vref.id,
                 exception=err)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_ATTACH,
+                vref, f"driver attach_volume failed {str(err)}",
+                loglevel=logging.ERROR
+            )
             with excutils.save_and_reraise_exception():
                 self.db.volume_attachment_update(
                     context, attachment_ref.id,
@@ -4951,8 +5362,10 @@ class VolumeManager(manager.CleanableManager,
                                 False)
         vref.refresh()
         attachment_ref.refresh()
-        LOG.info("attachment_update completed successfully.",
-                 resource=vref)
+        action_track.track(
+            context, action_track.ACTION_VOLUME_ATTACH,
+            vref, "attachment_update completed_successfully"
+        )
         return connection_info
 
     def _connection_terminate(self,
@@ -4965,6 +5378,10 @@ class VolumeManager(manager.CleanableManager,
         Exits early if the attachment does not have a connector and returns
         None to indicate shared connections are irrelevant.
         """
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DETACH,
+            volume, "called"
+        )
         volume_utils.require_driver_initialized(self.driver)
         connector = attachment.connector
         if not connector and not force:
@@ -4974,11 +5391,19 @@ class VolumeManager(manager.CleanableManager,
             # so if we don't have a connector we can't terminate a connection
             # that was never actually made to the storage backend, so just
             # log a message and exit.
-            LOG.debug('No connector for attachment %s; skipping storage '
-                      'backend terminate_connection call.', attachment.id)
+            msg = ('No connector for attachment %s; skipping storage '
+                   'backend terminate_connection call.' % attachment.id)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                volume, msg
+            )
             # None indicates we don't know and don't care.
             return None
         try:
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                volume, "Call driver.terminate_connection"
+            )
             shared_connections = self.driver.terminate_connection(volume,
                                                                   connector,
                                                                   force=force)
@@ -4989,9 +5414,16 @@ class VolumeManager(manager.CleanableManager,
             err_msg = (_('Terminate volume connection failed: %(err)s')
                        % {'err': err})
             LOG.exception(err_msg, resource=volume)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                volume, err_msg, loglevel=logging.ERROR
+            )
             raise exception.VolumeBackendAPIException(data=err_msg)
-        LOG.info("Terminate volume connection completed successfully.",
-                 resource=volume)
+
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DETACH,
+            volume, "Terminate volume connection completed successfully."
+        )
         # NOTE(jdg): Return True/False if there are other outstanding
         # attachments that share this connection.  If True should signify
         # caller to preserve the actual host connection (work should be
@@ -5011,6 +5443,10 @@ class VolumeManager(manager.CleanableManager,
         param: attachment_id: Attachment id to remove
         param: vref: Volume object associated with the attachment
         """
+        action_track.track(
+            context, action_track.ACTION_VOLUME_DETACH,
+            vref, "called"
+        )
         volume_utils.require_driver_initialized(self.driver)
         attachment = objects.VolumeAttachment.get_by_id(context, attachment_id)
 
@@ -5019,16 +5455,21 @@ class VolumeManager(manager.CleanableManager,
                                                            vref,
                                                            attachment)
         try:
-            LOG.debug('Deleting attachment %(attachment_id)s.',
-                      {'attachment_id': attachment.id},
-                      resource=vref)
+            msg = ('Deleting attachment %(attachment_id)s.' %
+                   {'attachment_id': attachment.id})
+            action_track.track(context, action_track.ACTION_VOLUME_DETACH,
+                               vref, msg)
             if has_shared_connection is not None and not has_shared_connection:
                 self.driver.remove_export(context.elevated(), vref)
-        except Exception as exc:
+        except Exception:
             # Failures on detach_volume and remove_export are not considered
             # failures in terms of detaching the volume.
-            LOG.warning('Failed to detach volume on the backend, ignoring '
-                        'failure %s', exc)
+            action_track.track(
+                context, action_track.ACTION_VOLUME_DETACH,
+                vref,
+                'Failed during driver.remove_export',
+                loglevel=logging.ERROR
+            )
 
     # Replication group API (Tiramisu)
     def enable_replication(self,

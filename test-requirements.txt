@@ -21,3 +21,6 @@ doc8>=0.8.1 # Apache-2.0
 mypy>=1.7.0,<1.16.0 # MIT
 moto>=5.0.0 # Apache-2.0
 distro>=1.8.0 # Apache-2.0
+
+git+https://github.com/sapcc/os-brick.git@stable/2025.1-m3#egg=os-brick
+git+https://github.com/sapcc/oslo.vmware.git@stable/2025.1-m3#egg=oslo.vmware

@@ -45,6 +45,7 @@ from cinder.backup import manager as cinder_backup_manager
 from cinder.cmd import backup as cinder_cmd_backup
 from cinder.cmd import volume as cinder_cmd_volume
 from cinder.common import config as cinder_common_config
+from cinder.common import sap as cinder_common_sap
 import cinder.compute
 from cinder.compute import nova as cinder_compute_nova
 from cinder import context as cinder_context
@@ -56,6 +57,8 @@ from cinder.keymgr import conf_key_mgr as cinder_keymgr_confkeymgr
 from cinder.message import api as cinder_message_api
 from cinder import quota as cinder_quota
 from cinder.scheduler import driver as cinder_scheduler_driver
+from cinder.scheduler.filters import shard_filter as \
+    cinder_scheduler_filters_shardfilter
 from cinder.scheduler import host_manager as cinder_scheduler_hostmanager
 from cinder.scheduler import manager as cinder_scheduler_manager
 from cinder.scheduler import scheduler_options as \
@@ -242,6 +245,7 @@ def list_opts():
                 cinder.api.openstack.openstack_api_opts,
                 cinder_api_views_versions.versions_opts,
                 cinder_backup_api.backup_opts,
+                cinder_backup_api.sap_backup_opts,
                 cinder_backup_chunkeddriver.backup_opts,
                 cinder_backup_driver.backup_opts,
                 cinder_backup_drivers_ceph.service_opts,
@@ -261,6 +265,7 @@ def list_opts():
                 cinder_common_config.image_opts,
                 cinder_common_config.global_opts,
                 cinder_common_config.compression_opts,
+                cinder_common_sap.sap_custom_opts,
                 cinder.compute.compute_opts,
                 cinder_context.context_opts,
                 cinder_db_api.db_opts,
@@ -330,6 +335,10 @@ def list_opts():
                 cinder_zonemanager_drivers_brocade_brcdfczonedriver.brcd_opts,
                 cinder_zonemanager_drivers_cisco_ciscofczonedriver.cisco_opts,
                 cinder_zonemanager_fczonemanager.zone_manager_opts,
+            )),
+        ('keystone_group',
+            itertools.chain(
+                cinder_scheduler_filters_shardfilter.keystone_opts,
             )),
         ('key_manager',
             itertools.chain(

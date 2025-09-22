@@ -1267,7 +1267,8 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         body = {
             'qos_policy.name': qos_policy_group_name
         }
-
+        # We need to ESCAPE special chars in the url
+        file_path = file_path.replace('.', '%2E').replace('/', '%2F')
         self.send_request(
             f'/storage/volumes/{volume["uuid"]}/files/{file_path}',
             'patch', body=body, enable_tunneling=False)
@@ -1720,6 +1721,25 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         }
         self.send_request('/storage/luns/', 'patch', query=query, body=body)
 
+    def file_exists(self, netapp_vol, file_path):
+
+        file_found = False
+        info_fields = {'type': 'file'}
+        file_elements = file_path.split('/')
+        if len(file_elements) == 1:
+            dir_path = ''
+        else:
+            dir_path = '/'.join(file_elements[:-1])
+        dir_path.replace('.', '%2E').replace('/', '%2F')
+        file_name = file_elements[-1]
+        query = f'/storage/volumes/{netapp_vol["uuid"]}/files/{dir_path}'
+        file_info = self.send_request(query, 'get', body=info_fields)
+        for file in file_info['records']:
+            if file['name'] == file_name:
+                file_found = True
+
+        return file_found
+
     def clone_file(self, flex_vol, src_path, dest_path, vserver,
                    dest_exists=False, source_snapshot=None, is_snapshot=False):
         """Clones file on vserver."""
@@ -1746,7 +1766,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         if is_snapshot and self.features.BACKUP_CLONE_PARAM:
             body['is_backup'] = True
 
-        if dest_exists:
+        if dest_exists and self.file_exists(volume, dest_path):
             body['overwrite_destination'] = True
 
         self.send_request('/storage/file/clone', 'post', body=body)
@@ -2615,7 +2635,6 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
         # Path requires "%2E" to represent "." and "%2F" to represent "/".
         orig_file_name = orig_file_name.replace('.', '%2E').replace('/', '%2F')
-        new_file_name = new_file_name.replace('.', '%2E').replace('/', '%2F')
 
         body = {'path': new_file_name}
 
@@ -2895,3 +2914,20 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         }
         self.send_request('/protocols/nvme/subsystem-maps', 'delete',
                           query=query)
+
+    def set_volume_comment(self, volume_name, comment):
+        """set comment on volume"""
+
+        volume = self._get_volume_by_args(vol_name=volume_name)
+        uuid = volume['uuid']
+        body = {'comment': comment}
+        self.send_request(f'/storage/volumes/{uuid}', 'patch', body=body)
+
+    def get_volume_comment(self, volume_name):
+        """get comment on volume"""
+
+        query = {'fields': 'name,comment'}
+        query['name'] = volume_name
+        volumes_response = self.send_request('/storage/volumes',
+                                             'get', query=query)
+        return volumes_response['records'][0]['comment']

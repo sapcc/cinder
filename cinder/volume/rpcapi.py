@@ -137,6 +137,7 @@ class VolumeAPI(rpc.RPCAPI):
         3.15 - Add revert_to_snapshot method
         3.16 - Add no_snapshots to accept_transfer method
         3.17 - Make get_backup_device a cast (async)
+        3.17 - SAP - Added recount_host_stats (async)
         3.18 - Add reimage method
         3.19 - Add extend_volume_completion method
         3.20 - Add image_snap parameter to reimage method
@@ -166,6 +167,11 @@ class VolumeAPI(rpc.RPCAPI):
             kwargs['server'] = server
 
         return super(VolumeAPI, self)._get_cctxt(version=version, **kwargs)
+
+    @rpc.assert_min_rpc_version('3.17')
+    def recount_host_stats(self, ctxt, host):
+        cctxt = self._get_cctxt(host=host)
+        cctxt.cast(ctxt, 'recount_host_stats')
 
     def create_volume(self,
                       ctxt: context.RequestContext,
@@ -286,7 +292,8 @@ class VolumeAPI(rpc.RPCAPI):
         cctxt.cast(ctxt, 'extend_volume_completion', volume=volume,
                    new_size=new_size, reservations=reservations, error=error)
 
-    def migrate_volume(self, ctxt, volume, dest_backend, force_host_copy):
+    def migrate_volume(self, ctxt, volume, dest_backend, force_host_copy,
+                       wait_for_completion=False, extend_spec=None):
         backend_p = {'host': dest_backend.host,
                      'cluster_name': dest_backend.cluster_name,
                      'capabilities': dest_backend.capabilities}
@@ -297,8 +304,10 @@ class VolumeAPI(rpc.RPCAPI):
             del backend_p['cluster_name']
 
         cctxt = self._get_cctxt(volume.service_topic_queue, version)
-        cctxt.cast(ctxt, 'migrate_volume', volume=volume, host=backend_p,
-                   force_host_copy=force_host_copy)
+        method = 'call' if wait_for_completion else 'cast'
+        getattr(cctxt, method)(ctxt, 'migrate_volume', volume=volume,
+                               host=backend_p, force_host_copy=force_host_copy,
+                               extend_spec=extend_spec)
 
     def migrate_volume_completion(self, ctxt, volume, new_volume, error):
         cctxt = self._get_cctxt(volume.service_topic_queue)
@@ -333,6 +342,14 @@ class VolumeAPI(rpc.RPCAPI):
                    volume=volume,
                    new_volume=new_volume,
                    volume_status=original_volume_status)
+
+    def update_migrated_volume_capacity(self, ctxt, volume, host,
+                                        decrement=False):
+        cctxt = self._get_cctxt(host)
+        cctxt.cast(ctxt, 'update_migrated_volume_capacity',
+                   volume=volume,
+                   host=host,
+                   decrement=decrement)
 
     def freeze_host(self, ctxt, service):
         """Set backend host to frozen."""

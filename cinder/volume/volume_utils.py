@@ -969,6 +969,8 @@ def create_encryption_key(context: context.RequestContext,
                 context,
                 algorithm=algorithm,
                 length=length)
+            sap_ensure_barbican_key_acl(context, key_manager,
+                                        encryption_key_id)
         except castellan_exception.KeyManagerError:
             # The messaging back to the client here is
             # purposefully terse, so we don't leak any sensitive
@@ -1016,6 +1018,8 @@ def clone_encryption_key(context: context.RequestContext,
         clone_key_id = key_manager.store(
             context,
             key_manager.get(context, encryption_key_id))
+        sap_ensure_barbican_key_acl(context, key_manager,
+                                    clone_key_id)
     return clone_key_id
 
 
@@ -1643,3 +1647,52 @@ def log_unsupported_driver_warning(driver):
 def is_all_zero(chunk: bytes) -> bool:
     """Return true if the chunk of bytes is all zeroes."""
     return chunk == bytes(len(chunk))
+
+
+def get_scheduler_hints_from_volume(volume):
+    filter_properties = {}
+    if "scheduler_hint_same_host" in volume.metadata:
+        LOG.debug("Found a scheduler_hint_same_host in volume %s",
+                  volume.metadata["scheduler_hint_same_host"])
+        hint = volume.metadata["scheduler_hint_same_host"]
+        filter_properties["same_host"] = hint.split(',')
+
+    if "scheduler_hint_different_host" in volume.metadata:
+        LOG.debug("Found a scheduler_hint_different_host in volume %s",
+                  volume.metadata["scheduler_hint_different_host"])
+        hint = volume.metadata["scheduler_hint_different_host"]
+        filter_properties["different_host"] = hint.split(',')
+    return filter_properties
+
+
+def set_scheduler_hints_to_volume_metadata(scheduler_hints,
+                                           metadata):
+    if scheduler_hints:
+        if 'same_host' in scheduler_hints:
+            if isinstance(scheduler_hints['same_host'], str):
+                hint = scheduler_hints['same_host']
+            else:
+                hint = ','.join(scheduler_hints["same_host"])
+            metadata["scheduler_hint_same_host"] = hint
+        if "different_host" in scheduler_hints:
+            if isinstance(scheduler_hints['different_host'], str):
+                hint = scheduler_hints["different_host"]
+            else:
+                hint = ','.join(scheduler_hints["different_host"])
+            metadata["scheduler_hint_different_host"] = hint
+    return metadata
+
+
+def sap_ensure_barbican_key_acl(context, key_manager,
+                                encryption_key_id):
+    if (CONF.sap_barbican_acl_user_id
+            and type(key_manager).__name__ == "BarbicanKeyManager"):
+        client = key_manager._get_barbican_client(context)
+        secret_ref = key_manager._create_secret_ref(encryption_key_id)
+        acl_entry = client.acls.create(
+            entity_ref=secret_ref,
+            users=[CONF.sap_barbican_acl_user_id],
+            project_access=True)
+        acl_entry.submit()
+        LOG.debug("Created ACL for Barbican key %s",
+                  secret_ref)

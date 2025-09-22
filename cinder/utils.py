@@ -808,7 +808,7 @@ def calculate_capacity_factors(total_capacity: float,
             max_over_subscription_ratio if provisioned_type == 'thin' else None
         ),
         "total_available_capacity": _limit(total_available_capacity),
-        "provisioned_capacity": provisioned_capacity,
+        "provisioned_capacity": _limit(provisioned_capacity),
         "calculated_free_capacity": _limit(calculated_free),
         "virtual_free_capacity": _limit(virtual_free),
         "free_percent": _limit(free_percent),
@@ -874,8 +874,6 @@ def calculate_max_over_subscription_ratio(
     # If thin provisioning is not supported the capacity filter will not use
     # the value we return, no matter what it is.
     if not thin_provisioning_support:
-        LOG.debug("Trying to retrieve max_over_subscription_ratio from a "
-                  "service that does not support thin provisioning")
         return 1.0
 
     # Again, if total or free capacity is infinite or unknown, the capacity

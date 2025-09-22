@@ -34,6 +34,8 @@ from oslo_utils import timeutils
 from oslo_utils import versionutils
 
 from cinder.backup import rpcapi as backup_rpcapi
+# This is needed to register the SAP config options
+from cinder.common import sap # noqa
 from cinder import context
 from cinder import db
 from cinder import exception
@@ -44,6 +46,7 @@ from cinder.message import api as mess_api
 from cinder.message import message_field
 from cinder import objects
 from cinder.objects import fields
+from cinder.objects import snapshot as snapshot_obj
 from cinder import quota
 from cinder import rpc
 from cinder.scheduler.flows import create_volume
@@ -239,19 +242,44 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         """
         self._wait_for_scheduler()
 
+        do_independent_snapshots = False
+
+        if CONF.sap_allow_independent_snapshots:
+            # We allow snapshots to be created on a pool
+            # separate from the volume's pool.
+            # This is only available for volume types that
+            # have the extra spec 'independent_snapshots' set to True.
+            volume_type = volume.get('volume_type')
+            if volume_type:
+                extra_specs = volume_type.get('extra_specs')
+                if (extra_specs and
+                        extra_specs.get('independent_snapshots', False)):
+                    LOG.info("Allowing a snapshot to be created on any pool.")
+                    backend = vol_utils.extract_host(volume['host'])
+                    do_independent_snapshots = True
+
         try:
             tgt_backend = self.driver.backend_passes_filters(
                 ctxt, backend, request_spec, filter_properties)
             tgt_backend.consume_from_volume(
                 {'size': request_spec['volume_properties']['size']})
+            LOG.info("Snapshot picked backend_id is '%s'",
+                     tgt_backend.backend_id)
         except exception.NoValidBackend as ex:
             self._set_snapshot_state_and_notify('create_snapshot',
                                                 snapshot,
                                                 fields.SnapshotStatus.ERROR,
                                                 ctxt, ex, request_spec)
         else:
-            volume_rpcapi.VolumeAPI().create_snapshot(ctxt, volume,
-                                                      snapshot)
+            if do_independent_snapshots:
+                # Set this in the metadata of the snap
+                key = snapshot_obj.SAP_HIDDEN_BACKEND_KEY
+                if snapshot.metadata:
+                    snapshot.metadata[key] = tgt_backend.backend_id
+                else:
+                    snapshot.metadata = {key: tgt_backend.backend_id}
+                snapshot.save()
+            volume_rpcapi.VolumeAPI().create_snapshot(ctxt, volume, snapshot)
 
     def _do_cleanup(self,
                     ctxt: context.RequestContext,
@@ -285,6 +313,9 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                        request_spec, filter_properties) -> None:
         """Ensure that the backend exists and can accept the volume."""
         self._wait_for_scheduler()
+
+        # [SAP] So the filter has the destination host
+        request_spec['destination_host'] = backend
 
         def _migrate_volume_set_error(self, context, ex, request_spec):
             if volume.status == 'maintenance':
@@ -372,6 +403,19 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                                              migration_policy,
                                              reservations,
                                              old_reservations)
+
+    @append_operation_type()
+    def find_backend_for_connector(self, context, connector, request_spec,
+                                   volume_size, filter_properties=None):
+        self._wait_for_scheduler()
+        backend = self.driver.find_backend_for_connector(context,
+                                                         connector,
+                                                         request_spec,
+                                                         filter_properties)
+        backend.consume_from_volume({'size': volume_size})
+        return {'host': backend.host,
+                'cluster_name': backend.cluster_name,
+                'capabilities': backend.capabilities}
 
     @append_operation_type()
     def manage_existing(self, context, volume, request_spec,
@@ -476,15 +520,56 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                 {'size': new_size - volume.size})
             volume_rpcapi.VolumeAPI().extend_volume(context, volume, new_size,
                                                     reservations)
-        except exception.NoValidBackend as ex:
-            QUOTAS.rollback(context, reservations,
-                            project_id=volume.project_id)
-            _extend_volume_set_error(self, context, ex, request_spec)
-            self.message_api.create(
-                context,
-                message_field.Action.EXTEND_VOLUME,
-                resource_uuid=volume.id,
-                exception=ex)
+        except exception.NoValidBackend:
+            try:
+                self._extend_migrate(context, volume, new_size, request_spec,
+                                     filter_properties, reservations)
+            except exception.NoValidBackend as ex:
+                QUOTAS.rollback(context, reservations,
+                                project_id=volume.project_id)
+                _extend_volume_set_error(self, context, ex, request_spec)
+                self.message_api.create(
+                    context,
+                    message_field.Action.EXTEND_VOLUME,
+                    resource_uuid=volume.id,
+                    exception=ex)
+
+    def _extend_migrate(self, context, volume, new_size, request_spec,
+                        filter_properties, reservations):
+
+        if volume.consistencygroup_id or volume.group_id:
+            raise exception.NoValidBackend(
+                reason='The volume is in a group and cannot be migrated.')
+
+        scheduler_hints = \
+            vol_utils.get_scheduler_hints_from_volume(volume)
+        filter_properties.update(scheduler_hints)
+        filter_properties.pop('new_size')
+
+        if not request_spec:
+            request_spec = {'volume_properties': {'size': new_size}}
+        else:
+            request_spec['volume_properties']['size'] = new_size
+
+        if volume['availability_zone']:
+            request_spec['resource_properties'] = {
+                'availability_zone': volume['availability_zone']}
+
+        # SAP
+        # We have to force the destination host to be on
+        # the same backend, or it might get migrated
+        # to another vcenter.
+        backend = vol_utils.extract_host(volume['host'])
+
+        backend_state = self.driver.backend_passes_filters(
+            context, backend, request_spec, filter_properties)
+
+        backend_state.consume_from_volume(volume)
+
+        volume_rpcapi.VolumeAPI().migrate_volume(
+            context, volume, backend_state,
+            force_host_copy=False, wait_for_completion=False,
+            extend_spec={'new_size': new_size, 'reservations': reservations})
 
     def _set_volume_state_and_notify(self, method, updates, context, ex,
                                      request_spec, msg=None):

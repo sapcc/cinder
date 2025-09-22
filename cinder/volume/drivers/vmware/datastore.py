@@ -17,6 +17,7 @@
 Classes and utility methods for datastore selection.
 """
 
+from collections.abc import Iterable
 import random
 
 from oslo_log import log as logging
@@ -24,6 +25,7 @@ from oslo_vmware import pbm
 from oslo_vmware import vim_util
 
 from cinder import coordination
+from cinder import exception
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 
 
@@ -55,12 +57,15 @@ class DatastoreSelector(object):
     PROFILE_NAME = "storageProfileName"
 
     # TODO(vbala) Remove dependency on volumeops.
-    def __init__(self, vops, session, max_objects, ds_regex=None):
+    def __init__(self, vops, session, max_objects, ds_regex=None,
+                 random_ds=False, random_ds_range=None):
         self._vops = vops
         self._session = session
         self._max_objects = max_objects
         self._ds_regex = ds_regex
         self._profile_id_cache = {}
+        self._random_ds = random_ds
+        self._random_ds_range = random_ds_range
 
     @coordination.synchronized('vmware-datastore-profile-{profile_name}')
     def get_profile_id(self, profile_name):
@@ -97,6 +102,175 @@ class DatastoreSelector(object):
         return {k: v for k, v in datastores.items()
                 if vim_util.get_moref_value(k) in hub_ids}
 
+    def is_host_in_buildup_cluster(self, host_ref, host_cluster_ref=None,
+                                   cluster_cache=None):
+        """Check if a host is in a cluster marked as in buildup
+
+        :param host_ref: a ManagedObjectReference to HostSystem
+        :param host_cluster_ref: (optional) ManagedObjectReference to
+                             ClusterComputeResource pointing to the cluster of
+                             the given host. Will be fetched if not given.
+        :param cluster_cache: (optional) dict from ManagedObjectReference value
+                              to dict (property name, property value) for
+                              ClusterComputeResource objects. Can be set if the
+                              required properties for
+                              get_cluster_custom_attributes() were prefetched
+                              for multiple clusters.
+        """
+        if cluster_cache is None:
+            cluster_cache = {}
+
+        if host_cluster_ref is None:
+            host_cluster_ref = self._vops._get_parent(host_ref,
+                                                      "ClusterComputeResource")
+
+        host_cluster_value = vim_util.get_moref_value(host_cluster_ref)
+
+        attrs = self._vops.get_cluster_custom_attributes(
+            host_cluster_ref, props=cluster_cache.get(host_cluster_value))
+
+        if not attrs or 'buildup' not in attrs:
+            return False
+
+        def bool_from_str(bool_str):
+            return bool_str.lower() == "true"
+
+        return bool_from_str(attrs['buildup']['value'])
+
+    def is_failover_host(self, host_ref, host_cluster_ref=None,
+                         cluster_cache=None):
+        """Check if a host is (one of the) failover hosts of the cluster
+
+        :param host_ref: a ManagedObjectReference to HostSystem
+        :param host_cluster_ref: (optional) ManagedObjectReference to
+                             ClusterComputeResource pointing to the cluster of
+                             the given host. Will be fetched if not given.
+        :param cluster_cache: (optional) dict from ManagedObjectReference value
+                              to dict (property name, property value) for
+                              ClusterComputeResource objects. Can be set if the
+                              `configuration.dasConfig.admissionControlPolicy`
+                              and
+                              `configuration.dasConfig.admissionControlEnabled`
+                              properties were prefetched for multiple clusters.
+        """
+        if cluster_cache is None:
+            cluster_cache = {}
+
+        if host_cluster_ref is None:
+            host_cluster_ref = self._vops._get_parent(host_ref,
+                                                      "ClusterComputeResource")
+
+        host_cluster_value = vim_util.get_moref_value(host_cluster_ref)
+        # set default in cache so we update it when we fetch values
+        cluster_props = cluster_cache.setdefault(host_cluster_value, {})
+
+        props = ['configuration.dasConfig.admissionControlPolicy',
+                 'configuration.dasConfig.admissionControlEnabled']
+        prop_policy, prop_enabled = props
+        if not any(prop in cluster_props for prop in props):
+            retrieve_result = self._session.invoke_api(vim_util,
+                                                       'get_object_properties',
+                                                       self._session.vim,
+                                                       host_cluster_ref,
+                                                       props)
+
+            if not retrieve_result:
+                return False
+
+            obj_props = self._get_object_properties(retrieve_result[0])
+            for prop in props:
+                cluster_props[prop] = obj_props.get(prop)
+
+        enabled = cluster_props.get(prop_enabled, True)
+        if not enabled:
+            return False
+
+        policy = cluster_props.get(prop_policy)
+        # if the policy isn't set to use failover hosts, the host can't be one
+        if not policy or not hasattr(policy, 'failoverHosts'):
+            return False
+
+        host_ref_value = vim_util.get_moref_value(host_ref)
+        for failover_host_ref in policy.failoverHosts:
+            if vim_util.get_moref_value(failover_host_ref) == host_ref_value:
+                return True
+
+        return False
+
+    def _is_host_usable(self, host_ref, host_prop_map=None):
+        """Check a host's connectionState and inMaintenanceMode properties
+
+        :param host_ref: a ManagedObjectReference to HostSystem
+        :param host_prop_map: (optional) a dict from ManagedObjectReference
+                              value to a dict (property name, property value).
+                              Can be set if the required properties were
+                              prefetched for multiple hosts.
+        :return: boolean if the host is usable
+        """
+        if host_prop_map is None:
+            host_prop_map = {}
+
+        props = host_prop_map.get(host_ref.value)
+        if props is None:
+            props = self._get_host_properties(host_ref)
+            host_prop_map[host_ref.value] = props
+
+        connection_state = props.get('runtime.connectionState')
+        in_maintenance = props.get('runtime.inMaintenanceMode')
+        if None in (connection_state, in_maintenance):
+            return False
+
+        return (connection_state == 'connected' and
+                not in_maintenance)
+
+    def _filter_hosts(self, hosts):
+        """Filter out hosts in buildup cluster or otherwise unusable"""
+        if not hosts:
+            return []
+
+        if isinstance(hosts, Iterable):
+            # prefetch host properties
+            host_properties = ['runtime.connectionState',
+                               'runtime.inMaintenanceMode', 'parent']
+            host_prop_map = self._get_properties_for_morefs(
+                'HostSystem', hosts, host_properties)
+
+            # prefetch cluster properties
+            host_cluster_refs = set(
+                h_props['parent'] for h_props in host_prop_map.values()
+                if h_props.get('parent'))
+            cluster_prop_map = self._get_properties_for_morefs(
+                'ClusterComputeResource', list(host_cluster_refs),
+                ['availableField', 'customValue'])
+        else:
+            host_prop_map = cluster_prop_map = None
+            hosts = [hosts]
+
+        valid_hosts = []
+        for host in hosts:
+            host_ref_value = vim_util.get_moref_value(host)
+            host_props = host_prop_map.get(host_ref_value, {})
+            host_cluster_ref = host_props.get('parent')
+            if self.is_host_in_buildup_cluster(
+                    host, host_cluster_ref=host_cluster_ref,
+                    cluster_cache=cluster_prop_map):
+                continue
+
+            if self.is_failover_host(host, host_cluster_ref=host_cluster_ref,
+                                     cluster_cache=cluster_prop_map):
+                continue
+
+            if not self._is_host_usable(host, host_prop_map=host_prop_map):
+                continue
+
+            valid_hosts.append(host)
+
+        return valid_hosts
+
+    def is_datastore_usable(self, summary):
+        return summary.accessible and not self._vops._in_maintenance(
+            summary)
+
     def _filter_datastores(self,
                            datastores,
                            size_bytes,
@@ -113,10 +287,6 @@ class DatastoreSelector(object):
             return (ds_type in DatastoreType.get_all_types() and
                     (hard_affinity_ds_types is None or
                      ds_type in hard_affinity_ds_types))
-
-        def _is_ds_usable(summary):
-            return summary.accessible and not self._vops._in_maintenance(
-                summary)
 
         valid_host_refs = valid_host_refs or []
         valid_hosts = [vim_util.get_moref_value(host_ref)
@@ -147,7 +317,8 @@ class DatastoreSelector(object):
                     not _is_ds_accessible_to_valid_host(host_mounts)):
                 return False
 
-            return _is_valid_ds_type(summary) and _is_ds_usable(summary)
+            return (_is_valid_ds_type(summary) and
+                    self.is_datastore_usable(summary))
 
         datastores = {k: v for k, v in datastores.items()
                       if _is_ds_valid(k, v)}
@@ -166,39 +337,117 @@ class DatastoreSelector(object):
         return props
 
     def _get_datastores(self):
+        vim = self._session.vim
         datastores = {}
         retrieve_result = self._session.invoke_api(
             vim_util,
             'get_objects',
-            self._session.vim,
+            vim,
             'Datastore',
             self._max_objects,
             properties_to_collect=['host', 'summary'])
 
-        while retrieve_result:
-            if retrieve_result.objects:
-                for obj_content in retrieve_result.objects:
-                    props = self._get_object_properties(obj_content)
-                    if ('host' in props and
-                            hasattr(props['host'], 'DatastoreHostMount')):
-                        props['host'] = props['host'].DatastoreHostMount
-                    datastores[obj_content.obj] = props
-            retrieve_result = self._session.invoke_api(vim_util,
-                                                       'continue_retrieval',
-                                                       self._session.vim,
-                                                       retrieve_result)
+        with vim_util.WithRetrieval(vim, retrieve_result) as objects:
+            for obj_content in objects:
+                props = self._get_object_properties(obj_content)
+                if ('host' in props and
+                        hasattr(props['host'], 'DatastoreHostMount')):
+                    props['host'] = props['host'].DatastoreHostMount
+                datastores[obj_content.obj] = props
 
         return datastores
 
+    def get_ds_ref_by_name(self, name):
+        vim = self._session.vim
+
+        retrieve_result = self._session.invoke_api(
+            vim_util,
+            'get_objects',
+            vim,
+            'Datastore',
+            self._max_objects,
+            properties_to_collect=['name'])
+
+        with vim_util.WithRetrieval(vim, retrieve_result) as objects:
+            for obj_content in objects:
+                props = self._get_object_properties(obj_content)
+                if props['name'] == name:
+                    return obj_content.obj
+        return None
+
+    def select_datastore_by_name(self, name):
+        """Find a datastore by it's name.
+
+            Returns a host_ref and datastore summary.
+        """
+
+        resource_pool = None
+        datastore = None
+        datastores = self._get_datastores()
+        for k, v in datastores.items():
+            if v['summary'].name == name:
+                datastore = v
+
+        if not datastore:
+            # this shouldn't ever happen as the scheduler told us
+            # to use this named datastore
+            return (None, None, None)
+
+        summary = datastore['summary']
+        # pick a host that's available
+        hosts = [host['key'] for host in datastore['host']]
+        hosts = self._filter_hosts(hosts)
+        if not hosts:
+            raise exception.InvalidInput(
+                "No hosts available for datastore '%s'" % name)
+
+        host = random.choice(hosts)
+
+        # host_ref = datastore['host'][0]['key']
+        host_props = self._get_host_properties(host)
+        parent = host_props.get('parent')
+
+        resource_pool = self._get_resource_pool(parent)
+        return (host, resource_pool, summary)
+
     def _get_host_properties(self, host_ref):
+        properties = ['runtime.connectionState', 'runtime.inMaintenanceMode',
+                      'parent']
         retrieve_result = self._session.invoke_api(vim_util,
                                                    'get_object_properties',
                                                    self._session.vim,
                                                    host_ref,
-                                                   ['runtime', 'parent'])
+                                                   properties)
 
         if retrieve_result:
             return self._get_object_properties(retrieve_result[0])
+
+    def _get_properties_for_morefs(self, type_, morefs, properties):
+        """Fetch properties for the given morefs of type type_
+
+        :param type_: a ManagedObject type
+        :param morefs: a list of ManagedObjectReference for the given type_
+        :param properties: a list of strings defining the properties to fetch
+        :returns: a dict of ManagedObjectReference values mapped to a dict of
+                  (property name, property value)
+        """
+        obj_prop_map = {}
+
+        result = \
+            self._session.invoke_api(
+                vim_util,
+                "get_properties_for_a_collection_of_objects",
+                self._session.vim,
+                type_, morefs,
+                properties)
+        with vim_util.WithRetrieval(self._session.vim, result) as objects:
+            for obj in objects:
+                props = self._get_object_properties(obj)
+
+                obj_prop_map[vim_util.get_moref_value(obj.obj)] = {
+                    prop: props.get(prop) for prop in properties}
+
+        return obj_prop_map
 
     def _get_resource_pool(self, cluster_ref):
         return self._session.invoke_api(vim_util,
@@ -221,37 +470,31 @@ class DatastoreSelector(object):
 
         host_prop_map = {}
 
-        def _is_host_usable(host_ref):
-            props = host_prop_map.get(vim_util.get_moref_value(host_ref))
-            if props is None:
-                props = self._get_host_properties(host_ref)
-                host_prop_map[vim_util.get_moref_value(host_ref)] = props
-
-            runtime = props.get('runtime')
-            parent = props.get('parent')
-            if runtime and parent:
-                return (runtime.connectionState == 'connected' and
-                        not runtime.inMaintenanceMode)
-            else:
-                return False
-
         valid_host_refs = valid_host_refs or []
         valid_hosts = [vim_util.get_moref_value(host_ref)
                        for host_ref in valid_host_refs]
 
-        def _select_host(host_mounts):
+        def _select_host(host_mounts, host_prop_map):
             random.shuffle(host_mounts)
             for host_mount in host_mounts:
                 host_mount_key_value = vim_util.get_moref_value(host_mount.key)
                 if valid_hosts and host_mount_key_value not in valid_hosts:
                     continue
                 if (self._vops._is_usable(host_mount.mountInfo) and
-                        _is_host_usable(host_mount.key)):
+                        self._is_host_usable(host_mount.key,
+                                             host_prop_map=host_prop_map)):
                     return host_mount.key
 
         sorted_ds_props = sorted(datastores.values(), key=_sort_key)
+        if self._random_ds:
+            LOG.debug('Shuffling best datastore selection.')
+            if self._random_ds_range:
+                sorted_ds_props = sorted_ds_props[:self._random_ds_range]
+            random.shuffle(sorted_ds_props)
+
         for ds_props in sorted_ds_props:
-            host_ref = _select_host(ds_props['host'])
+            host_ref = _select_host(
+                ds_props['host'], host_prop_map=host_prop_map)
             if host_ref:
                 host_ref_value = vim_util.get_moref_value(host_ref)
                 rp = self._get_resource_pool(
@@ -285,13 +528,18 @@ class DatastoreSelector(object):
             profile_id = self.get_profile_id(profile_name)
 
         datastores = self._get_datastores()
+        # We don't want to use hosts in buildup
+        LOG.debug("FILTER hosts start %s", hosts)
+        valid_hosts = self._filter_hosts(hosts)
+        LOG.debug("FILTERED hosts valid %s", valid_hosts)
         datastores = self._filter_datastores(datastores,
                                              size_bytes,
                                              profile_id,
                                              hard_anti_affinity_datastores,
                                              hard_affinity_ds_types,
-                                             valid_host_refs=hosts)
-        res = self._select_best_datastore(datastores, valid_host_refs=hosts)
+                                             valid_host_refs=valid_hosts)
+        res = self._select_best_datastore(datastores,
+                                          valid_host_refs=valid_hosts)
         LOG.debug("Selected (host, resourcepool, datastore): %s", res)
         return res
 
