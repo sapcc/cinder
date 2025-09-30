@@ -603,6 +603,9 @@ class FilterScheduler(driver.Scheduler):
                     else volume_utils.extract_host(backend.obj.backend_id)
                 )
                 if backend_id != resource_backend:
+                    LOG.warning("Backend '%s' removed because it doesn't "
+                                "match the resource_backend '%s'.",
+                                backend_id, resource_backend)
                     weighed_backends.remove(backend)
         if not weighed_backends:
             assert filter_properties is not None
