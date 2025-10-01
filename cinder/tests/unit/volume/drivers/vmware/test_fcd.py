@@ -75,6 +75,9 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self._config.vmware_snapshot_format = "COW"
         self._driver = fcd.VMwareVStorageObjectDriver(
             configuration=self._config)
+        scheduler_rpcapi = mock.MagicMock()
+        scheduler_rpcapi.get_pools.return_value = []
+        self._driver._scheduler_rpcapi = scheduler_rpcapi
         self._driver._vc_version = self.VC_VERSION
         self._driver._storage_policy_enabled = True
         self._context = context.get_admin_context()
