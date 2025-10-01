@@ -141,6 +141,7 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         self.mock_object(self.driver, '_get_pool_stats', return_value={})
         expected_stats = {
             'driver_version': self.driver.VERSION,
+            'netapp_server_hostname': '127.0.0.1',
             'pools': {},
             'sparse_copy_volume': True,
             'replication_enabled': False,
@@ -263,6 +264,7 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             'netapp_dedup': 'true',
             'netapp_aggregate': 'aggr1',
             'netapp_raid_type': 'raid_dp',
+            'netapp_server_hostname': '127.0.0.1',
             'netapp_disk_type': 'SSD',
             'consistencygroup_support': True,
             'consistent_group_snapshot_enabled': True,
@@ -2375,7 +2377,7 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         new_file = 'new-%s' % fake.SNAPSHOT['name']
         new_file_path = '/vol/%s/%s' % (fake.FLEXVOL, new_file)
         original_file_path = '/vol/%s/%s' % (fake.FLEXVOL, fake.VOLUME_NAME)
-        tmp_file_path = '/vol/%s/tmp-%s' % (fake.FLEXVOL, fake.VOLUME_NAME)
+        tmp_file_path = '/vol/%s/%s_tmp' % (fake.FLEXVOL, fake.VOLUME_NAME)
 
         mock_rename_file = self.mock_object(
             self.driver.zapi_client, 'rename_file')
@@ -2397,7 +2399,7 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         new_file = 'new-%s' % fake.SNAPSHOT['name']
         new_file_path = '/vol/%s/%s' % (fake.FLEXVOL, new_file)
         original_file_path = '/vol/%s/%s' % (fake.FLEXVOL, fake.VOLUME_NAME)
-        tmp_file_path = '/vol/%s/tmp-%s' % (fake.FLEXVOL, fake.VOLUME_NAME)
+        tmp_file_path = '/vol/%s/%s_tmp' % (fake.FLEXVOL, fake.VOLUME_NAME)
         side_effect = None
 
         def _skip_side_effect():
