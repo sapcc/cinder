@@ -759,8 +759,11 @@ class RestClient(object):
     def get_file_sizes_by_dir(self, dir_path):
         """Gets the list of files and their sizes from a given directory."""
 
-        # 'dir_path' will always be a FlexVol name
-        volume = self._get_volume_by_args(vol_name=dir_path)
+        vol_name = dir_path.split('/')[0]
+        volume = self._get_volume_by_args(vol_name=vol_name)
+        dir_rel_to_vol = '/'.join(dir_path.split('/')[1:])
+        # Path requires "%2E" to represent "." and "%2F" to represent "/".
+        dir_rel_to_vol = dir_rel_to_vol.replace('.', '%2E').replace('/', '%2F')
 
         query = {
             'type': 'file',
@@ -770,7 +773,7 @@ class RestClient(object):
         vol_uuid = volume['uuid']
         try:
             response = self.send_request(
-                f'/storage/volumes/{vol_uuid}/files',
+                f'/storage/volumes/{vol_uuid}/files/{dir_rel_to_vol}',
                 'get', query=query)
         except netapp_api.NaApiError as e:
             if e.code == netapp_api.REST_NO_SUCH_FILE:
