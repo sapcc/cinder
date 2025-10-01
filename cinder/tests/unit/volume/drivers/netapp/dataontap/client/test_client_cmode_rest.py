@@ -913,7 +913,7 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.assertEqual(expected_result, files)
         self.assertEqual(2, len(files))
         self.client.send_request.assert_called_once_with(
-            f'/storage/volumes/{volume["uuid"]}/files',
+            f'/storage/volumes/{volume["uuid"]}/files/',
             'get', query=query)
 
     def test_get_file_sizes_by_dir_no_records(self):
@@ -937,7 +937,7 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.assertEqual([], files)
         self.assertEqual(0, len(files))
         self.client.send_request.assert_called_once_with(
-            f'/storage/volumes/{volume["uuid"]}/files',
+            f'/storage/volumes/{volume["uuid"]}/files/',
             'get', query=query)
 
     def test_get_file_sizes_by_dir_exception(self):

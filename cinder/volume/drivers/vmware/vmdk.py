@@ -50,8 +50,10 @@ from cinder.image import image_utils
 from cinder import interface
 from cinder.keymgr import kmip
 from cinder.objects import snapshot as snapshot_obj
+from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder.volume import configuration
 from cinder.volume import driver
+from cinder.volume.drivers.netapp import remote as netapp_remote_api
 from cinder.volume.drivers.vmware import datastore as hub
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 from cinder.volume.drivers.vmware import remote as remote_api
@@ -405,9 +407,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             remote_api.VmdkDriverRemoteService(self)
         ])
         self._remote_api = remote_api.VmdkDriverRemoteApi()
+        self._remote_netapp_api = netapp_remote_api.SAPNetappDriverRemoteApi()
+        self._scheduler_rpcapi = scheduler_rpcapi.SchedulerAPI()
         self._storage_profiles = []
         self._volume_type_by_backend = None
         self._sap_netapp_credentials = {}
+        self._all_pools_cache = {}
 
         if self.configuration.sap_netapp_credentials:
             # This is an artifact of the way the config parser works.
@@ -482,6 +487,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     def _update_volume_stats(self):
         if self.configuration.safe_get('vmware_enable_volume_stats'):
             self._stats = self._get_volume_stats()
+            self._get_all_pools(refresh=True)
         else:
             self._stats = self._get_fake_stats()
 
@@ -672,6 +678,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         aggregate_id = \
                             custom_attributes['cinder_aggregate_id']
 
+                if summary.type == "NFS41":
+                    mount_path = self.volumeops._get_mount_path(
+                        summary.datastore)
+                else:
+                    mount_path = ""
                 pool = {'pool_name': summary.name,
                         'total_capacity_gb': round(
                             summary.capacity / units.Gi),
@@ -693,6 +704,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         'pool_down_reason': pool_down_reason,
                         'custom_attributes': custom_attributes,
                         'independent_snapshots': independent_snapshot,
+                        'mount_path': mount_path,
                         }
                 if aggregate_id:
                     pool['aggregate_id'] = aggregate_id
@@ -2611,6 +2623,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if self.configuration.vmware_storage_profile:
             self._get_storage_profiles()
 
+        # Initialize the pools cache
+        self._get_all_pools(refresh=True)
+
         LOG.info("Successfully setup driver: %(driver)s for server: "
                  "%(ip)s.", {'driver': self.__class__.__name__,
                              'ip': self.configuration.vmware_host_ip})
@@ -3471,3 +3486,21 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 vmdk_path, dc_ref
             )
         return (True, None)
+
+    def _get_all_pools(self, refresh=False):
+        if not self._all_pools_cache or refresh:
+            self._all_pools_cache = self._scheduler_rpcapi.get_pools(
+                context.get_admin_context())
+        return self._all_pools_cache
+
+    def get_netapp_cinder_host(self, netapp_fqdn):
+        # Example netapp host cinder-volume-netapp-b-0@stnpca2_st051_nfs
+        # Example vmware host cinder-volume-vmware-vc-b-0@vmware_fcd
+        pools = [pool for pool in self._get_all_pools()
+                 if pool['capabilities'].get('netapp_server_hostname')
+                 == netapp_fqdn]
+
+        if not pools:
+            return None
+
+        return volume_utils.extract_host(pools[0]['name'], 'backend')

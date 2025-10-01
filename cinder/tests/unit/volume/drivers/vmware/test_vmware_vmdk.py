@@ -128,6 +128,9 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
 
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
                                                additional_endpoints=[])
+        scheduler_rpcapi = mock.MagicMock()
+        scheduler_rpcapi.get_pools.return_value = []
+        self._driver._scheduler_rpcapi = scheduler_rpcapi
 
         self._context = context.get_admin_context()
         self.updated_at = timeutils.utcnow()
@@ -230,6 +233,9 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
         self._driver = vmdk.VMwareVcVmdkDriver(configuration=self._config,
                                                additional_endpoints=[])
         self._driver._ds_sel = mock.MagicMock()
+        scheduler_rpcapi = mock.MagicMock()
+        scheduler_rpcapi.get_pools.return_value = []
+        self._driver._scheduler_rpcapi = scheduler_rpcapi
 
         retr_result_mock = mock.Mock(spec=['objects'])
         retr_result_mock.objects = []

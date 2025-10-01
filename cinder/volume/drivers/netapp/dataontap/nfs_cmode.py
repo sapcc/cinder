@@ -43,6 +43,7 @@ from cinder.volume.drivers.netapp.dataontap.utils import data_motion
 from cinder.volume.drivers.netapp.dataontap.utils import loopingcalls
 from cinder.volume.drivers.netapp.dataontap.utils import utils as dot_utils
 from cinder.volume.drivers.netapp import options as na_opts
+from cinder.volume.drivers.netapp import remote as remote_api
 from cinder.volume.drivers.netapp import utils as na_utils
 from cinder.volume import volume_utils
 
@@ -90,6 +91,9 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
         self.replication_enabled = (
             True if self.get_replication_backend_names(
                 self.configuration) else False)
+        self.additional_endpoints.extend([
+            remote_api.SAPNetappDriverRemoteService(self)
+        ])
 
     def do_setup(self, context):
         """Do the customized set up on client for cluster mode."""
@@ -275,7 +279,7 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
 
         new_file_path = prefix_path_on_backend + new_file
         original_file_path = prefix_path_on_backend + original_file
-        tmp_file_path = prefix_path_on_backend + 'tmp-%s' % original_file
+        tmp_file_path = prefix_path_on_backend + original_file + '_tmp'
 
         try:
             self.zapi_client.rename_file(original_file_path, tmp_file_path)
@@ -336,6 +340,8 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
         data['vendor_name'] = 'NetApp'
         data['driver_version'] = self.VERSION
         data['storage_protocol'] = constants.NFS_VARIANT
+        netapp_server_fqdn = self.configuration.netapp_server_hostname
+        data['netapp_server_hostname'] = netapp_server_fqdn
         data['pools'] = self._get_pool_stats(
             filter_function=self.get_filter_function(),
             goodness_function=self.get_goodness_function())
@@ -441,6 +447,8 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
             pool['utilization'] = na_utils.round_down(utilization)
             pool['filter_function'] = filter_function
             pool['goodness_function'] = goodness_function
+            netapp_server_fqdn = self.configuration.netapp_server_hostname
+            pool['netapp_server_hostname'] = netapp_server_fqdn
 
             # Add replication capabilities/stats
             pool.update(
