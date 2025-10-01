@@ -250,6 +250,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         provider_location = self._provider_location_to_ds_name_location(
             fcd_loc.provider_location()
         )
+
         return {'provider_location': provider_location}
 
     @volume_utils.trace
@@ -897,6 +898,25 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     def _migrate_unattached(self, context, dest_host, volume, fcd_loc,
                             cross_vc=False):
 
+        @volume_utils.trace
+        def _qtree_ds(remote_ds_info, local_ds_info):
+            # Check if the source and destination DS are hosted in the same vol
+            # mount_path explaned: <ip>:/<vol_name>/<qtree>
+            # lpath 192.168.8.1:/nfs_stnpca2_st1_ds1/nfs_stnpca2_st1_ds1_vc_b_2
+            # mpath 192.168.8.1:/nfs_stnpca2_st1_ds1/nfs_stnpca2_st1_ds1_vc_b_0
+            if local_ds_info.type != "NFS41":
+                return False
+            try:
+                mpath = remote_ds_info['mount_path'].split(':')[1]
+                lpath = self.volumeops._get_mount_path(
+                    local_ds_info.datastore)
+                lpath = lpath.split(':')[1]
+                if len(lpath.split('/')) == 3 and len(mpath.split('/')) == 3:
+                    if mpath.split('/')[1] == lpath.split('/')[1]:
+                        return True
+            except Exception:
+                return False
+
         ds_info = self._remote_api.select_ds_for_volume(context,
                                                         cinder_host=dest_host,
                                                         volume=volume)
@@ -904,6 +924,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             service_locator = self._remote_api.get_service_locator_info(
                 context,
                 dest_host)
+
         else:
             service_locator = None
 
@@ -913,8 +934,32 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         new_profile_id = ds_info.get('profile_id')
 
         if ds_info['datastore_url'] != src_ds_info['url']:
-            self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                        service_locator, new_profile_id)
+            if cross_vc and _qtree_ds(ds_info, src_ds_info):
+                disk_type = self._get_disk_type(volume)
+                key_id = self._register_kmip_key_id(volume)
+                prov_loc, new_disk_path = self._remote_api.create_fcd(
+                    context, dest_host, volume.id, volume.name,
+                    volume.size * units.Ki, ds_ref.value, disk_type,
+                    profile_id=new_profile_id, key_id=key_id)
+                tgt_ds_mpath = ds_info['mount_path'].split(':')[1]
+                netapp_api = self._remote_netapp_api
+                netapp_fqdn = self.volumeops.get_netapp_for_ds(
+                    fcd_loc.ds_ref())
+                netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+                self.volumeops.migrate_unattached_qtree(fcd_loc,
+                                                        tgt_ds_mpath,
+                                                        new_disk_path,
+                                                        netapp_api,
+                                                        netapp_host,
+                                                        context)
+                # delete the source fcd after migration complete
+                self.volumeops.delete_fcd(fcd_loc)
+                volume.update({'provider_location': prov_loc})
+                volume.save()
+                return (True, None)
+            else:
+                self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
+                                            service_locator, new_profile_id)
 
         # if we are migrating to a different DS on the same host
         # there is no reason to call the remote_api to get the
