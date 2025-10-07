@@ -1303,6 +1303,7 @@ class NetAppCmodeNfsDriver(
     # We override this so we can add the version to the connection info
     # For the volume checker.
     def initialize_connection(self, volume, connector):
-        conn_info = super().initialize_connection(volume, connector)
+        conn_info = super(nfs_base.NetAppNfsDriver,
+                          self).initialize_connection(volume, connector)
         conn_info['data']['version'] = self.ATTACHMENT_VERSION
         return conn_info
