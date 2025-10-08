@@ -1176,7 +1176,7 @@ class SapCommands:
         if len(ids) == 0:
             print("No glance metadata found that is linked to deleted volumes")
         else:
-            print(f"found {len(ids) }glance metadata of volumes that are"
+            print(f"found {len(ids)} glance metadata of volumes that are"
                   f"already deleted: {(', ').join(str(x) for x in ids)}")
         return ids
 
