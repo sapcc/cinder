@@ -35,6 +35,7 @@ from cinder.policies import messages
 from cinder.policies import qos_specs
 from cinder.policies import quota_class
 from cinder.policies import quotas
+from cinder.policies import sap
 from cinder.policies import scheduler_stats
 from cinder.policies import services
 from cinder.policies import snapshot_actions
@@ -85,4 +86,5 @@ def list_rules():
         type_extra_specs.list_rules(),
         volumes.list_rules(),
         default_types.list_rules(),
+        sap.list_rules(),
     )
