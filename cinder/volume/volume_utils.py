@@ -18,6 +18,7 @@ import abc
 import ast
 import functools
 import inspect
+import ipaddress
 import json
 import logging as py_logging
 import math
@@ -1313,10 +1314,15 @@ def resolve_hostname(hostname: str) -> str:
     :param hostname:  Host name to resolve.
     :returns:         IP Address for Host name.
     """
-    ip = socket.getaddrinfo(hostname, None)[0][4][0]
-    LOG.debug('Asked to resolve hostname %(host)s and got IP %(ip)s.',
-              {'host': hostname, 'ip': ip})
-    return str(ip)
+    try:
+        ip = ipaddress.ip_address(hostname)
+        LOG.debug('Asked to resolve already ip format: %s', ip)
+        return hostname
+    except ValueError:
+        ip = socket.getaddrinfo(hostname, None)[0][4][0]
+        LOG.debug('Asked to resolve hostname %(host)s and got IP %(ip)s.',
+                  {'host': hostname, 'ip': ip})
+    return ip
 
 
 def update_backup_error(backup,
