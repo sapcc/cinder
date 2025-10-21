@@ -540,6 +540,11 @@ class NetAppCmodeNfsDriver(
                 pools[flexvol['name']] = {'pool_name': share}
             except exception.VolumeBackendAPIException:
                 LOG.exception('Flexvol not found for NFS share %s.', share)
+                # Get flexvol name from ssc in case of failure
+                # We are not dinamicly removing pools
+                flexvol_name = self._get_flexvol_name_for_share(share)
+                if flexvol_name:
+                    pools[flexvol_name] = {'pool_name': share}
 
         return pools
 

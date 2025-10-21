@@ -390,6 +390,8 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         self.mock_object(self.driver.zapi_client,
                          'get_flexvol',
                          side_effect=side_effect)
+        self.mock_object(self.driver, '_get_flexvol_name_for_share',
+                         return_value=None)
 
         result = self.driver._get_flexvol_to_pool_map()
 
