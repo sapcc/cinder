@@ -272,6 +272,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self._driver.delete_volume(volume)
         delete_fcd.assert_not_called()
 
+    @mock.patch.object(VMDK_DRIVER, '_get_connection_capabilities')
     @mock.patch.object(volume_utils, 'extract_host')
     @mock.patch.object(FCD_DRIVER, '_get_connector_config')
     @mock.patch.object(FCD_DRIVER, '_provider_location_to_moref_location')
@@ -283,7 +284,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             self, get_adapter_type, from_provider_location,
             get_storage_profile_id, vops,
             provider_loc_to_moref_loc, get_connector_config,
-            extract_host):
+            extract_host, vcenter_instance_uuid):
         fcd_loc = mock.Mock(
             fcd_id=mock.sentinel.fcd_id, ds_ref_val=mock.sentinel.ds_ref_val)
         from_provider_location.return_value = fcd_loc
@@ -295,13 +296,16 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         vops.get_backing.return_value = backing
         get_connector_config.return_value = mock.sentinel.config
         extract_host.return_value = mock.sentinel.host
-
         volume = self._create_volume_obj()
+        vc_uuid = "195c5fb6-68b5-4b6c-bbd6-76ee92fbde5e"
+        vmware_uuid = ['vmware_service_instance_uuid:%s' % vc_uuid]
+        vcenter_instance_uuid.return_value = vmware_uuid
         connector = {'platform': 'x86_64', 'os_type': 'linux',
                      'ip': '10.0.0.1',
                      'host': 'cinder-volume-backup-vmware-vc-a-0',
                      'multipath': False,
-                     'initiator': 'iqn.1993-08.org.debian:01:c4f3207eed25'}
+                     'initiator': 'iqn.1993-08.org.debian:01:c4f3207eed25',
+                     "connection_capabilities": vmware_uuid}
         profile_id = mock.sentinel.profile_id
         get_storage_profile_id.return_value = profile_id
         ret = self._driver.initialize_connection(volume, connector)

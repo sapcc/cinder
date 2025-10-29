@@ -95,6 +95,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         self._use_fcd_snapshot = False
         self._storage_policy_enabled = vc_67_compatible
         self._use_fcd_cross_vc_migration = cross_vc_migration
+        self._admin_context = context
 
         if CONF.sap_allow_independent_snapshots:
             # If we setup cinder to allow independent snapshots, we can
@@ -283,6 +284,27 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 else:
                     raise ex
 
+    def init_kvm_hw(self, volume, connector, initiator_data):
+        fcd_loc = vops.FcdLocation.from_provider_location(
+            self._provider_location_to_moref_location(
+                volume.provider_location
+            ))
+        vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+        mount_path = self.volumeops._get_mount_path(fcd_loc.ds_ref())
+        _, dir_path, file_path = vops.split_datastore_path(vmdk_path)
+        raw_file_path = file_path.replace('.vmdk', '-flat.vmdk')
+        connection_info = {
+            'driver_volume_type': 'nfs',
+            'data': {
+                'export': mount_path,
+                'name': "%s%s" % (dir_path, raw_file_path),
+                'format': 'raw',
+                'mount_point_base': '/var/lib/cinder/mnt',
+                'version': self.ATTACHMENT_VERSION,
+            }
+        }
+        return connection_info
+
     @volume_utils.trace
     def initialize_connection(self, volume, connector, initiator_data=None):
         """Allow connection to connector and return connection info.
@@ -296,6 +318,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                                initialize_connection calls.
         :returns: A dictionary of connection information.
         """
+        # We are not connecting to VMware but a kvm hypervisor
+        if 'connection_capabilities' not in connector:
+            data = self.init_kvm_hw(volume, connector, initiator_data)
+            return data
         # Check that connection_capabilities match
         # This ensures the connector is bound to the same vCenter service
         if 'connection_capabilities' in connector:
@@ -622,6 +648,16 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         """
         # convert the datastore name provider location to what the
         # volumeops uses, which is the moref format.
+        if volume['attach_status'] == 'attached':
+            attachments = volume.volume_attachment
+            connector = None
+            for attach in attachments:
+                connector = attach.connector
+            if 'connection_capabilities' not in connector:
+                LOG.debug('Non-VMware hypervisor for volume:%s,'
+                          'extend will be done via nova', volume['id'])
+                return
+
         fcd_loc = vops.FcdLocation.from_provider_location(
             self._provider_location_to_moref_location(
                 volume.provider_location
@@ -651,12 +687,82 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 disk_type, profile_id=profile_id, key_id=key_id
             )
 
+    def _create_snap_kvm_fcd(self, snapshot):
+        """Creates snapshot via NetApp rpc
+
+        :param snapshot: The snapshot to create.
+        """
+        volume = snapshot.volume
+        fcd_loc = vops.FcdLocation.from_provider_location(
+            self._provider_location_to_moref_location(
+                volume.provider_location
+            )
+        )
+        disk_type = self._get_disk_type(volume)
+        ds_ref = self._select_ds_fcd(volume)
+        profile_id = self._get_storage_profile_id(volume)
+        key_id = self._register_kmip_key_id(volume)
+        snapshot_name = "snapshot-%s" % snapshot['id']
+        # We create a new empty fcd with the same size as the volume
+        fcd_loc_snap = self.volumeops.create_fcd(
+            snapshot.id, snapshot_name, volume.size * units.Ki, ds_ref,
+            disk_type, profile_id=profile_id, key_id=key_id)
+        vmdk_path_snap = self.volumeops.get_vmdk_path_for_fcd(
+            fcd_loc=fcd_loc_snap)
+        vmdk_path_vol = self.volumeops.get_vmdk_path_for_fcd(
+            fcd_loc=fcd_loc)
+        netapp_api = self._remote_netapp_api
+        netapp_fqdn = self.volumeops.get_netapp_for_ds(fcd_loc.ds_ref())
+        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+        src_mpath = self.volumeops._get_mount_path(fcd_loc.ds_ref())
+        src_ds_mpath = src_mpath.split(':')[1]
+        src_lif_ip = src_mpath.split(':')[0]
+        netapp_vol = src_ds_mpath.split('/')[1]
+        ds_split = vops.split_datastore_path
+        vserver = netapp_api.get_vserver_for_ip(self._admin_context,
+                                                host=netapp_host,
+                                                lif_ip=src_lif_ip)
+        _, folder_path, src_vmdk_file = ds_split(vmdk_path_vol)
+        _, snap_folder_path, dst_vmdk_file = ds_split(vmdk_path_snap)
+        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        dst_flat_file = dst_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        if len(src_ds_mpath.split('/')) == 3:
+            # This case if we have qtree DS
+            src_qtree = src_ds_mpath.split('/')[2]
+            src_path = "%s/%s%s" % (src_qtree, folder_path,
+                                    src_flat_file)
+            dest_path = "%s/%s%s" % (src_qtree, snap_folder_path,
+                                     dst_flat_file)
+        else:
+            # Normal DS expected that the vol_name=DS_NAME
+            src_path = "%s%s" % (folder_path, src_flat_file)
+            dest_path = "%s%s" % (snap_folder_path, dst_flat_file)
+        netapp_api.clone_file(self._admin_context, host=netapp_host,
+                              flex_vol=netapp_vol, src_path=src_path,
+                              dest_path=dest_path, vserver=vserver,
+                              dest_exists=True, is_snapshot=True)
+
+        p_location = self._provider_location_to_ds_name_location(
+            fcd_loc_snap.provider_location()
+        )
+
+        return p_location
+
     @volume_utils.trace
     def create_snapshot(self, snapshot):
         """Creates a snapshot.
 
         :param snapshot: Information for the snapshot to be created.
         """
+        if snapshot.volume['attach_status'] == 'attached':
+            attachments = snapshot.volume.volume_attachment
+            connector = None
+            for attach in attachments:
+                connector = attach.connector
+            if 'connection_capabilities' not in connector:
+                p_location = self._create_snap_kvm_fcd(snapshot)
+                return {'provider_location': p_location}
+
         if self._use_fcd_snapshot:
             fcd_loc = vops.FcdLocation.from_provider_location(
                 provider_location=self._provider_location_to_moref_location(
