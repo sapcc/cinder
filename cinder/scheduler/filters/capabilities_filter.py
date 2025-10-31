@@ -33,11 +33,11 @@ class CapabilitiesFilter(filters.BaseBackendFilter):
         """
 
         req_spec = filter_properties.get('request_spec')
+        allow_proto_mismatch = False
         if req_spec and req_spec.get('operation') == 'extend_volume':
             # NOTE(erlon): By default, cinder considers that every backend
             # supports volume online extending. Those backends that don't
             # support it should report online_extend_support=False.
-            allow_proto_mismatch = False
             online_extends = capabilities.get('online_extend_support', True)
             if online_extends is False:
                 vol_prop = req_spec.get('volume_properties')
