@@ -2943,6 +2943,9 @@ class VolumeManager(manager.CleanableManager,
                 if (src_storage_protocol == 'vmdk' and
                         dest_storage_protocol == 'vstorageobject'):
                     return True
+                if (src_storage_protocol == 'vstorageobject' and
+                        "NFS" in [p.upper() for p in dest_storage_protocol]):
+                    return True
             elif not force_host_copy and not new_type_id:
                 # If no new_type_id is specified, we allow migration
                 # to any host.

@@ -855,7 +855,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         """
         false_ret = (False, None)
         allowed_statuses = ['available', 'reserved', 'in-use', 'maintenance',
-                            'extending']
+                            'extending', 'retyping']
         if volume['status'] not in allowed_statuses:
             LOG.debug('Only %s volumes can be migrated using backend '
                       'assisted migration. Falling back to generic migration.',
@@ -863,7 +863,16 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             return false_ret
 
         if 'location_info' not in host['capabilities']:
-            return false_ret
+            if 'storage_protocol' in host['capabilities']:
+                proto = host['capabilities']['storage_protocol']
+                if "NFS" in [p.upper() for p in proto]:
+                    if 'NFS' in volume.provider_location.upper():
+                        return self.migrate_to_kvm(context, volume, host)
+                else:
+                    return false_ret
+            else:
+                return false_ret
+
         info = host['capabilities']['location_info']
         try:
             (driver_name, vcenter) = info.split(':')
@@ -1078,3 +1087,39 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         # cleanup on target volume mgr
         return (True, None)
+
+    @volume_utils.trace
+    def migrate_to_kvm(self, context, volume, host):
+        # Use RPC to convert a vmware fcd to netapp raw volume
+        fcd_loc = vops.FcdLocation.from_provider_location(
+            self._provider_location_to_moref_location(
+                volume.provider_location
+            )
+        )
+        netapp_api = self._remote_netapp_api
+        netapp_fqdn = self.volumeops.get_netapp_for_ds(
+            fcd_loc.ds_ref())
+        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+        src_vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+        datastore, folder_path, src_vmdk_file = vops.split_datastore_path(
+            src_vmdk_path)
+        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        source_dir_path = "/vol/%s/%s" % (datastore, folder_path)
+        temp_path = "/vol/%s/%s" % (datastore,
+                                    folder_path.replace('/', '') + '_tmp')
+        netapp_api.rename_file_or_dir(context, host=netapp_host,
+                                      old_name=source_dir_path,
+                                      new_name=temp_path)
+        source_path = "/vol/%s/%s/%s" % (datastore,
+                                         folder_path.replace('/', '') + '_tmp',
+                                         src_flat_file)
+        destination_path = "/vol/%s/%s" % (datastore, volume.id)
+        netapp_api.rename_file_or_dir(context, host=netapp_host,
+                                      old_name=source_path,
+                                      new_name=destination_path)
+        provider_location = self.volumeops._get_mount_path(fcd_loc.ds_ref())
+        volume.update({'provider_location': provider_location})
+        volume.save()
+        new_host = "%s#%s" % (host['host'].split('#')[0], provider_location)
+        model_updates = {'host': new_host}
+        return (True, model_updates)
