@@ -58,6 +58,7 @@ class CapabilitiesFilter(filters.BaseBackendFilter):
 
         for key, req in extra_specs.items():
             # Allow extend_volume on the old backend
+            # Temporary till migration to fcd/kvm is finished
             if allow_proto_mismatch and key == 'storage_protocol':
                 if req == "vstorageobject":
                     continue
