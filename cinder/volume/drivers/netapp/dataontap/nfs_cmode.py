@@ -532,7 +532,7 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
                 continue
 
             try:
-                flexvol = self.zapi_client.get_flexvol(
+                flexvol = self.zapi_client.get_flexvol_zapi(
                     flexvol_path=junction_path)
                 pools[flexvol['name']] = {'pool_name': share}
             except exception.VolumeBackendAPIException:
