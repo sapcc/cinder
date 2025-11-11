@@ -350,6 +350,9 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         mock_get_flexvol = self.mock_object(
             self.driver.zapi_client, 'get_flexvol',
             return_value={'name': fake.NETAPP_VOLUME})
+        mock_get_flexvol = self.mock_object(
+            self.driver.zapi_client, 'get_flexvol_zapi',
+            return_value={'name': fake.NETAPP_VOLUME})
 
         result = self.driver._get_flexvol_to_pool_map()
 
@@ -389,6 +392,9 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         side_effect = exception.VolumeBackendAPIException(data='fake_data')
         self.mock_object(self.driver.zapi_client,
                          'get_flexvol',
+                         side_effect=side_effect)
+        self.mock_object(self.driver.zapi_client,
+                         'get_flexvol_zapi',
                          side_effect=side_effect)
         self.mock_object(self.driver, '_get_flexvol_name_for_share',
                          return_value=None)
