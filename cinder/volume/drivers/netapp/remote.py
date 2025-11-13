@@ -51,6 +51,12 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
         cctxt = self._get_cctxt(host=host)
         return cctxt.call(ctxt, 'get_file_sizes_by_dir', path=path)
 
+    @volume_utils.trace
+    def rename_file_or_dir(self, ctxt, host, old_name, new_name):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'rename_file_or_dir',
+                          old_name=old_name, new_name=new_name)
+
 
 class SAPNetappDriverRemoteService(object):
     RPC_API_VERSION = SAPNetappDriverRemoteApi.RPC_API_VERSION
@@ -69,3 +75,7 @@ class SAPNetappDriverRemoteService(object):
     def get_file_sizes_by_dir(self, ctxt, path):
         # Returns used bytes of a file
         return self._driver.zapi_client.get_file_sizes_by_dir(path)
+
+    def rename_file_or_dir(self, ctxt, old_name, new_name):
+        # Renames file or directory on netapp
+        return self._driver.zapi_client.rename_file(old_name, new_name)
