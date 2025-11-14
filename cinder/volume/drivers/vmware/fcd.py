@@ -95,6 +95,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         self._use_fcd_snapshot = False
         self._storage_policy_enabled = vc_67_compatible
         self._use_fcd_cross_vc_migration = cross_vc_migration
+        self._admin_context = context
 
         if CONF.sap_allow_independent_snapshots:
             # If we setup cinder to allow independent snapshots, we can
@@ -226,6 +227,17 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             return super(VMwareVStorageObjectDriver,
                          self)._get_adapter_type(volume)
 
+    def set_qos_on_fcd(self, fcd_loc, qos_profile_name):
+        ds_ref = fcd_loc.ds_ref()
+        context = self._admin_context
+        netapp_api = self._remote_netapp_api
+        netapp_fqdn = self.volumeops.get_netapp_for_ds(ds_ref)
+        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+        vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+        if qos_profile_name and netapp_host:
+            self.volumeops.set_qos(context, ds_ref, netapp_api, netapp_host,
+                                   vmdk_path, qos_profile_name)
+
     @volume_utils.trace
     def create_volume(self, volume):
         """Create a new volume on the backend.
@@ -244,6 +256,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         fcd_loc = self.volumeops.create_fcd(
             volume.id, volume.name, volume.size * units.Ki, ds_ref,
             disk_type, profile_id=profile_id, key_id=key_id)
+        qos_profile_name = volume.volume_type.extra_specs.get(
+            'vmware:netapp_qos_profile')
+        try:
+            self.set_qos_on_fcd(fcd_loc, qos_profile_name)
+        except Exception:
+            LOG.warning("Can't apply %s QOS profile on %s volume",
+                        qos_profile_name, volume.id)
 
         # Convert the provider_location from the moref format to the
         # datastore name format to store in the cinder DB.
@@ -532,7 +551,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 fcd_loc=fcd_loc) / units.Gi)
         image_size = 1 if image_gib == 0 else image_gib
         self._extend_if_needed(fcd_loc, image_size, volume.size)
-
+        qos_profile_name = volume.volume_type.extra_specs.get(
+            'vmware:netapp_qos_profile')
+        try:
+            self.set_qos_on_fcd(fcd_loc, qos_profile_name)
+        except Exception:
+            LOG.warning("Can't apply %s QOS profile on %s volume",
+                        qos_profile_name, volume.id)
         provider_location = self._provider_location_to_ds_name_location(
             fcd_loc.provider_location()
         )
@@ -733,6 +758,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             provider_loc, volume, ds_ref, disk_type=disk_type,
             profile_id=profile_id, key_id=key_id)
         self._extend_if_needed(cloned_fcd_loc, cur_size, volume.size)
+        qos_profile_name = volume.volume_type.extra_specs.get(
+            'vmware:netapp_qos_profile')
+        try:
+            self.set_qos_on_fcd(cloned_fcd_loc, qos_profile_name)
+        except Exception:
+            LOG.warning("Can't apply %s QOS profile on %s volume",
+                        qos_profile_name, volume.id)
         # Convert the provider location from the moref format to the
         # datastore name format to store in the cinder DB.
         p_location = self._provider_location_to_ds_name_location(
