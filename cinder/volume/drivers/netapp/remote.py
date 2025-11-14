@@ -51,6 +51,13 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
         cctxt = self._get_cctxt(host=host)
         return cctxt.call(ctxt, 'get_file_sizes_by_dir', path=path)
 
+    def file_assign_qos(self, ctxt, host, vol_name,
+                        qos_policy_group_name, path):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'file_assign_qos', vol_name=vol_name,
+                          qos_policy_group_name=qos_policy_group_name,
+                          path=path)
+
 
 class SAPNetappDriverRemoteService(object):
     RPC_API_VERSION = SAPNetappDriverRemoteApi.RPC_API_VERSION
@@ -69,3 +76,12 @@ class SAPNetappDriverRemoteService(object):
     def get_file_sizes_by_dir(self, ctxt, path):
         # Returns used bytes of a file
         return self._driver.zapi_client.get_file_sizes_by_dir(path)
+
+    def file_assign_qos(self, ctxt, vol_name,
+                        qos_policy_group_name, path):
+        # Sets QOS policy on a file
+        set_qos = self._driver.zapi_client.file_assign_qos
+        return set_qos(flex_vol=vol_name,
+                       qos_policy_group_name=qos_policy_group_name,
+                       qos_policy_group_is_adaptive=True,
+                       file_path=path)

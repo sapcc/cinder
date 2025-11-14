@@ -2785,6 +2785,29 @@ class VMwareVolumeOps(object):
         # If the move is success, than the src bytes are the same as the dst.
         return src_bytes == dst_bytes
 
+    def set_qos(self, context, ds_ref, netapp_api, netapp_host,
+                vmdk_path,
+                qos_profile_name):
+        mpath = self._get_mount_path(ds_ref).split(':')[1]
+        netapp_vol = mpath.split('/')[1]
+        len_mpath = len(mpath.split('/'))
+        _, folder_path, src_vmdk_file = split_datastore_path(vmdk_path)
+        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        if len_mpath == 2:
+            rel_path_to_ds = "%s%s" % (folder_path, src_flat_file)
+        if len_mpath == 3:
+            # qtree longer mount path
+            qtree_name = mpath.split('/')[2]
+            rel_path_to_ds = "%s/%s%s" % (qtree_name, folder_path,
+                                          src_flat_file)
+        if len_mpath > 3:
+            # longer mount path not supported
+            return NotImplementedError
+        netapp_api.file_assign_qos(context, host=netapp_host,
+                                   vol_name=netapp_vol,
+                                   os_policy_group_name=qos_profile_name,
+                                   path=rel_path_to_ds)
+
 
 class FcdLocation(object):
 
