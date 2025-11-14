@@ -223,8 +223,11 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         fcd_loc.provider_location.return_value = provider_loc
         vops.create_fcd.return_value = fcd_loc
         provider_loc_to_ds_name_loc.return_value = provider_loc
-
-        volume = self._create_volume_obj()
+        extra_specs = {'image_service:store_id': 'fake-store'}
+        test_utils.create_volume_type(
+            self._context.elevated(), id=fake.VOLUME_TYPE_ID,
+            name="test_type", extra_specs=extra_specs)
+        volume = self._create_volume_obj(volume_type_id=fake.VOLUME_TYPE_ID)
         volume.volume_glance_metadata = glance_metadata
         ret = self._driver.create_volume(volume)
 
@@ -702,7 +705,11 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         provider_loc = mock.sentinel.provider_loc
         provider_loc_to_ds_name_loc.return_value = dest_provider_loc
         cur_size = 1
-        volume = self._create_volume_obj()
+        extra_specs = {'image_service:store_id': 'fake-store'}
+        test_utils.create_volume_type(
+            self._context.elevated(), id=fake.VOLUME_TYPE_ID,
+            name="test_type", extra_specs=extra_specs)
+        volume = self._create_volume_obj(volume_type_id=fake.VOLUME_TYPE_ID)
         ret = self._driver._create_volume_from_fcd(
             provider_loc, cur_size, volume)
         self.assertEqual({'provider_location': dest_provider_loc}, ret)
