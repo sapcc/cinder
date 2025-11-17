@@ -64,6 +64,7 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
                           src_path=src_path, dest_path=dest_path,
                           vserver=vserver, dest_exists=dest_exists,
                           is_snapshot=is_snapshot)
+
     def file_assign_qos(self, ctxt, host, vol_name,
                         qos_policy_group_name, path):
         cctxt = self._get_cctxt(host=host)
@@ -103,6 +104,7 @@ class SAPNetappDriverRemoteService(object):
                                             vserver=vserver,
                                             dest_exists=dest_exists,
                                             is_snapshot=is_snapshot)
+
     def file_assign_qos(self, ctxt, vol_name,
                         qos_policy_group_name, path):
         # Sets QOS policy on a file
