@@ -3441,7 +3441,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         profile_id = tgt_ds.get('profile_id')
         if (ds_ref.value != summary.datastore.value):
             # Migration required
-            if vol_status == 'available':
+            if volume['attach_status'] == 'detached':
                 self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
                                             service=None,
                                             profile_id=profile_id)
@@ -3453,7 +3453,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 volume.update({'provider_location': prov_loc})
                 volume.save()
                 return (True, None)
-            else:
+            if volume['attach_status'] == 'attached':
                 attachments = volume.volume_attachment
                 instance_uuid = attachments[0]['instance_uuid']
                 get_vm_by_uuid = self.volumeops.get_backing_by_uuid
@@ -3469,6 +3469,20 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 prov_loc = self._provider_location_to_ds_name_location(
                     fcd_loc_new.provider_location()
                 )
+            else:
+                # we are in an uncertan state,
+                # so we don't move the fcd and override the host
+                prov_loc = self._provider_location_to_ds_name_location(
+                    prov_loc
+                )
+                volume.update({'provider_location': prov_loc})
+                volume.save()
+                new_host = volume['host'].replace('@vmware#',
+                                                  '@vmware_fcd#')
+                model_updates = {
+                    'host': new_host
+                }
+                return (True, model_updates)
 
         else:
             prov_loc = self._provider_location_to_ds_name_location(

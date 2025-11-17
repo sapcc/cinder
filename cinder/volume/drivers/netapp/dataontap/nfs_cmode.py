@@ -532,11 +532,16 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
                 continue
 
             try:
-                flexvol = self.zapi_client.get_flexvol(
+                flexvol = self.zapi_client.get_flexvol_zapi(
                     flexvol_path=junction_path)
                 pools[flexvol['name']] = {'pool_name': share}
             except exception.VolumeBackendAPIException:
                 LOG.exception('Flexvol not found for NFS share %s.', share)
+                # Get flexvol name from ssc in case of failure
+                # We are not dinamicly removing pools
+                flexvol_name = self._get_flexvol_name_for_share(share)
+                if flexvol_name:
+                    pools[flexvol_name] = {'pool_name': share}
 
         return pools
 

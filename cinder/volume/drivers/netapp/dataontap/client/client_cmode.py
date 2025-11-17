@@ -1456,6 +1456,11 @@ class Client(client_base.Client):
         volume_state = volume_state_attributes.get_child_content('state')
         return volume_state
 
+    def get_flexvol_zapi(self, flexvol_path=None, flexvol_name=None):
+
+        return self.get_flexvol(flexvol_path=flexvol_path,
+                                flexvol_name=flexvol_name)
+
     def get_flexvol(self, flexvol_path=None, flexvol_name=None):
         """Get flexvol attributes needed for the storage service catalog."""
 

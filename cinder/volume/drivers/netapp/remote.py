@@ -64,6 +64,12 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
                           src_path=src_path, dest_path=dest_path,
                           vserver=vserver, dest_exists=dest_exists,
                           is_snapshot=is_snapshot)
+    def file_assign_qos(self, ctxt, host, vol_name,
+                        qos_policy_group_name, path):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'file_assign_qos', vol_name=vol_name,
+                          qos_policy_group_name=qos_policy_group_name,
+                          path=path)
 
 
 class SAPNetappDriverRemoteService(object):
@@ -97,3 +103,11 @@ class SAPNetappDriverRemoteService(object):
                                             vserver=vserver,
                                             dest_exists=dest_exists,
                                             is_snapshot=is_snapshot)
+    def file_assign_qos(self, ctxt, vol_name,
+                        qos_policy_group_name, path):
+        # Sets QOS policy on a file
+        set_qos = self._driver.zapi_client.file_assign_qos
+        return set_qos(flex_vol=vol_name,
+                       qos_policy_group_name=qos_policy_group_name,
+                       qos_policy_group_is_adaptive=True,
+                       file_path=path)
