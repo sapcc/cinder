@@ -74,6 +74,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         self._config.barbican_url = mock.sentinel.barbican_url
         self._config.vmware_snapshot_format = "COW"
         self._config.sap_netapp_credentials = {}
+        self._config.enable_image_cache = False
         self._driver = fcd.VMwareVStorageObjectDriver(
             configuration=self._config)
         scheduler_rpcapi = mock.MagicMock()

@@ -21,7 +21,7 @@ Disk) files stored in datastores. For ease of managing the VMDKs, the
 driver creates a virtual machine for each of the volumes. This virtual
 machine is never powered on and is often referred as the shadow VM.
 """
-
+import itertools
 import math
 import re
 import ssl
@@ -30,7 +30,9 @@ import OpenSSL
 from oslo_config import cfg
 from oslo_config import types
 from oslo_log import log as logging
+from oslo_service import loopingcall
 from oslo_utils import excutils
+from oslo_utils import timeutils
 from oslo_utils import units
 from oslo_utils import uuidutils
 from oslo_utils import versionutils
@@ -45,12 +47,14 @@ from cinder import context
 from cinder import exception
 # This is needed to register the SAP config options
 from cinder.common import sap # noqa
+from cinder import coordination
 from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
 from cinder.keymgr import kmip
 from cinder.objects import snapshot as snapshot_obj
 from cinder.scheduler import rpcapi as scheduler_rpcapi
+from cinder.objects import volume as volume_obj
 from cinder.volume import configuration
 from cinder.volume import driver
 from cinder.volume.drivers.netapp import remote as netapp_remote_api
@@ -72,6 +76,7 @@ CREATE_PARAM_DISK_LESS = 'disk_less'
 CREATE_PARAM_BACKING_NAME = 'name'
 CREATE_PARAM_DISK_SIZE = 'disk_size'
 CREATE_PARAM_TEMP_BACKING = 'temp_backing'
+CREATE_PARAM_USE_IMAGE_CACHE = 'use_image_cache'
 
 TMP_IMAGES_DATASTORE_FOLDER_PATH = "cinder_temp/"
 
@@ -242,6 +247,17 @@ vmdk_opts = [
                default="http://barbican-api:9311",
                help='Barbican base URL passed to the KMIP API to register a '
                     'key. The URL must be accessible by the KMIP API.'),
+    cfg.BoolOpt('enable_image_cache', default=False,
+                help='Enable the image cache feature for the backend.'),
+    cfg.IntOpt('image_cache_max_size_gb', default=100,
+               help='Maximum size in GiB that an image is allowed to '
+                    'have in order to be cached.'),
+    cfg.IntOpt('image_cache_purge_interval', default=600,
+               help='Number of seconds between runs of the periodic task '
+                    'to purge the cached volume images.'),
+    cfg.IntOpt('image_cache_age_seconds', default=3600 * 24,
+               help='Minimum number of seconds after which a cached image '
+                    'has to be deleted.'),
 ]
 
 CONF = cfg.CONF
@@ -469,6 +485,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                   % storage_profile)
                         raise exception.InvalidInput(reason=reason)
 
+        self._start_periodic_tasks()
+
     def _init_vendor_properties(self):
         """Set some vmware specific properties."""
 
@@ -631,6 +649,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if not datastores:
             backend_state = 'down'
             data['backend_state'] = backend_state
+
+        cached_images = []
+        if self.configuration.enable_image_cache:
+            cached_images = self._get_cached_images()
+
         if self.configuration.vmware_datastores_as_pools:
             pools = []
             for ds_name in datastores:
@@ -683,6 +706,15 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         summary.datastore)
                 else:
                     mount_path = ""
+                # Calculate the extra capacity consumed by cached images
+                extra_capacity = 0
+                for cached_img in cached_images:
+                    ds_ref = cached_img['ds_ref']
+                    if (ds_ref and vim_util.get_moref_value(ds_ref) ==
+                            vim_util.get_moref_value(
+                                datastore['datastore_object'])):
+                        extra_capacity += cached_img['disk_size'] / units.Gi
+
                 pool = {'pool_name': summary.name,
                         'total_capacity_gb': round(
                             summary.capacity / units.Gi),
@@ -705,6 +737,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         'custom_attributes': custom_attributes,
                         'independent_snapshots': independent_snapshot,
                         'mount_path': mount_path,
+                        'extra_provisioned_capacity_gb': (
+                            int(math.ceil(extra_capacity))),
                         }
                 if aggregate_id:
                     pool['aggregate_id'] = aggregate_id
@@ -734,6 +768,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     global_capacity += summary.capacity
                     global_free += summary.freeSpace
 
+        # Calculate the extra capacity consumed by cached images
+        extra_capacity = 0
+        for cached_img in cached_images:
+            extra_capacity += cached_img['disk_size'] / units.Gi
+
         data_no_pools = {
             'reserved_percentage': self.configuration.reserved_percentage,
             'total_capacity_gb': round(global_capacity / units.Gi),
@@ -742,6 +781,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             'thick_provisioning_support': True,
             'max_over_subscription_ratio': max_over_subscription_ratio,
             'connection_capabilities': connection_capabilities,
+            'extra_provisioned_capacity_gb': (
+                int(math.ceil(extra_capacity))),
         }
         data.update(data_no_pools)
 
@@ -1979,36 +2020,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             context, volume, image_service, image_meta['id'])
         return (ret, True)
 
-    def copy_image_to_volume(self, context, volume, image_service, image_id,
-                             disable_sparse=False):
-        """Creates volume from image.
-
-        This method only supports Glance image of VMDK disk format.
-        Uses flat vmdk file copy for "sparse" and "preallocated" disk types
-        Uses HttpNfc import API for "streamOptimized" disk types. This API
-        creates a backing VM that wraps the VMDK in the vCenter inventory.
-
-        :param context: context
-        :param volume: Volume object
-        :param image_service: Glance image service
-        :param image_id: Glance image id
-        :param disable_sparse: Enable or disable sparse copy. Default=False.
-                               This parameter is ignored by VMDK driver.
-        """
-        LOG.debug("Copy glance image: %s to create new volume.", image_id)
-
-        # Verify glance image is vmdk disk format
-        metadata = image_service.show(context, image_id)
-        VMwareVcVmdkDriver._validate_disk_format(metadata['disk_format'])
-
-        # Validate container format; only 'bare' and 'ova' are supported.
-        container_format = metadata.get('container_format')
-        if (container_format and container_format not in ['bare', 'ova']):
-            msg = _("Container format: %s is unsupported, only 'bare' and "
-                    "'ova' are supported.") % container_format
-            LOG.error(msg)
-            raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
-
+    def _do_copy_image_to_volume(self, context, volume, image_service,
+                                 image_id, metadata, disable_sparse=False):
         # Get the disk type, adapter type and size of vmdk image
         image_disk_type = ImageDiskType.PREALLOCATED
         image_adapter_type = self._get_adapter_type(volume)
@@ -2041,6 +2054,48 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                               "to volume: %(vol)s.",
                               {'id': image_id, 'vol': volume['name']})
 
+    def copy_image_to_volume(self, context, volume, image_service, image_id,
+                             disable_sparse=False):
+        """Creates volume from image.
+
+        This method only supports Glance image of VMDK disk format.
+        Uses flat vmdk file copy for "sparse" and "preallocated" disk types
+        Uses HttpNfc import API for "streamOptimized" disk types. This API
+        creates a backing VM that wraps the VMDK in the vCenter inventory.
+
+        :param context: context
+        :param volume: Volume object
+        :param image_service: Glance image service
+        :param image_id: Glance image id
+        :param disable_sparse: Enable or disable sparse copy. Default=False.
+                               This parameter is ignored by VMDK driver.
+        """
+        LOG.debug("Copy glance image: %s to create new volume.", image_id)
+
+        # Verify glance image is vmdk disk format
+        metadata = image_service.show(context, image_id)
+        VMwareVcVmdkDriver._validate_disk_format(metadata['disk_format'])
+
+        # Validate container format; only 'bare' and 'ova' are supported.
+        container_format = metadata.get('container_format')
+        if (container_format and container_format not in ['bare', 'ova']):
+            msg = _("Container format: %s is unsupported, only 'bare' and "
+                    "'ova' are supported.") % container_format
+            LOG.error(msg)
+            raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
+
+        img_backing = None
+        if self._can_use_image_cache(volume, metadata['size']):
+            img_backing = self._get_or_create_cached_image_backing(
+                context, volume, image_service, image_id, metadata)
+
+        if img_backing:
+            self._create_volume_from_cached_image(volume, img_backing)
+        else:
+            self._do_copy_image_to_volume(
+                context, volume, image_service, image_id, metadata,
+                disable_sparse)
+
         LOG.debug("Volume: %(id)s created from image: %(image_id)s.",
                   {'id': volume['id'],
                    'image_id': image_id})
@@ -2065,6 +2120,58 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self, context, volume, image_service, image_id):
         # We don't do anything special as encryption is handled by the vCenter
         self.copy_image_to_volume(context, volume, image_service, image_id)
+
+    def _can_use_image_cache(self, volume, image_size):
+        requested = (volume['metadata']
+                     .get(CREATE_PARAM_USE_IMAGE_CACHE, "").lower()
+                     == "true")
+
+        if not requested:
+            return False
+
+        if not self.configuration.enable_image_cache:
+            LOG.debug("Image cache was requested for volume %s, but it "
+                      "wasn't enabled in the backend configuration.",
+                      volume['id'])
+            return False
+
+        max_size = self.configuration.image_cache_max_size_gb * units.Gi
+        if image_size > max_size:
+            LOG.debug("The requested image cannot be cached because it's "
+                      "too big (%(image_size)s > %(max_size)s)",
+                      {'image_size': image_size,
+                       'max_size': max_size})
+            return False
+
+        return True
+
+    @coordination.synchronized("image-cache-{image_id}")
+    def _get_or_create_cached_image_backing(self, context, volume,
+                                            image_service,
+                                            image_id, metadata):
+        """Caches the image as VM Templates and returns the mo-ref"""
+        backing = self.volumeops.get_backing(image_id, image_id)
+        image_size_in_bytes = metadata['size']
+        if not backing:
+            img_volume = volume_obj.Volume._from_db_object(
+                context, volume_obj.Volume(), dict(
+                    id=image_id,
+                    host=volume['host'],
+                    volume_type_id=volume['volume_type_id'],
+                    project_id=self._cache_project_name(),
+                    size=image_size_in_bytes / units.Gi
+                ))
+            self._do_copy_image_to_volume(
+                context, img_volume, image_service, image_id, metadata)
+            backing = self.volumeops.get_backing(image_id, image_id)
+            cache_name = f"{self._cache_project_name()} ({image_id})"
+            self.volumeops.rename_backing(backing, cache_name)
+            self.volumeops.mark_backing_as_template(backing)
+        return backing
+
+    def _cache_project_name(self):
+        backend_name = self.configuration.safe_get('volume_backend_name')
+        return f"{backend_name}_image_cache"
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Creates glance image from volume.
@@ -2968,6 +3075,26 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self._extend_backing(clone, volume['size'],
                                  VMwareVcVmdkDriver._get_disk_type(volume))
         LOG.info("Successfully created clone: %s.", clone)
+
+    def _create_volume_from_cached_image(self, volume, img_backing):
+        (host, rp, folder, summary) = self._select_ds_for_volume(
+            volume)
+        datastore = summary.datastore
+        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+
+        backing = self.volumeops.clone_backing(
+            volume['id'],
+            img_backing,
+            None,
+            volumeops.FULL_CLONE_TYPE,
+            datastore,
+            disk_type=disk_type,
+            host=host,
+            resource_pool=rp,
+            folder=folder)
+
+        self.volumeops.update_backing_uuid(backing, volume['id'])
+        self.volumeops.update_backing_disk_uuid(backing, volume['id'])
 
     @volume_utils.trace
     def _create_volume_from_template(self, volume, path):
