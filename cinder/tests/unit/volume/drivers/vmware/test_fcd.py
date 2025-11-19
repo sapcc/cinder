@@ -373,13 +373,10 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         image_service = mock.Mock()
         image_service.show.return_value = image_meta
 
-        dc_ref = mock.sentinel.dc_ref
         datastore = mock.sentinel.datastore
         summary = mock.Mock(datastore=datastore)
         summary.name = 'ds1'
         vops.get_datastore.return_value = datastore
-        folder_path = mock.sentinel.folder_path
-
         adapter_type = mock.sentinel.adapter_type
         get_adapter_type.return_value = adapter_type
 
