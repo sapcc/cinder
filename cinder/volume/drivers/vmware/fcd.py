@@ -478,47 +478,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                                This parameter is ignored by VMware driver.
         :returns: Model updates.
         """
-        metadata = image_service.show(context, image_id)
-        self._validate_disk_format(metadata['disk_format'])
-        self._validate_container_format(
-            metadata.get('container_format'), image_id)
-
-        properties = metadata['properties'] or {}
-        disk_type = properties.get('vmware_disktype',
-                                   vmdk.ImageDiskType.PREALLOCATED)
-        vmdk.ImageDiskType.validate(disk_type)
-
-        size_bytes = metadata['size']
-        if disk_type == vmdk.ImageDiskType.STREAM_OPTIMIZED:
-            image_adapter_type = self._get_adapter_type(volume)
-            properties = metadata['properties']
-            if properties:
-                if 'vmware_adaptertype' in properties:
-                    image_adapter_type = properties['vmware_adaptertype']
-            backing = self._fetch_stream_optimized_image(
-                context, volume,
-                image_service, image_id, size_bytes,
-                image_adapter_type)
-            ds_ref = self.volumeops.get_datastore(backing)
-            dc_ref = self.volumeops.get_dc(ds_ref)
-            vmdk_path = self.volumeops.get_vmdk_path(backing)
-            self._destroy_backing(backing)
-        else:
-            disk_name = volume.id
-            dc_ref, summary, folder_path = \
-                self._get_temp_image_folder_from_volume(volume)
-            if disk_type == vmdk.ImageDiskType.SPARSE:
-                vmdk_path = self._create_virtual_disk_from_sparse_image(
-                    context, image_service, image_id, size_bytes, dc_ref,
-                    summary.name, folder_path, disk_name)
-            else:
-                vmdk_path = self._create_virtual_disk_from_preallocated_image(
-                    context, image_service, image_id, size_bytes, dc_ref,
-                    summary.name, folder_path, disk_name,
-                    vops.VirtualDiskAdapterType.LSI_LOGIC)
-            vmdk_path = vmdk_path.get_descriptor_ds_file_path()
-            ds_ref = summary.datastore
-
+        super(VMwareVStorageObjectDriver,
+              self).copy_image_to_volume(context, volume, image_service,
+                                         image_id, disable_sparse)
+        backing = self.volumeops.get_backing_by_uuid(volume.id)
+        ds_ref = self.volumeops.get_datastore(backing)
+        dc_ref = self.volumeops.get_dc(ds_ref)
+        vmdk_path = self.volumeops.get_vmdk_path(backing)
+        self._destroy_backing(backing)
         ds_path = datastore.DatastorePath.parse(vmdk_path)
         dc_path = self.volumeops.get_inventory_path(dc_ref)
 
@@ -544,6 +511,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         # Extend the volume if needed
         # break this up to 2 lines to pass pep8
+        metadata = image_service.show(context, image_id)
         if hasattr(metadata, 'virtual_size'):
             image_gib = int(metadata['virtual_size'] / units.Gi)
         else:
