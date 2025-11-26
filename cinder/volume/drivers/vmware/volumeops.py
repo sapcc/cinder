@@ -2311,17 +2311,23 @@ class VMwareVolumeOps(object):
         dc_ref = self.get_dc(fcd_location.ds_ref())
         ds_name, folder, _ = split_datastore_path(vmdk_file)
         LOG.debug("Deleting fcd: %s.", fcd_location)
-        task = self._session.invoke_api(self._session.vim,
-                                        'DeleteVStorageObject_Task',
-                                        vstorage_mgr,
-                                        id=fcd_location.id(cf),
-                                        datastore=fcd_location.ds_ref())
-        self._session.wait_for_task(task)
-        folder_path = f"[{ds_name}] {folder}"
-        file_list = self.file_list_in_folder(fcd_location.ds_ref(),
-                                             folder_path)
-        if delete_folder and file_list == []:
-            self.delete_datastore_folder(ds_name, folder, dc_ref)
+        try:
+            task = self._session.invoke_api(self._session.vim,
+                                            'DeleteVStorageObject_Task',
+                                            vstorage_mgr,
+                                            id=fcd_location.id(cf),
+                                            datastore=fcd_location.ds_ref())
+            self._session.wait_for_task(task)
+        except exceptions.NotFound:
+            LOG.warning("Fcd not found: %s.", fcd_location.fcd_id)
+        else:
+            folder_path = f"[{ds_name}] {folder}"
+            file_list = self.file_list_in_folder(fcd_location.ds_ref(),
+                                                folder_path)
+            if delete_folder and file_list == []:
+                self.delete_datastore_folder(ds_name, folder, dc_ref)
+
+            return True
 
     def clone_fcd(
             self, volume, fcd_location, dest_ds_ref,
@@ -2518,14 +2524,19 @@ class VMwareVolumeOps(object):
 
         vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
         cf = self._session.vim.client.factory
-        task = self._session.invoke_api(
-            self._session.vim,
-            'DeleteSnapshot_Task',
-            vstorage_mgr,
-            id=fcd_snap_loc.fcd_loc.id(cf),
-            datastore=fcd_snap_loc.fcd_loc.ds_ref(),
-            snapshotId=fcd_snap_loc.id(cf))
-        self._session.wait_for_task(task)
+        try:
+            task = self._session.invoke_api(
+                self._session.vim,
+                'DeleteSnapshot_Task',
+                vstorage_mgr,
+                id=fcd_snap_loc.fcd_loc.id(cf),
+                datastore=fcd_snap_loc.fcd_loc.ds_ref(),
+                snapshotId=fcd_snap_loc.id(cf))
+            self._session.wait_for_task(task)
+        except exceptions.NotFound:
+            LOG.warning("Fcd snapshot not found: %s.", fcd_snap_loc.snap_id)
+            return True
+        return True
 
     def create_fcd_from_snapshot(self, fcd_snap_loc, name,
                                  cinder_uuid, profile_id=None, key_id=None):
