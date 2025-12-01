@@ -73,7 +73,8 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     # the driver's initialize_connection should
     # increment this version.
     # 1.0.0 - initial version
-    ATTACHMENT_VERSION = '1.0.0'
+    # 1.0.1 - properly set data's 'datacenter' as MoRef value
+    ATTACHMENT_VERSION = '1.0.1'
 
     def _driver_name(self):
         return LOCATION_DRIVER_NAME
@@ -346,10 +347,12 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 self.volumeops.attach_fcd(backing, fcd_loc)
             backing_moref = backing.value
             vmdk_path = self.volumeops.get_vmdk_path(backing)
-            datacenter = self.volumeops.get_dc(backing)
+            datacenter = vim_util.get_moref_value(
+                self.volumeops.get_dc(backing))
         else:
             vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
-            datacenter = self.volumeops.get_dc(fcd_loc.ds_ref())
+            datacenter = vim_util.get_moref_value(
+                self.volumeops.get_dc(fcd_loc.ds_ref()))
 
         connection_info = {
             'driver_volume_type': self.STORAGE_TYPE,
