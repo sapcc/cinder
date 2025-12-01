@@ -11,4 +11,3 @@ jaeger-client
 -e git+https://github.com/sapcc/openstack-rate-limit-middleware.git#egg=rate-limit-middleware
 -e git+https://github.com/sapcc/os-brick.git@stable/2023.1-m3#egg=os-brick
 -e git+https://github.com/sapcc/oslo.vmware.git@stable/2023.1-m3#egg=oslo.vmware
--e git+https://github.wdf.sap.corp/sap-cloud-infrastructure/internal-only-middleware.git@main#egg=internal_only_middleware
