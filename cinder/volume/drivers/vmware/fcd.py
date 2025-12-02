@@ -276,7 +276,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     @volume_utils.trace
     def _delete_fcd(self, provider_loc, delete_folder=True):
         fcd_loc = vops.FcdLocation.from_provider_location(provider_loc)
-        self.volumeops.delete_fcd(fcd_loc, delete_folder=delete_folder)
+        return self.volumeops.delete_fcd(fcd_loc, delete_folder=delete_folder)
 
     @volume_utils.trace
     def delete_volume(self, volume):
@@ -735,12 +735,12 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if snap_location:
             fcd_snap_loc = vops.FcdSnapshotLocation.from_provider_location(
                 snap_location)
-            self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
+            return self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
         else:
             provider_loc = self._provider_location_to_moref_location(
                 snapshot.provider_location
             )
-            self._delete_fcd(provider_loc)
+            return self._delete_fcd(provider_loc)
 
     def _extend_if_needed(self, fcd_loc, cur_size, new_size):
         if new_size > cur_size:
