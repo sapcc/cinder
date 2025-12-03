@@ -2834,3 +2834,21 @@ class RestClient(object):
         if (volumes_response and volumes_response.get('num_records', 0) > 0):
             return volumes_response['records'][0]['comment']
         return None
+
+    def break_locks(self, client_ip, path):
+        """Release a lock on a volume"""
+
+        query = {
+            'client_address': client_ip,
+            'path': path,
+            'fields': 'client_address,uuid,type'
+        }
+
+        response = self.send_request('/protocols/locks', 'get', query=query)
+        locks = response.get('records', [])
+        for lock in locks:
+            lock_uuid = lock['uuid']
+            LOG.info('Releasing lock type %s for path:%s', lock['type'], path)
+            self.send_request(f'/protocols/locks/{lock_uuid}', 'delete')
+        if locks == []:
+            LOG.info("There was no lock found on path:%s", path)
