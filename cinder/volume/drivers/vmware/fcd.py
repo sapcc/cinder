@@ -276,7 +276,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     @volume_utils.trace
     def _delete_fcd(self, provider_loc, delete_folder=True):
         fcd_loc = vops.FcdLocation.from_provider_location(provider_loc)
-        return self.volumeops.delete_fcd(fcd_loc, delete_folder=delete_folder)
+        try:
+            return self.volumeops.delete_fcd(fcd_loc, delete_folder=delete_folder)
+        except vexc.VimException as ex:
+            if "could not be found" in str(ex):
+                LOG.warning("FCD not found: %s.", fcd_loc.fcd_id)
+                return True
+            else:
+                raise ex
 
     @volume_utils.trace
     def delete_volume(self, volume):
