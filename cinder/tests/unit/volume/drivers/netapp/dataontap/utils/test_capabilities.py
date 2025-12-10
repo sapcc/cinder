@@ -251,6 +251,9 @@ class CapabilitiesLibraryTestCase(test.TestCase):
         self.mock_object(self.ssc_library.zapi_client,
                          'get_flexvol',
                          return_value=fake_client.VOLUME_INFO_SSC)
+        self.mock_object(self.ssc_library.zapi_client,
+                         'get_flexvol_zapi',
+                         return_value=fake_client.VOLUME_INFO_SSC)
 
         result = self.ssc_library._get_ssc_flexvol_info(
             fake_client.VOLUME_NAMES[0])
@@ -263,7 +266,7 @@ class CapabilitiesLibraryTestCase(test.TestCase):
             'netapp_is_flexgroup': 'false',
         }
         self.assertEqual(expected, result)
-        self.zapi_client.get_flexvol.assert_called_once_with(
+        self.zapi_client.get_flexvol_zapi.assert_called_once_with(
             flexvol_name=fake_client.VOLUME_NAMES[0])
 
     @ddt.data({'vol_space_guarantee': 'file', 'lun_space_guarantee': True},
@@ -279,6 +282,9 @@ class CapabilitiesLibraryTestCase(test.TestCase):
         self.mock_object(self.ssc_library.zapi_client,
                          'get_flexvol',
                          return_value=fake_volume_info_ssc)
+        self.mock_object(self.ssc_library.zapi_client,
+                         'get_flexvol_zapi',
+                         return_value=fake_volume_info_ssc)
 
         result = self.ssc_library._get_ssc_flexvol_info(
             fake_client.VOLUME_NAMES[0])
@@ -291,7 +297,7 @@ class CapabilitiesLibraryTestCase(test.TestCase):
             'netapp_is_flexgroup': 'false',
         }
         self.assertEqual(expected, result)
-        self.zapi_client.get_flexvol.assert_called_once_with(
+        self.zapi_client.get_flexvol_zapi.assert_called_once_with(
             flexvol_name=fake_client.VOLUME_NAMES[0])
 
     @ddt.data({'nfs_sparsed_volumes': True},
@@ -305,6 +311,9 @@ class CapabilitiesLibraryTestCase(test.TestCase):
         self.mock_object(self.ssc_library.zapi_client,
                          'get_flexvol',
                          return_value=fake_client.VOLUME_INFO_SSC)
+        self.mock_object(self.ssc_library.zapi_client,
+                         'get_flexvol_zapi',
+                         return_value=fake_client.VOLUME_INFO_SSC)
 
         result = self.ssc_library._get_ssc_flexvol_info(
             fake_client.VOLUME_NAMES[0])
@@ -317,7 +326,7 @@ class CapabilitiesLibraryTestCase(test.TestCase):
             'netapp_is_flexgroup': 'false',
         }
         self.assertEqual(expected, result)
-        self.zapi_client.get_flexvol.assert_called_once_with(
+        self.zapi_client.get_flexvol_zapi.assert_called_once_with(
             flexvol_name=fake_client.VOLUME_NAMES[0])
 
     @ddt.data({'vol_space_guarantee': 'file', 'nfs_sparsed_volumes': True},
@@ -334,6 +343,9 @@ class CapabilitiesLibraryTestCase(test.TestCase):
         self.mock_object(self.ssc_library.zapi_client,
                          'get_flexvol',
                          return_value=fake_volume_info_ssc)
+        self.mock_object(self.ssc_library.zapi_client,
+                         'get_flexvol_zapi',
+                         return_value=fake_volume_info_ssc)
 
         result = self.ssc_library._get_ssc_flexvol_info(
             fake_client.VOLUME_NAMES[0])
@@ -346,7 +358,7 @@ class CapabilitiesLibraryTestCase(test.TestCase):
             'netapp_is_flexgroup': 'false',
         }
         self.assertEqual(expected, result)
-        self.zapi_client.get_flexvol.assert_called_once_with(
+        self.zapi_client.get_flexvol_zapi.assert_called_once_with(
             flexvol_name=fake_client.VOLUME_NAMES[0])
 
     @ddt.data([], ['netapp_dedup'], ['netapp_compression'])
