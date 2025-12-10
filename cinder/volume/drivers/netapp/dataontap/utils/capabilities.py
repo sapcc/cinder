@@ -128,7 +128,8 @@ class CapabilitiesLibrary(object):
     def _get_ssc_flexvol_info(self, flexvol_name):
         """Gather flexvol info and recast into SSC-style volume stats."""
 
-        volume_info = self.zapi_client.get_flexvol(flexvol_name=flexvol_name)
+        volume_info = self.zapi_client.get_flexvol_zapi(
+            flexvol_name=flexvol_name)
 
         netapp_thick = (volume_info.get('space-guarantee-enabled') and
                         (volume_info.get('space-guarantee') == 'file' or
