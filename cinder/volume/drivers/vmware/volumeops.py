@@ -2817,7 +2817,7 @@ class VMwareVolumeOps(object):
             return NotImplementedError
         netapp_api.file_assign_qos(context, host=netapp_host,
                                    vol_name=netapp_vol,
-                                   os_policy_group_name=qos_profile_name,
+                                   qos_policy_group_name=qos_profile_name,
                                    path=rel_path_to_ds)
 
 
