@@ -977,6 +977,7 @@ class VolumeManager(manager.CleanableManager,
                 request_spec,
                 filter_properties,
                 image_volume_cache=self.image_volume_cache,
+                service_uuid=self.service_uuid
             )
         except Exception:
             msg = _("Create manager volume flow failed.")
@@ -1042,10 +1043,6 @@ class VolumeManager(manager.CleanableManager,
 
         # Shared targets is only relevant for some connections.
         volume.shared_targets = self._driver_shares_targets()
-        # TODO(geguileo): service_uuid won't be enough on Active/Active
-        # deployments. There can be 2 services handling volumes from the same
-        # backend.
-        volume.service_uuid = self.service_uuid
         volume.save()
 
         # propagate any scheduler hint affinity/anti-affinity metadata to
@@ -3666,6 +3663,7 @@ class VolumeManager(manager.CleanableManager,
                 self.host,
                 volume,
                 ref,
+                service_uuid=self.service_uuid,
             )
         except Exception:
             msg = _("Failed to create manage_existing flow.")
