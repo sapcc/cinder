@@ -977,7 +977,8 @@ class VolumeManager(manager.CleanableManager,
                 request_spec,
                 filter_properties,
                 image_volume_cache=self.image_volume_cache,
-                service_uuid=self.service_uuid
+                service_uuid=self.service_uuid,
+                shared_targets=self._driver_shares_targets()
             )
         except Exception:
             msg = _("Create manager volume flow failed.")
@@ -1040,10 +1041,6 @@ class VolumeManager(manager.CleanableManager,
                 # Volume.host is None now, so we pass the original host value.
                 self._update_allocated_capacity(volume, decrement=True,
                                                 host=original_host)
-
-        # Shared targets is only relevant for some connections.
-        volume.shared_targets = self._driver_shares_targets()
-        volume.save()
 
         # propagate any scheduler hint affinity/anti-affinity metadata to
         # other volumes.
@@ -3664,6 +3661,7 @@ class VolumeManager(manager.CleanableManager,
                 volume,
                 ref,
                 service_uuid=self.service_uuid,
+                shared_targets=self._driver_shares_targets()
             )
         except Exception:
             msg = _("Failed to create manage_existing flow.")

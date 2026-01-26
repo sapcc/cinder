@@ -105,7 +105,7 @@ class ManageExistingTask(flow_utils.CinderTask):
 
 
 def get_flow(context, db, driver, host, volume, ref,
-             service_uuid=None):
+             service_uuid=None, shared_targets=None):
     """Constructs and returns the manager entrypoint flow."""
 
     flow_name = ACTION.replace(":", "_") + "_manager"
@@ -130,7 +130,8 @@ def get_flow(context, db, driver, host, volume, ref,
                     create_api.QuotaCommitTask(),
                     create_mgr.CreateVolumeOnFinishTask(
                         db, "manage_existing.end",
-                        service_uuid=service_uuid))
+                        service_uuid=service_uuid,
+                        shared_targets=shared_targets))
 
     # Now load (but do not run) the flow using the provided initial data.
     return taskflow.engines.load(volume_flow, store=create_what)
