@@ -110,7 +110,8 @@ class ManageVolumeTestCase(base.BaseVolumeTestCase):
                                               self.manager.host,
                                               mock_volume,
                                               None,
-                                              service_uuid=None)
+                                              service_uuid=None,
+                                              shared_targets=False)
         mock_flow_engine_run.assert_called_once_with()
         mock_flow_engine_fetch.assert_called_once_with('volume')
 
@@ -130,7 +131,8 @@ class ManageVolumeTestCase(base.BaseVolumeTestCase):
                                               self.manager.host,
                                               volume_object,
                                               None,
-                                              service_uuid=None)
+                                              service_uuid=None,
+                                              shared_targets=False)
 
     def test_update_stats_for_managed(self):
         volume_object = self._stub_volume_object_get(self,
