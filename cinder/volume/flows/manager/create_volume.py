@@ -1285,12 +1285,13 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
     Reversion strategy: N/A
     """
 
-    def __init__(self, db, event_suffix, service_uuid=None):
+    def __init__(self, db, event_suffix, service_uuid=None, shared_targets=None):
         super(CreateVolumeOnFinishTask, self).__init__(db, event_suffix)
         self.status_translation = {
             'migration_target_creating': 'migration_target',
         }
         self.service_uuid = service_uuid
+        self.shared_targets = shared_targets
 
     def execute(self, context, volume, volume_spec):
         need_update_volume = volume_spec.pop('need_update_volume', True)
@@ -1304,9 +1305,11 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
         # TODO(geguileo): service_uuid won't be enough on Active/Active
         # deployments. There can be 2 services handling volumes from the same
         # backend.
+        # Shared targets is only relevant for some connections.
         update = {
             'status': new_status,
             'launched_at': timeutils.utcnow(),
+            'shared_targets': self.shared_targets,
         }
         if self.service_uuid:
             update['service_uuid'] = self.service_uuid
@@ -1333,7 +1336,7 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
 def get_flow(context, manager, db, driver, scheduler_rpcapi, host, volume,
              allow_reschedule, reschedule_context, request_spec,
              filter_properties, image_volume_cache=None,
-             service_uuid=None):
+             service_uuid=None, shared_targets=None):
 
     """Constructs and returns the manager entrypoint flow.
 
@@ -1389,7 +1392,8 @@ def get_flow(context, manager, db, driver, scheduler_rpcapi, host, volume,
                                              driver,
                                              image_volume_cache),
                     CreateVolumeOnFinishTask(db, end_notify_suffix,
-                                             service_uuid=service_uuid))
+                                             service_uuid=service_uuid,
+                                             shared_targets=shared_targets))
 
     # Now load (but do not run) the flow using the provided initial data.
     return taskflow.engines.load(volume_flow, store=create_what)
