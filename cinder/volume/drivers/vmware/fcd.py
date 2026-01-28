@@ -706,6 +706,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if not snapshot.provider_location:
             LOG.debug("FCD snapshot location is empty.")
             return
+
+        # We might be in a situation where the snapshot is still a vmdk
+        # based snapshot, but the owning volume has been migrated to fcd.
+        # in which case the provider_location still looks like a vmdk path.
+        # If so, we need to call the parent class to delete the snapshot.
+        if '/' in snapshot.provider_location:
+            return super(VMwareVStorageObjectDriver,
+                         self).delete_snapshot(snapshot)
         snap_location = self._snap_provider_location_to_moref_location(
             snapshot.provider_location
         )
