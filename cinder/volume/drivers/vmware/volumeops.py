@@ -2317,8 +2317,10 @@ class VMwareVolumeOps(object):
                                             id=fcd_location.id(cf),
                                             datastore=fcd_location.ds_ref())
             self._session.wait_for_task(task)
-        except exceptions.NotFound:
+        except exceptions.FileNotFoundException:
             LOG.warning("Fcd not found: %s.", fcd_location.fcd_id)
+        except Exception as e:
+            LOG.exception(e)
         else:
             folder_path = f"[{ds_name}] {folder}"
             file_list = self.file_list_in_folder(fcd_location.ds_ref(),
@@ -2532,7 +2534,7 @@ class VMwareVolumeOps(object):
                 datastore=fcd_snap_loc.fcd_loc.ds_ref(),
                 snapshotId=fcd_snap_loc.id(cf))
             self._session.wait_for_task(task)
-        except exceptions.NotFound:
+        except exceptions.FileNotFoundException:
             LOG.warning("Fcd snapshot not found: %s.", fcd_snap_loc.snap_id)
             return True
         return True
