@@ -1401,7 +1401,8 @@ class CreateVolumeFlowManagerTestCase(test.TestCase):
                                             mock.sentinel.image_volume_cache)
         onfinish_mock.assert_called_once_with(mock.sentinel.db,
                                               end_notify_suffix,
-                                              service_uuid=None)
+                                              service_uuid=None,
+                                              shared_targets=None)
 
         volume_flow = flow_mock.return_value
         self.assertEqual(len(tasks), volume_flow.add.call_count)
