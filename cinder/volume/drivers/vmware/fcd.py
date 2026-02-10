@@ -852,7 +852,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if volume['attach_status'] == 'attached':
             if self._vcenter_instance_uuid != vcenter:
                 # This is a cross vcenter migration
-                raise self._migrate_attached_cross_vc(
+                return self._migrate_attached_cross_vc(
                     context, dest_host, volume, fcd_loc)
             else:
                 # we can migrate to another datastore in the same vcenter
@@ -1058,13 +1058,15 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
     @volume_utils.trace
     def _migrate_attached_cross_vc(self, context, dest_host, volume, fcd_loc):
-        # Unclear if we need to register the disk after movement
-        # Presumably it won't change as it is also part of the vmdk bdb file
-        self._remote_api.select_ds_for_volume(context,
-                                              cinder_host=dest_host,
-                                              volume=volume)
-        # ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
-        # fcd_loc_new = vops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
+        # Qtree DS has different pool name cross vc, need to update prov_loc
+        ds_info = self._remote_api.select_ds_for_volume(context,
+                                                        cinder_host=dest_host,
+                                                        volume=volume)
+        ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
+        prov_loc = self._remote_api.get_fcd_provider_location(
+            context, dest_host, fcd_loc.fcd_id, ds_ref.value)
+        volume.update({'provider_location': prov_loc})
+        volume.save()
         return (True, None)
 
     @volume_utils.trace
