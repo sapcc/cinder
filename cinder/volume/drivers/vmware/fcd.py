@@ -359,9 +359,15 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             datacenter = vim_util.get_moref_value(
                 self.volumeops.get_dc(backing))
         else:
-            vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
-            datacenter = vim_util.get_moref_value(
-                self.volumeops.get_dc(fcd_loc.ds_ref()))
+            try:
+                vmdk_path = self.volumeops.get_vmdk_path_for_fcd(
+                    fcd_loc=fcd_loc)
+                datacenter = vim_util.get_moref_value(
+                    self.volumeops.get_dc(fcd_loc.ds_ref()))
+            except Exception:
+                LOG.warning("Can't find the fcd object: %s, "
+                            "this can be due to nova migration or "
+                            "VMware issue", fcd_loc.fcd_id)
 
         connection_info = {
             'driver_volume_type': self.STORAGE_TYPE,
