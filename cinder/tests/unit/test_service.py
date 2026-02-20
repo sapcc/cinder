@@ -478,6 +478,121 @@ class ServiceTestCase(test.TestCase):
             self.assertEqual(value, getattr(cluster, key))
 
 
+class TestGracefulShutdown(test.TestCase):
+    """Test cases for Service graceful shutdown."""
+
+    def setUp(self):
+        super(TestGracefulShutdown, self).setUp()
+        self.host = 'foo'
+        self.binary = 'cinder-fake'
+        self.topic = 'fake'
+
+    @mock.patch.object(rpc, 'get_server')
+    @mock.patch('cinder.db')
+    def test_stop_sets_draining(self, mock_db, mock_rpc):
+        """Test that service.stop() sets draining flag."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            'cinder.tests.unit.test_service.FakeManager'
+        )
+        serv.start()
+
+        self.assertFalse(serv.is_draining)
+        serv.stop()
+        self.assertTrue(serv.is_draining)
+
+    @mock.patch.object(rpc, 'get_server')
+    @mock.patch('cinder.db')
+    def test_draining_skips_heartbeat(self, mock_db, mock_rpc):
+        """Test that draining service doesn't report state."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            'cinder.tests.unit.test_service.FakeManager'
+        )
+        serv.start()
+        serv._draining = True
+
+        with mock.patch.object(serv, 'manager') as mock_manager:
+            serv.report_state()
+            # Should not check is_working() since we skip early
+            mock_manager.is_working.assert_not_called()
+
+    @mock.patch('cinder.coordination.COORDINATOR')
+    @mock.patch.object(rpc, 'get_server')
+    @mock.patch('cinder.db')
+    def test_coordination_stops_in_wait_not_stop(self, mock_db, mock_rpc,
+                                                 mock_coord):
+        """Test that coordination stops in wait(), not stop()."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            'cinder.tests.unit.test_service.FakeManager',
+            coordination=True
+        )
+        serv.start()
+
+        serv.stop()
+        mock_coord.stop.assert_not_called()
+
+        serv.wait()
+        mock_coord.stop.assert_called_once()
+
+    @mock.patch.object(rpc, 'get_server')
+    @mock.patch('cinder.db')
+    def test_stop_calls_manager_signal_shutdown(self, mock_db, mock_rpc):
+        """Test that stop() calls manager.signal_shutdown()."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            'cinder.tests.unit.test_service.FakeManager'
+        )
+        serv.start()
+
+        with mock.patch.object(serv.manager, 'signal_shutdown') as mock_signal:
+            serv.stop()
+            mock_signal.assert_called_once()
+
+    @mock.patch.object(rpc, 'get_server')
+    @mock.patch('cinder.db')
+    def test_wait_calls_manager_wait_for_tasks(self, mock_db, mock_rpc):
+        """Test that wait() calls manager.wait_for_tasks()."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            'cinder.tests.unit.test_service.FakeManager'
+        )
+        serv.start()
+        serv.stop()
+
+        with mock.patch.object(serv.manager, 'wait_for_tasks',
+                               return_value=True) as mock_wait:
+            serv.wait()
+            mock_wait.assert_called_once()
+
+    @mock.patch.object(rpc, 'get_server')
+    @mock.patch('cinder.db')
+    def test_is_draining_property(self, mock_db, mock_rpc):
+        """Test is_draining property."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            'cinder.tests.unit.test_service.FakeManager'
+        )
+        serv.start()
+
+        self.assertFalse(serv.is_draining)
+        serv._draining = True
+        self.assertTrue(serv.is_draining)
+
+
 class TestWSGIService(test.TestCase):
 
     @mock.patch('oslo_service.wsgi.Loader')

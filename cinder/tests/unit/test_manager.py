@@ -15,6 +15,8 @@
 
 from unittest import mock
 
+import eventlet
+
 from cinder import manager
 from cinder import objects
 from cinder.tests.unit import test
@@ -54,3 +56,104 @@ class TestManager(test.TestCase):
 
         self.assertEqual(set(str(r) for r in result.objects),
                          set(str(e) for e in expected))
+
+
+class TestThreadPoolManager(test.TestCase):
+    """Test cases for ThreadPoolManager graceful shutdown."""
+
+    def test_wait_for_tasks_completes(self):
+        """Test that wait_for_tasks waits for spawned tasks."""
+        mgr = manager.ThreadPoolManager()
+        completed = []
+
+        def slow_task():
+            eventlet.sleep(0.1)
+            completed.append(True)
+
+        mgr._add_to_threadpool(slow_task)
+        result = mgr.wait_for_tasks()
+
+        self.assertTrue(result)
+        self.assertEqual([True], completed)
+
+    def test_wait_for_tasks_with_timeout(self):
+        """Test that wait_for_tasks respects timeout."""
+        mgr = manager.ThreadPoolManager()
+        completed = []
+
+        def very_slow_task():
+            eventlet.sleep(10)  # Longer than timeout
+            completed.append(True)
+
+        mgr._add_to_threadpool(very_slow_task)
+        # Use a short timeout
+        result = mgr.wait_for_tasks(timeout=0.1)
+
+        self.assertFalse(result)
+        # Task should still be running (not completed)
+        self.assertEqual([], completed)
+
+    def test_wait_for_tasks_no_tasks(self):
+        """Test wait_for_tasks with no tasks returns immediately."""
+        mgr = manager.ThreadPoolManager()
+        result = mgr.wait_for_tasks()
+        self.assertTrue(result)
+
+    def test_wait_for_tasks_zero_timeout_waits_forever(self):
+        """Test that timeout=0 means wait indefinitely."""
+        mgr = manager.ThreadPoolManager()
+        completed = []
+
+        def task():
+            eventlet.sleep(0.1)
+            completed.append(True)
+
+        mgr._add_to_threadpool(task)
+        # timeout=0 should wait forever (not return immediately)
+        result = mgr.wait_for_tasks(timeout=0)
+
+        self.assertTrue(result)
+        self.assertEqual([True], completed)
+
+    def test_signal_shutdown_rejects_new_tasks(self):
+        """Test that new tasks are rejected after shutdown signal."""
+        mgr = manager.ThreadPoolManager()
+        mgr.signal_shutdown()
+
+        executed = []
+        mgr._add_to_threadpool(lambda: executed.append(True))
+
+        # Give it a moment to potentially execute
+        eventlet.sleep(0.1)
+
+        self.assertEqual([], executed)
+
+    def test_signal_shutdown_allows_existing_tasks(self):
+        """Test that existing tasks continue after shutdown signal."""
+        mgr = manager.ThreadPoolManager()
+        completed = []
+
+        def slow_task():
+            eventlet.sleep(0.1)
+            completed.append(True)
+
+        # Spawn task first
+        mgr._add_to_threadpool(slow_task)
+        # Then signal shutdown
+        mgr.signal_shutdown()
+
+        # Wait for tasks should still work
+        result = mgr.wait_for_tasks()
+
+        self.assertTrue(result)
+        self.assertEqual([True], completed)
+
+    def test_add_to_threadpool_before_shutdown(self):
+        """Test tasks can be added before shutdown."""
+        mgr = manager.ThreadPoolManager()
+        executed = []
+
+        mgr._add_to_threadpool(lambda: executed.append(True))
+        mgr.wait_for_tasks()
+
+        self.assertEqual([True], executed)

@@ -51,6 +51,9 @@ This module provides Manager, a base class for managers.
 
 """
 
+import threading
+
+import eventlet
 from eventlet import greenpool
 from eventlet import tpool
 from oslo_config import cfg
@@ -161,12 +164,73 @@ class Manager(base.Base, PeriodicTasks):
 
 
 class ThreadPoolManager(Manager):
+    """Manager class that provides a managed thread pool.
+
+    Tasks spawned via _add_to_threadpool() will be waited on during
+    graceful shutdown, ensuring in-flight operations complete before
+    the service terminates.
+    """
+
     def __init__(self, *args, **kwargs):
         self._tp = greenpool.GreenPool()
+        self._shutdown_event = threading.Event()
         super(ThreadPoolManager, self).__init__(*args, **kwargs)
 
     def _add_to_threadpool(self, func, *args, **kwargs):
+        """Spawn a task in the threadpool.
+
+        Tasks spawned here will be waited on during graceful shutdown.
+        If shutdown has been signaled, new tasks will be rejected.
+
+        :param func: The function to execute
+        :param args: Positional arguments to pass to the function
+        :param kwargs: Keyword arguments to pass to the function
+        """
+        if self._shutdown_event.is_set():
+            LOG.warning("Rejecting threadpool task during shutdown: %s",
+                        func.__name__)
+            return
         self._tp.spawn_n(func, *args, **kwargs)
+
+    def wait_for_tasks(self, timeout=None):
+        """Wait for all threadpool tasks to complete.
+
+        This method blocks until all tasks spawned via _add_to_threadpool()
+        have completed, or until the timeout is reached.
+
+        :param timeout: Maximum time to wait in seconds. None means wait
+                        indefinitely. 0 also means wait indefinitely.
+        :returns: True if all tasks completed, False if timeout was reached.
+        """
+        running = self._tp.running()
+        if running > 0:
+            LOG.info("Waiting for %d threadpool tasks to complete...", running)
+
+        # Treat 0 as "wait forever" for compatibility with oslo.service
+        if timeout == 0:
+            timeout = None
+
+        if timeout:
+            with eventlet.Timeout(timeout, False):
+                self._tp.waitall()
+                LOG.info("All threadpool tasks completed.")
+                return True
+            LOG.warning("Timeout waiting for threadpool tasks. "
+                        "%d tasks still running.", self._tp.running())
+            return False
+        else:
+            self._tp.waitall()
+            LOG.info("All threadpool tasks completed.")
+            return True
+
+    def signal_shutdown(self):
+        """Signal that shutdown is in progress.
+
+        After this is called, new tasks submitted via _add_to_threadpool()
+        will be rejected. Existing tasks will continue to run.
+        """
+        LOG.info("Shutdown signaled, rejecting new threadpool tasks")
+        self._shutdown_event.set()
 
 
 class SchedulerDependentManager(ThreadPoolManager):

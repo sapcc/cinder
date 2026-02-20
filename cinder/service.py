@@ -85,7 +85,21 @@ service_opts = [
     cfg.BoolOpt('osapi_volume_use_ssl',
                 default=False,
                 help='Wraps the socket in a SSL context if True is set. '
-                     'A certificate file and key file must be specified.'), ]
+                     'A certificate file and key file must be specified.'),
+    cfg.IntOpt('graceful_shutdown_timeout',
+               default=120,
+               min=0,
+               help='Maximum time in seconds to wait for operations to '
+                    'complete during graceful shutdown. A value of 0 means '
+                    'wait indefinitely. This should be less than the '
+                    'Kubernetes terminationGracePeriodSeconds if running '
+                    'in Kubernetes. Default: 120 seconds.'),
+    cfg.BoolOpt('graceful_shutdown_reject_new_operations',
+                default=True,
+                help='If True, reject new operations at the manager level '
+                     'during shutdown (defense in depth). If False, rely '
+                     'only on RPC server stop to prevent new work.'),
+]
 
 
 CONF = cfg.CONF
@@ -151,6 +165,7 @@ class Service(service.Service):
         self.topic = topic
         self.manager_class_name = manager
         self.coordination = coordination
+        self._draining = False  # Flag to indicate graceful shutdown in progress
         manager_class = importutils.import_class(self.manager_class_name)
         if CONF.profiler.enabled:
             manager_class = profiler.trace_cls("rpc")(manager_class)
@@ -429,33 +444,93 @@ class Service(service.Service):
         return service_obj
 
     def stop(self) -> None:
-        # Try to shut the connection down, but if we get any sort of
-        # errors, go ahead and ignore them.. as we're shutting down anyway
+        """Stop the service gracefully.
+
+        This method:
+        1. Sets draining state (stops heartbeat reporting)
+        2. Signals manager to reject new threadpool tasks
+        3. Stops all RPC servers (removes from consumer list)
+        4. Does NOT stop coordination here (needed during drain)
+        5. Does NOT cleanup RPC transport (needed for outbound RPC)
+
+        The coordination service and actual waiting for tasks is done
+        in wait() to allow in-flight operations to complete while still
+        being able to make outbound RPC calls and hold distributed locks.
+        """
+        LOG.info("Initiating graceful shutdown for service %s on host %s",
+                 self.binary, self.host)
+
+        # Set draining state - stops heartbeat reporting
+        self._draining = True
+
+        # Signal manager to stop accepting new threadpool tasks
+        if hasattr(self.manager, 'signal_shutdown'):
+            self.manager.signal_shutdown()
+
+        # Stop accepting new RPC messages
+        # This removes us from RabbitMQ consumer list
+        # New messages will go to other service instances
         try:
             if self.rpcserver is not None:
+                LOG.info("Stopping RPC server (topic: %s)", self.topic)
                 self.rpcserver.stop()
             if self.backend_rpcserver:
                 self.backend_rpcserver.stop()
             if self.cluster_rpcserver:
                 self.cluster_rpcserver.stop()
         except Exception:
-            pass
+            LOG.exception("Error stopping RPC servers")
 
-        if self.coordination:
-            try:
-                coordination.COORDINATOR.stop()
-            except Exception:
-                pass
+        # NOTE: Do NOT stop coordination here!
+        # In-flight operations may still need distributed locks.
+        # Coordination will be stopped in wait() after operations complete.
+
+        # NOTE: Do NOT cleanup RPC transport here!
+        # In-flight operations may need to make outbound RPC calls.
+
         super(Service, self).stop(graceful=True)
 
     def wait(self) -> None:
+        """Wait for all service operations to complete.
+
+        This method:
+        1. Waits for manager threadpool tasks (outbound RPC still available)
+        2. Waits for in-flight RPC handlers (outbound RPC still available)
+        3. Stops coordination service (after all ops complete)
+        """
+        # Wait for manager's threadpool tasks
+        # Outbound RPC is still available during this time
+        if hasattr(self.manager, 'wait_for_tasks'):
+            timeout = CONF.graceful_shutdown_timeout
+            if timeout == 0:
+                timeout = None  # 0 means wait forever
+            LOG.info("Waiting for manager tasks (timeout=%s seconds)", timeout)
+            completed = self.manager.wait_for_tasks(timeout=timeout)
+            if not completed:
+                LOG.warning("Some manager tasks did not complete within "
+                            "timeout")
+
+        # Wait for RPC servers to finish processing in-flight requests
+        # Outbound RPC is still available during this time
+        LOG.info("Waiting for in-flight RPC requests to complete...")
         if self.rpcserver:
             self.rpcserver.wait()
         if self.backend_rpcserver:
             self.backend_rpcserver.wait()
         if self.cluster_rpcserver:
             self.cluster_rpcserver.wait()
+
+        # NOW stop coordination - all operations have completed
+        # and no longer need distributed locks
+        if self.coordination:
+            try:
+                LOG.info("Stopping coordination service")
+                coordination.COORDINATOR.stop()
+            except Exception:
+                LOG.exception("Error stopping coordination")
+
         super(Service, self).wait()
+        LOG.info("Service %s shutdown complete", self.binary)
 
     def periodic_tasks(self, raise_on_error: bool = False) -> None:
         """Tasks to be run at a periodic interval."""
@@ -464,6 +539,12 @@ class Service(service.Service):
 
     def report_state(self) -> None:
         """Update the state of this service in the datastore."""
+        # Don't report state if we're draining
+        # This causes scheduler to see us as "down" after service_down_time
+        if self._draining:
+            LOG.debug("Service is draining, skipping state report")
+            return
+
         if not self.manager.is_working():
             # NOTE(dulek): If manager reports a problem we're not sending
             # heartbeats - to indicate that service is actually down.
@@ -517,6 +598,11 @@ class Service(service.Service):
     def reset(self) -> None:
         self.manager.reset()
         super(Service, self).reset()
+
+    @property
+    def is_draining(self) -> bool:
+        """Return True if the service is shutting down gracefully."""
+        return self._draining
 
 
 class WSGIService(service.ServiceBase):
