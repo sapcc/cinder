@@ -3482,6 +3482,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     @volume_utils.trace
     def _migrate_to_fcd(self, context, volume, host):
 
+        cross_vc = False
         info = host['capabilities']['location_info']
         false_ret = (False, None)
         if 'location_info' not in host['capabilities']:
@@ -3491,6 +3492,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             (driver_name, vcenter) = info.split(':')
         except ValueError:
             return false_ret
+        if self._vcenter_instance_uuid != vcenter:
+            cross_vc = True
         dest_host = host['host']
         tgt_ds = self._remote_api.select_ds_for_volume(
             context, cinder_host=dest_host, volume=volume
@@ -3500,7 +3503,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if not backing:
             # we need to create the backing and then migrate it.
             LOG.debug("Backing does not exist for volume.", resource=volume)
-            backing = self._create_backing(volume)
+            # backing = self._create_backing(volume)
+            # At the moment due to a bug we created lot of emptry backing
+            # We fail if backing does not exists...
             if not backing:
                 msg = ("Failed to create backing for vmdk volume prior to "
                        "migration to fcd.")
@@ -3541,17 +3546,25 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self.volumeops.delete_backing(backing)
         ds_ref = vim_util.get_moref(tgt_ds['datastore'], 'Datastore')
         profile_id = tgt_ds.get('profile_id')
+        get_sl = self._remote_api.get_service_locator_info
         if (ds_ref.value != summary.datastore.value):
             # Migration required
             if volume['attach_status'] == 'detached':
+                if cross_vc:
+                    service_locator = get_sl(context, dest_host)
+                else:
+                    service_locator = None
                 self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                            service=None,
+                                            service=service_locator,
                                             profile_id=profile_id)
                 old_mref = summary.datastore.value
                 new_prov_loc = prov_loc.replace(old_mref, ds_ref.value)
-                prov_loc = self._provider_location_to_ds_name_location(
-                    new_prov_loc
-                )
+                if cross_vc:
+                    prov_loc = self._remote_api.get_fcd_provider_location(
+                        context, dest_host, fcd_loc.fcd_id, ds_ref.value)
+                else:
+                    prov_loc = self._provider_location_to_ds_name_location(
+                        new_prov_loc)
                 volume.update({'provider_location': prov_loc})
                 volume.save()
                 return (True, None)
