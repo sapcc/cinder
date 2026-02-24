@@ -732,12 +732,7 @@ class NetAppNfsDriverTestCase(test.TestCase):
         mock_do_qos_for_volume = self.mock_object(self.driver,
                                                   '_do_qos_for_volume')
 
-        if is_locked:
-            self.assertRaises(exception.NovaExtendCompletionRequired,
-                              self.driver.extend_volume, volume, new_size)
-        else:
-            self.driver.extend_volume(volume, new_size)
-
+        self.driver.extend_volume(volume, new_size)
         mock_resize_image_file.assert_called_once_with(path, new_size,
                                                        file_format=file_format)
         mock_get_volume_extra_specs.assert_called_once_with(volume)

@@ -946,7 +946,7 @@ class NetAppNfsDriver(driver.ManageableVD,
             self._resize_image_file(path, new_size,
                                     file_format=file_format)
         except processutils.ProcessExecutionError as ex:
-            if (self._is_volume_attached(volume)):
+            if (self._is_volume_attached(volume) and ex.stderr):
                 require_nova_completion = True
             else:
                 raise
@@ -975,6 +975,7 @@ class NetAppNfsDriver(driver.ManageableVD,
         if require_nova_completion:
             LOG.warning('Extend volume continune on nova side for vol:%s',
                         volume['id'])
+
     def _is_share_clone_compatible(self, volume, share):
         """Checks if share is compatible with volume to host its clone."""
         raise NotImplementedError()
