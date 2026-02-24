@@ -943,11 +943,13 @@ class NetAppNfsDriver(driver.ManageableVD,
                 context.get_admin_context(), volume.id).admin_metadata
             if admin_metadata and 'format' in admin_metadata:
                 file_format = admin_metadata['format']
+            self._resize_image_file(path, new_size,
+                                    file_format=file_format)
+        except processutils.ProcessExecutionError as ex:
             if (self._is_volume_attached(volume)):
                 require_nova_completion = True
             else:
-                self._resize_image_file(path, new_size,
-                                        file_format=file_format)
+                raise
         except Exception as err:
             exception_msg = (_("Failed to extend volume "
                                "%(name)s, Error msg: %(msg)s.") %
@@ -971,8 +973,8 @@ class NetAppNfsDriver(driver.ManageableVD,
             raise exception.VolumeBackendAPIException(data=exception_msg)
 
         if require_nova_completion:
-            raise exception.NovaExtendCompletionRequired()
-
+            LOG.warning('Extend volume continune on nova side for vol:%s',
+                        volume['id'])
     def _is_share_clone_compatible(self, volume, share):
         """Checks if share is compatible with volume to host its clone."""
         raise NotImplementedError()
