@@ -466,8 +466,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 self._provider_location_to_moref_location(
                     volume.provider_location))
             if backing:
-                self.volumeops.detach_fcd(backing, fcd_loc)
-                self._delete_temp_backing(backing)
+                try:
+                    self.volumeops.detach_fcd(backing, fcd_loc)
+                except Exception:
+                    LOG.warning("Can't detach backing for volume %s",
+                                volume.id)
+                finally:
+                    LOG.debug("Cleaning up backing for volume %s", volume.id)
+                    self._delete_temp_backing(backing)
 
     def _validate_container_format(self, container_format, image_id):
         if container_format and container_format != 'bare':
