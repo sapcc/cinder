@@ -428,7 +428,7 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
             pool['consistencygroup_support'] = True
             pool['consistent_group_snapshot_enabled'] = True
             pool['multiattach'] = True
-            pool['online_extend_support'] = False
+            pool['online_extend_support'] = True
 
             is_flexgroup = ssc_vol_info.get('netapp_is_flexgroup') == 'true'
             if is_flexgroup:
