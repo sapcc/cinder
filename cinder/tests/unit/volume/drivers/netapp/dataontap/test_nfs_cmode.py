@@ -248,6 +248,8 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             'pool_name': '10.10.10.10:/vola',
             'pool_state': 'up',
             'pool_down_reason': '',
+            'backend_state': 'up',
+            'backend_availability_zone': None,
             'reserved_percentage': fake.RESERVED_PERCENTAGE,
             'max_over_subscription_ratio': fake.MAX_OVER_SUBSCRIPTION_RATIO,
             'multiattach': True,
