@@ -15,6 +15,7 @@
 
 import datetime
 import enum
+import json
 from unittest import mock
 from unittest.mock import call
 
@@ -4078,3 +4079,133 @@ class OnlineMigrationTestCase(BaseTest):
         vol3_admin_meta.pop('temporary')
         self.assertEqual(({}, vol3_admin_meta),
                          (vol3.metadata, vol2.admin_metadata))
+
+
+class DBAPIVolumeHistoryTestCase(BaseTest):
+    """Test cases for volume history tracking functionality."""
+
+    def test_volume_create_records_history(self):
+        """Test that volume creation records history."""
+        vol = utils.create_volume(self.ctxt, display_name='test-vol',
+                                  size=10, use_quota=False)
+
+        history = db.volume_history_get_all_by_volume(self.ctxt, vol.id)
+
+        self.assertEqual(1, len(history))
+        self.assertEqual(vol.id, history[0].volume_id)
+        self.assertEqual('create', history[0].action)
+        self.assertEqual(self.ctxt.project_id, history[0].project_id)
+        self.assertEqual(self.ctxt.user_id, history[0].user_id)
+
+        changes = json.loads(history[0].changes)
+        self.assertIn('id', changes)
+        self.assertEqual([None, vol.id], changes['id'])
+        self.assertIn('display_name', changes)
+        self.assertEqual([None, 'test-vol'], changes['display_name'])
+        self.assertIn('size', changes)
+        self.assertEqual([None, 10], changes['size'])
+
+    def test_volume_update_records_history(self):
+        """Test that volume update records history with changed fields."""
+        vol = utils.create_volume(self.ctxt, display_name='test-vol',
+                                  status='available', use_quota=False)
+
+        # Update the volume
+        db.volume_update(self.ctxt, vol.id, {'display_name': 'updated-vol',
+                                             'status': 'in-use'})
+
+        history = db.volume_history_get_all_by_volume(self.ctxt, vol.id)
+
+        # Should have 2 entries: create + update
+        self.assertEqual(2, len(history))
+
+        # Check the update history entry
+        update_history = history[1]
+        self.assertEqual('update', update_history.action)
+
+        changes = json.loads(update_history.changes)
+        self.assertIn('display_name', changes)
+        self.assertEqual(['test-vol', 'updated-vol'], changes['display_name'])
+        self.assertIn('status', changes)
+        self.assertEqual(['available', 'in-use'], changes['status'])
+
+    def test_volume_update_no_changes_no_history(self):
+        """Test that updating with same values doesn't record history."""
+        vol = utils.create_volume(self.ctxt, display_name='test-vol',
+                                  use_quota=False)
+
+        # Update with no actual changes
+        db.volume_update(self.ctxt, vol.id, {'display_name': 'test-vol'})
+
+        history = db.volume_history_get_all_by_volume(self.ctxt, vol.id)
+
+        # Should only have the create entry
+        self.assertEqual(1, len(history))
+        self.assertEqual('create', history[0].action)
+
+    def test_volume_destroy_records_history(self):
+        """Test that volume destroy records history."""
+        vol = utils.create_volume(self.ctxt, display_name='test-vol',
+                                  status='available', use_quota=False)
+
+        db.volume_destroy(self.ctxt, vol.id)
+
+        # Need to read deleted records to see the history
+        history = db.volume_history_get_all_by_volume(self.ctxt, vol.id)
+
+        # Should have create + destroy entries
+        self.assertEqual(2, len(history))
+
+        destroy_history = history[1]
+        self.assertEqual('destroy', destroy_history.action)
+
+        changes = json.loads(destroy_history.changes)
+        self.assertIn('status', changes)
+        self.assertEqual(['available', 'deleted'], changes['status'])
+
+    def test_volume_history_ordered_by_created_at(self):
+        """Test that history records are ordered by created_at."""
+        vol = utils.create_volume(self.ctxt, display_name='test-vol',
+                                  status='creating', use_quota=False)
+
+        # Make several updates
+        db.volume_update(self.ctxt, vol.id, {'status': 'available'})
+        db.volume_update(self.ctxt, vol.id, {'status': 'in-use'})
+        db.volume_update(self.ctxt, vol.id, {'status': 'available'})
+
+        history = db.volume_history_get_all_by_volume(self.ctxt, vol.id)
+
+        self.assertEqual(4, len(history))
+        self.assertEqual('create', history[0].action)
+        self.assertEqual('update', history[1].action)
+        self.assertEqual('update', history[2].action)
+        self.assertEqual('update', history[3].action)
+
+        # Verify ordering by checking timestamps
+        for i in range(len(history) - 1):
+            self.assertLessEqual(history[i].created_at,
+                                 history[i + 1].created_at)
+
+    def test_volume_history_request_id_captured(self):
+        """Test that request_id is captured in history."""
+        # Create context with request_id
+        ctx = context.RequestContext(user_id=fake.USER_ID,
+                                     project_id=fake.PROJECT_ID,
+                                     is_admin=True)
+        self.assertIsNotNone(ctx.request_id)
+
+        vol = utils.create_volume(ctx, display_name='test-vol',
+                                  use_quota=False)
+
+        history = db.volume_history_get_all_by_volume(ctx, vol.id)
+
+        self.assertEqual(1, len(history))
+        self.assertEqual(ctx.request_id, history[0].request_id)
+
+    def test_volume_history_get_all_by_volume_empty(self):
+        """Test getting history for volume with no history returns empty."""
+        # Use a fake volume ID that doesn't exist
+        history = db.volume_history_get_all_by_volume(
+            self.ctxt, fake.VOLUME_ID)
+
+        self.assertEqual([], history)
