@@ -39,6 +39,7 @@ from collections import abc
 import datetime as dt
 import functools
 import itertools
+import json
 import re
 import sys
 import uuid
@@ -1990,11 +1991,52 @@ def volume_attached(
     del updated_values['updated_at']
 
     volume_ref = _volume_get(context, volume_attachment_ref['volume_id'])
+    # Capture old values before update for history
+    old_status = volume_ref['status']
+    old_attach_status = volume_ref['attach_status']
+
     volume_ref['status'] = volume_status
     volume_ref['attach_status'] = attach_status
     volume_ref.save(context.session)
 
+    # Record attachment in volume history
+    attach_changes = {}
+    if old_status != volume_status:
+        attach_changes['status'] = [old_status, volume_status]
+    if old_attach_status != str(attach_status):
+        attach_changes['attach_status'] = [old_attach_status,
+                                           str(attach_status)]
+    if attach_changes:
+        _record_volume_history(context, volume_attachment_ref['volume_id'],
+                               'attach', attach_changes)
+
     return volume_ref, updated_values
+
+
+def _record_volume_history(context, volume_id, action, changes,
+                           project_id=None, user_id=None):
+    """Record a volume state change in the volume_history table.
+
+    Args:
+        context: The request context
+        volume_id: UUID of the volume
+        action: Type of action (create, update, destroy, attach, detach)
+        changes: Dict of changes, where each key is a field name and
+                 value is [old_value, new_value]
+        project_id: Override project_id (defaults to context.project_id)
+        user_id: Override user_id (defaults to context.user_id)
+    """
+    if not changes:
+        return
+    history = models.VolumeHistory()
+    history.id = str(uuid.uuid4())
+    history.volume_id = volume_id
+    history.project_id = project_id or getattr(context, 'project_id', None)
+    history.user_id = user_id or getattr(context, 'user_id', None)
+    history.request_id = getattr(context, 'request_id', None)
+    history.action = action
+    history.changes = json.dumps(changes)
+    context.session.add(history)
 
 
 @handle_db_data_error
@@ -2020,6 +2062,12 @@ def volume_create(context, values):
     volume_ref.update(values)
 
     context.session.add(volume_ref)
+
+    # Record creation in volume history
+    create_changes = {k: [None, v] for k, v in values.items()
+                      if k not in ('metadata', 'admin_metadata',
+                                   'volume_metadata', 'volume_admin_metadata')}
+    _record_volume_history(context, values['id'], 'create', create_changes)
 
     return _volume_get(context, values['id'])
 
@@ -2114,6 +2162,7 @@ VOLUME_DEPENDENT_MODELS = frozenset(
         models.Transfer,
         models.VolumeGlanceMetadata,
         models.VolumeAttachment,
+        models.VolumeHistory,
     ]
 )
 
@@ -2129,6 +2178,18 @@ def volume_destroy(context, volume_id):
         'deleted_at': now,
         'migration_status': None,
     }
+    query = model_query(context, models.Volume).filter_by(id=volume_id)
+
+    # Record destruction in volume history before updating
+    volume_ref = query.first()
+    if volume_ref:
+        destroy_changes = {
+            'status': [volume_ref.status, 'deleted'],
+            'deleted': [False, True],
+        }
+        _record_volume_history(context, volume_id, 'destroy', destroy_changes)
+
+    # Re-fetch query since .first() consumed it
     query = model_query(context, models.Volume).filter_by(id=volume_id)
     entity = query.column_descriptions[0]['entity']
     updated_values['updated_at'] = entity.updated_at
@@ -2259,6 +2320,10 @@ def volume_detached(context, volume_id, attachment_id):
         for_update=True,
     )
 
+    # Capture old values for history before any changes
+    old_status = volume['status']
+    old_attach_status = volume['attach_status']
+
     try:
         attachment = _attachment_get(context, attachment_id)
         attachment_updates = attachment.delete(context.session)
@@ -2284,6 +2349,18 @@ def volume_detached(context, volume_id, attachment_id):
     volume.update(volume_updates)
     volume.save(context.session)
     del volume_updates['updated_at']
+
+    # Record detachment in volume history
+    detach_changes = {}
+    new_status = volume_updates.get('status')
+    new_attach_status = volume_updates.get('attach_status')
+    if new_status and old_status != new_status:
+        detach_changes['status'] = [old_status, new_status]
+    if new_attach_status and old_attach_status != new_attach_status:
+        detach_changes['attach_status'] = [old_attach_status,
+                                           new_attach_status]
+    if detach_changes:
+        _record_volume_history(context, volume_id, 'detach', detach_changes)
 
     return volume_updates, attachment_updates
 
@@ -3252,9 +3329,44 @@ def volume_update(context, volume_id, values):
         )
 
     query = _volume_get_query(context, joined_load=False)
-    result = query.filter_by(id=volume_id).update(values)
-    if not result:
-        raise exception.VolumeNotFound(volume_id=volume_id)
+    # Only record history and update if there are actual column changes
+    if values:
+        # Fetch current values for history delta
+        volume_ref = query.filter_by(id=volume_id).first()
+        if not volume_ref:
+            raise exception.VolumeNotFound(volume_id=volume_id)
+        history_changes = {}
+        for key, val in values.items():
+            old_val = getattr(volume_ref, key, None)
+            if old_val != val:
+                history_changes[key] = [old_val, val]
+        # Re-fetch query for update
+        query = _volume_get_query(context, joined_load=False)
+        result = query.filter_by(id=volume_id).update(values)
+        if not result:
+            raise exception.VolumeNotFound(volume_id=volume_id)
+        if history_changes:
+            _record_volume_history(context, volume_id, 'update',
+                                   history_changes)
+    else:
+        # Only metadata was updated, verify volume exists
+        result = query.filter_by(id=volume_id).first()
+        if not result:
+            raise exception.VolumeNotFound(volume_id=volume_id)
+
+
+@require_context
+@main_context_manager.reader
+def volume_history_get_all_by_volume(context, volume_id):
+    """Get all history records for a volume.
+
+    Returns history records ordered by creation time (oldest first).
+    """
+    return model_query(
+        context, models.VolumeHistory
+    ).filter_by(volume_id=volume_id).order_by(
+        models.VolumeHistory.created_at
+    ).all()
 
 
 @handle_db_data_error
