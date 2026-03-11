@@ -4211,3 +4211,18 @@ class DBAPIVolumeHistoryTestCase(BaseTest):
             self.ctxt, fake.VOLUME_ID)
 
         self.assertEqual([], history)
+
+    def test_volume_history_disabled_by_config(self):
+        """Test that history is not recorded when config option is disabled."""
+        self.override_config('volume_history_enabled', False)
+
+        vol = utils.create_volume(self.ctxt, display_name='test-vol',
+                                  size=10, use_quota=False)
+
+        # Update the volume
+        db.volume_update(self.ctxt, vol.id, {'display_name': 'updated-vol'})
+
+        history = db.volume_history_get_all_by_volume(self.ctxt, vol.id)
+
+        # Should have no history entries when disabled
+        self.assertEqual(0, len(history))

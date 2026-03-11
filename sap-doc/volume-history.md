@@ -17,6 +17,41 @@ This feature provides a complete audit trail of volume lifecycle events by recor
 3. History records are soft-deleted when the parent volume is destroyed
 4. History records are purged by the existing `cinder-manage db purge` job
 
+## Configuration
+
+Volume history tracking is enabled by default but can be disabled for high-throughput environments where the additional DB overhead is a concern.
+
+### Config Option
+
+In `cinder.conf`:
+
+```ini
+[DEFAULT]
+# Enable or disable volume history tracking (default: True)
+volume_history_enabled = True
+```
+
+### When to Disable
+
+Consider disabling history tracking if:
+- You have a very high volume of status transitions (thousands per minute)
+- DB latency is critical and every millisecond counts
+- You don't need audit trail functionality
+
+### Performance Impact
+
+When enabled, the overhead per operation is:
+
+| Operation | Extra SELECT | Extra INSERT |
+|-----------|--------------|--------------|
+| `volume_update()` | 1 (by PK) | 1 |
+| `volume_destroy()` | 1 (by PK) | 1 |
+| `volume_create()` | 0 | 1 |
+| `volume_attached()` | 0 | 1 |
+| `volume_detached()` | 0 | 1 |
+
+All operations occur within the same DB transaction, and SELECT queries use the primary key index.
+
 ## Tracked Actions
 
 | Action | Description | Changes Captured |
@@ -127,6 +162,7 @@ def _record_volume_history(context, volume_id, action, changes,
 ```
 
 This helper:
+- Checks if `CONF.volume_history_enabled` is True (returns early if disabled)
 - Creates a new `VolumeHistory` record
 - Serializes the changes dict to JSON
 - Extracts project_id, user_id, and request_id from context
@@ -172,6 +208,7 @@ Maintain a record of all volume operations for regulatory compliance.
 
 | File | Description |
 |------|-------------|
+| `cinder/common/config.py` | `volume_history_enabled` config option |
 | `cinder/db/sqlalchemy/models.py` | VolumeHistory model definition |
 | `cinder/db/sqlalchemy/api.py` | History recording and query functions |
 | `cinder/db/api.py` | Pass-through DB API |

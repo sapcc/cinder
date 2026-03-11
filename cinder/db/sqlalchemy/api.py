@@ -50,6 +50,7 @@ from oslo_db import exception as db_exc
 from oslo_db import options
 from oslo_db.sqlalchemy import enginefacade
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
@@ -2025,7 +2026,13 @@ def _record_volume_history(context, volume_id, action, changes,
                  value is [old_value, new_value]
         project_id: Override project_id (defaults to context.project_id)
         user_id: Override user_id (defaults to context.user_id)
+
+    Note:
+        This function respects the CONF.volume_history_enabled config option.
+        When disabled, no history is recorded.
     """
+    if not CONF.volume_history_enabled:
+        return
     if not changes:
         return
     history = models.VolumeHistory()
@@ -2035,7 +2042,7 @@ def _record_volume_history(context, volume_id, action, changes,
     history.user_id = user_id or getattr(context, 'user_id', None)
     history.request_id = getattr(context, 'request_id', None)
     history.action = action
-    history.changes = json.dumps(changes)
+    history.changes = jsonutils.dumps(changes)
     context.session.add(history)
 
 
