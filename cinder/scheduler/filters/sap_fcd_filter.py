@@ -31,10 +31,21 @@ class SAPFCDFilter(filters.BaseBackendFilter):
     ensures that a cross vcenter migration results in no data movement.
     """
 
+    _SHARD_PREFIX = 'vc-'
+
     def _is_vmware_fcd(self, backend_state):
         if backend_state.storage_protocol != 'vstorageobject':
             return False
         return True
+
+    def _extract_shard_from_host(self, host):
+        """Extract the shard from the host."""
+
+        # get the string starting with the shard from the host
+        # vc-d-X@backend#pool
+        shard_plus = host[host.find(self._SHARD_PREFIX):]
+        # Now get only the shard. This is the string until the next @
+        return shard_plus[:shard_plus.find('@')]
 
     def backend_passes(self, backend_state, filter_properties):
 
@@ -107,6 +118,18 @@ class SAPFCDFilter(filters.BaseBackendFilter):
             return True
 
         # we switch pools
+
+        tpool_mpath = backend_state.capabilities.get('mount_path', '')
+        if tpool_mpath != "" and len(tpool_mpath.split('/')) == 3:
+            # mount_path is qtree path
+            # 192.168.8.1:/nfs_stnpca2_st051_ds03/nfs_stnpca2_st051_ds03_vc_b_2
+            tpool_vol = tpool_mpath.split(':')[1].split('/')[1]
+            orig_shard = self._extract_shard_from_host(orig_host)
+            orig_shard_ = orig_shard.replace('-', '_')
+            if orig_pool.replace("_%s" % orig_shard_, '') == tpool_vol:
+                LOG.debug("Allow migration to same qtree pool %s %s %s",
+                          orig_pool, filter_pool, backend_state.host)
+                return True
 
         # if we move on the same host, it's fine if we switch pools
         if orig_host_name == filter_host:

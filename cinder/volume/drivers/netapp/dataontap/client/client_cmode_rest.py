@@ -787,8 +787,11 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
     def get_file_sizes_by_dir(self, dir_path):
         """Gets the list of files and their sizes from a given directory."""
 
-        # 'dir_path' will always be a FlexVol name
-        volume = self._get_volume_by_args(vol_name=dir_path)
+        vol_name = dir_path.split('/')[0]
+        volume = self._get_volume_by_args(vol_name=vol_name)
+        dir_rel_to_vol = '/'.join(dir_path.split('/')[1:])
+        # Path requires "%2E" to represent "." and "%2F" to represent "/".
+        dir_rel_to_vol = dir_rel_to_vol.replace('.', '%2E').replace('/', '%2F')
 
         query = {
             'type': 'file',
@@ -798,7 +801,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         vol_uuid = volume['uuid']
         try:
             response = self.send_request(
-                f'/storage/volumes/{vol_uuid}/files',
+                f'/storage/volumes/{vol_uuid}/files/{dir_rel_to_vol}',
                 'get', query=query)
         except netapp_api.NaApiError as e:
             if e.code == netapp_api.REST_NO_SUCH_FILE:
@@ -2923,11 +2926,14 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         body = {'comment': comment}
         self.send_request(f'/storage/volumes/{uuid}', 'patch', body=body)
 
-    def get_volume_comment(self, volume_name):
+    def get_volume_comment(self, volume_name) -> str:
         """get comment on volume"""
 
         query = {'fields': 'name,comment'}
         query['name'] = volume_name
         volumes_response = self.send_request('/storage/volumes',
                                              'get', query=query)
-        return volumes_response['records'][0]['comment']
+        LOG.info('Volumes response: %s', volumes_response)
+        if (volumes_response and volumes_response.get('num_records', 0) > 0):
+            return volumes_response['records'][0]['comment']
+        return None

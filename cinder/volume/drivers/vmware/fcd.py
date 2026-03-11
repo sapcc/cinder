@@ -68,6 +68,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     # FCD Cross vcenter migration is available in 8.0.3
     FCD_CROSS_VC_MIGRATION_VC_VERSION = '8.0.3'
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    # 1.0.1 - properly set data's 'datacenter' as MoRef value
+    ATTACHMENT_VERSION = '1.0.1'
+
     def _driver_name(self):
         return LOCATION_DRIVER_NAME
 
@@ -88,6 +96,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         self._use_fcd_snapshot = False
         self._storage_policy_enabled = vc_67_compatible
         self._use_fcd_cross_vc_migration = cross_vc_migration
+        self._admin_context = context
 
         if CONF.sap_allow_independent_snapshots:
             # If we setup cinder to allow independent snapshots, we can
@@ -219,6 +228,17 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             return super(VMwareVStorageObjectDriver,
                          self)._get_adapter_type(volume)
 
+    def set_qos_on_fcd(self, fcd_loc, qos_profile_name):
+        ds_ref = fcd_loc.ds_ref()
+        context = self._admin_context
+        netapp_api = self._remote_netapp_api
+        netapp_fqdn = self.volumeops.get_netapp_for_ds(ds_ref)
+        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+        vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+        if qos_profile_name and netapp_host:
+            self.volumeops.set_qos(context, ds_ref, netapp_api, netapp_host,
+                                   vmdk_path, qos_profile_name)
+
     @volume_utils.trace
     def create_volume(self, volume):
         """Create a new volume on the backend.
@@ -237,18 +257,35 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         fcd_loc = self.volumeops.create_fcd(
             volume.id, volume.name, volume.size * units.Ki, ds_ref,
             disk_type, profile_id=profile_id, key_id=key_id)
+        qos_profile_name = volume.volume_type.extra_specs.get(
+            'vmware:netapp_qos_profile')
+        try:
+            self.set_qos_on_fcd(fcd_loc, qos_profile_name)
+        except Exception:
+            LOG.warning("Can't apply %s QOS profile on %s volume",
+                        qos_profile_name, volume.id)
 
         # Convert the provider_location from the moref format to the
         # datastore name format to store in the cinder DB.
         provider_location = self._provider_location_to_ds_name_location(
             fcd_loc.provider_location()
         )
+
         return {'provider_location': provider_location}
 
     @volume_utils.trace
     def _delete_fcd(self, provider_loc, delete_folder=True):
         fcd_loc = vops.FcdLocation.from_provider_location(provider_loc)
-        self.volumeops.delete_fcd(fcd_loc, delete_folder=delete_folder)
+        try:
+            return self.volumeops.delete_fcd(
+                fcd_loc, delete_folder=delete_folder
+            )
+        except vexc.VimException as ex:
+            if "could not be found" in str(ex):
+                LOG.warning("FCD not found: %s.", fcd_loc.fcd_id)
+                return True
+            else:
+                raise ex
 
     @volume_utils.trace
     def delete_volume(self, volume):
@@ -319,10 +356,18 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 self.volumeops.attach_fcd(backing, fcd_loc)
             backing_moref = backing.value
             vmdk_path = self.volumeops.get_vmdk_path(backing)
-            datacenter = self.volumeops.get_dc(backing)
+            datacenter = vim_util.get_moref_value(
+                self.volumeops.get_dc(backing))
         else:
-            vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
-            datacenter = self.volumeops.get_dc(fcd_loc.ds_ref())
+            try:
+                vmdk_path = self.volumeops.get_vmdk_path_for_fcd(
+                    fcd_loc=fcd_loc)
+                datacenter = vim_util.get_moref_value(
+                    self.volumeops.get_dc(fcd_loc.ds_ref()))
+            except Exception:
+                LOG.warning("Can't find the fcd object: %s, "
+                            "this can be due to nova migration or "
+                            "VMware issue", fcd_loc.fcd_id)
 
         connection_info = {
             'driver_volume_type': self.STORAGE_TYPE,
@@ -339,6 +384,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 'vmdk_size': volume.size * units.Gi,
                 'vmdk_path': vmdk_path,
                 'datacenter': datacenter,
+                'version': self.ATTACHMENT_VERSION,
             }
         }
 
@@ -420,8 +466,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 self._provider_location_to_moref_location(
                     volume.provider_location))
             if backing:
-                self.volumeops.detach_fcd(backing, fcd_loc)
-                self._delete_temp_backing(backing)
+                try:
+                    self.volumeops.detach_fcd(backing, fcd_loc)
+                except Exception:
+                    LOG.warning("Can't detach backing for volume %s",
+                                volume.id)
+                finally:
+                    LOG.debug("Cleaning up backing for volume %s", volume.id)
+                    self._delete_temp_backing(backing)
 
     def _validate_container_format(self, container_format, image_id):
         if container_format and container_format != 'bare':
@@ -450,47 +502,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                                This parameter is ignored by VMware driver.
         :returns: Model updates.
         """
-        metadata = image_service.show(context, image_id)
-        self._validate_disk_format(metadata['disk_format'])
-        self._validate_container_format(
-            metadata.get('container_format'), image_id)
-
-        properties = metadata['properties'] or {}
-        disk_type = properties.get('vmware_disktype',
-                                   vmdk.ImageDiskType.PREALLOCATED)
-        vmdk.ImageDiskType.validate(disk_type)
-
-        size_bytes = metadata['size']
-        if disk_type == vmdk.ImageDiskType.STREAM_OPTIMIZED:
-            image_adapter_type = self._get_adapter_type(volume)
-            properties = metadata['properties']
-            if properties:
-                if 'vmware_adaptertype' in properties:
-                    image_adapter_type = properties['vmware_adaptertype']
-            backing = self._fetch_stream_optimized_image(
-                context, volume,
-                image_service, image_id, size_bytes,
-                image_adapter_type)
-            ds_ref = self.volumeops.get_datastore(backing)
-            dc_ref = self.volumeops.get_dc(ds_ref)
-            vmdk_path = self.volumeops.get_vmdk_path(backing)
-            self._destroy_backing(backing)
-        else:
-            disk_name = volume.id
-            dc_ref, summary, folder_path = \
-                self._get_temp_image_folder_from_volume(volume)
-            if disk_type == vmdk.ImageDiskType.SPARSE:
-                vmdk_path = self._create_virtual_disk_from_sparse_image(
-                    context, image_service, image_id, size_bytes, dc_ref,
-                    summary.name, folder_path, disk_name)
-            else:
-                vmdk_path = self._create_virtual_disk_from_preallocated_image(
-                    context, image_service, image_id, size_bytes, dc_ref,
-                    summary.name, folder_path, disk_name,
-                    vops.VirtualDiskAdapterType.LSI_LOGIC)
-            vmdk_path = vmdk_path.get_descriptor_ds_file_path()
-            ds_ref = summary.datastore
-
+        super(VMwareVStorageObjectDriver,
+              self).copy_image_to_volume(context, volume, image_service,
+                                         image_id, disable_sparse)
+        backing = self.volumeops.get_backing_by_uuid(volume.id)
+        ds_ref = self.volumeops.get_datastore(backing)
+        dc_ref = self.volumeops.get_dc(ds_ref)
+        vmdk_path = self.volumeops.get_vmdk_path(backing)
+        self._destroy_backing(backing)
         ds_path = datastore.DatastorePath.parse(vmdk_path)
         dc_path = self.volumeops.get_inventory_path(dc_ref)
 
@@ -516,6 +535,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         # Extend the volume if needed
         # break this up to 2 lines to pass pep8
+        metadata = image_service.show(context, image_id)
         if hasattr(metadata, 'virtual_size'):
             image_gib = int(metadata['virtual_size'] / units.Gi)
         else:
@@ -523,7 +543,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 fcd_loc=fcd_loc) / units.Gi)
         image_size = 1 if image_gib == 0 else image_gib
         self._extend_if_needed(fcd_loc, image_size, volume.size)
-
+        qos_profile_name = volume.volume_type.extra_specs.get(
+            'vmware:netapp_qos_profile')
+        try:
+            self.set_qos_on_fcd(fcd_loc, qos_profile_name)
+        except Exception:
+            LOG.warning("Can't apply %s QOS profile on %s volume",
+                        qos_profile_name, volume.id)
         provider_location = self._provider_location_to_ds_name_location(
             fcd_loc.provider_location()
         )
@@ -692,18 +718,26 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if not snapshot.provider_location:
             LOG.debug("FCD snapshot location is empty.")
             return
+
+        # We might be in a situation where the snapshot is still a vmdk
+        # based snapshot, but the owning volume has been migrated to fcd.
+        # in which case the provider_location still looks like a vmdk path.
+        # If so, we need to call the parent class to delete the snapshot.
+        if '/' in snapshot.provider_location:
+            return super(VMwareVStorageObjectDriver,
+                         self).delete_snapshot(snapshot)
         snap_location = self._snap_provider_location_to_moref_location(
             snapshot.provider_location
         )
         if snap_location:
             fcd_snap_loc = vops.FcdSnapshotLocation.from_provider_location(
                 snap_location)
-            self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
+            return self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
         else:
             provider_loc = self._provider_location_to_moref_location(
                 snapshot.provider_location
             )
-            self._delete_fcd(provider_loc)
+            return self._delete_fcd(provider_loc)
 
     def _extend_if_needed(self, fcd_loc, cur_size, new_size):
         if new_size > cur_size:
@@ -724,6 +758,13 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             provider_loc, volume, ds_ref, disk_type=disk_type,
             profile_id=profile_id, key_id=key_id)
         self._extend_if_needed(cloned_fcd_loc, cur_size, volume.size)
+        qos_profile_name = volume.volume_type.extra_specs.get(
+            'vmware:netapp_qos_profile')
+        try:
+            self.set_qos_on_fcd(cloned_fcd_loc, qos_profile_name)
+        except Exception:
+            LOG.warning("Can't apply %s QOS profile on %s volume",
+                        qos_profile_name, volume.id)
         # Convert the provider location from the moref format to the
         # datastore name format to store in the cinder DB.
         p_location = self._provider_location_to_ds_name_location(
@@ -823,7 +864,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         if volume['attach_status'] == 'attached':
             if self._vcenter_instance_uuid != vcenter:
                 # This is a cross vcenter migration
-                raise self._migrate_attached_cross_vc(
+                return self._migrate_attached_cross_vc(
                     context, dest_host, volume, fcd_loc)
             else:
                 # we can migrate to another datastore in the same vcenter
@@ -889,6 +930,25 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     def _migrate_unattached(self, context, dest_host, volume, fcd_loc,
                             cross_vc=False):
 
+        @volume_utils.trace
+        def _qtree_ds(remote_ds_info, local_ds_info):
+            # Check if the source and destination DS are hosted in the same vol
+            # mount_path explaned: <ip>:/<vol_name>/<qtree>
+            # lpath 192.168.8.1:/nfs_stnpca2_st1_ds1/nfs_stnpca2_st1_ds1_vc_b_2
+            # mpath 192.168.8.1:/nfs_stnpca2_st1_ds1/nfs_stnpca2_st1_ds1_vc_b_0
+            if local_ds_info.type != "NFS41":
+                return False
+            try:
+                mpath = remote_ds_info['mount_path'].split(':')[1]
+                lpath = self.volumeops._get_mount_path(
+                    local_ds_info.datastore)
+                lpath = lpath.split(':')[1]
+                if len(lpath.split('/')) == 3 and len(mpath.split('/')) == 3:
+                    if mpath.split('/')[1] == lpath.split('/')[1]:
+                        return True
+            except Exception:
+                return False
+
         ds_info = self._remote_api.select_ds_for_volume(context,
                                                         cinder_host=dest_host,
                                                         volume=volume)
@@ -896,6 +956,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             service_locator = self._remote_api.get_service_locator_info(
                 context,
                 dest_host)
+
         else:
             service_locator = None
 
@@ -905,8 +966,32 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         new_profile_id = ds_info.get('profile_id')
 
         if ds_info['datastore_url'] != src_ds_info['url']:
-            self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                        service_locator, new_profile_id)
+            if cross_vc and _qtree_ds(ds_info, src_ds_info):
+                disk_type = self._get_disk_type(volume)
+                key_id = self._register_kmip_key_id(volume)
+                prov_loc, new_disk_path = self._remote_api.create_fcd(
+                    context, dest_host, volume.id, volume.name,
+                    volume.size * units.Ki, ds_ref.value, disk_type,
+                    profile_id=new_profile_id, key_id=key_id)
+                tgt_ds_mpath = ds_info['mount_path'].split(':')[1]
+                netapp_api = self._remote_netapp_api
+                netapp_fqdn = self.volumeops.get_netapp_for_ds(
+                    fcd_loc.ds_ref())
+                netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+                self.volumeops.migrate_unattached_qtree(fcd_loc,
+                                                        tgt_ds_mpath,
+                                                        new_disk_path,
+                                                        netapp_api,
+                                                        netapp_host,
+                                                        context)
+                # delete the source fcd after migration complete
+                self.volumeops.delete_fcd(fcd_loc)
+                volume.update({'provider_location': prov_loc})
+                volume.save()
+                return (True, None)
+            else:
+                self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
+                                            service_locator, new_profile_id)
 
         # if we are migrating to a different DS on the same host
         # there is no reason to call the remote_api to get the
@@ -985,13 +1070,15 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
     @volume_utils.trace
     def _migrate_attached_cross_vc(self, context, dest_host, volume, fcd_loc):
-        # Unclear if we need to register the disk after movement
-        # Presumably it won't change as it is also part of the vmdk bdb file
-        self._remote_api.select_ds_for_volume(context,
-                                              cinder_host=dest_host,
-                                              volume=volume)
-        # ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
-        # fcd_loc_new = vops.FcdLocation(fcd_loc.fcd_id, ds_ref.value)
+        # Qtree DS has different pool name cross vc, need to update prov_loc
+        ds_info = self._remote_api.select_ds_for_volume(context,
+                                                        cinder_host=dest_host,
+                                                        volume=volume)
+        ds_ref = vim_util.get_moref(ds_info['datastore'], 'Datastore')
+        prov_loc = self._remote_api.get_fcd_provider_location(
+            context, dest_host, fcd_loc.fcd_id, ds_ref.value)
+        volume.update({'provider_location': prov_loc})
+        volume.save()
         return (True, None)
 
     @volume_utils.trace

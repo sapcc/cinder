@@ -33,6 +33,7 @@ class CapabilitiesFilter(filters.BaseBackendFilter):
         """
 
         req_spec = filter_properties.get('request_spec')
+        allow_proto_mismatch = False
         if req_spec and req_spec.get('operation') == 'extend_volume':
             # NOTE(erlon): By default, cinder considers that every backend
             # supports volume online extending. Those backends that don't
@@ -44,6 +45,8 @@ class CapabilitiesFilter(filters.BaseBackendFilter):
                 if attach_status != VolumeAttachStatus.DETACHED:
                     LOG.debug("Backend doesn't support attached volume extend")
                     return False
+            if capabilities.get('storage_protocol') == 'vmdk':
+                allow_proto_mismatch = True
 
         resource_type = filter_properties.get('resource_type')
         if not resource_type:
@@ -54,7 +57,11 @@ class CapabilitiesFilter(filters.BaseBackendFilter):
             return True
 
         for key, req in extra_specs.items():
-
+            # Allow extend_volume on the old backend
+            # Temporary till migration to fcd/kvm is finished
+            if allow_proto_mismatch and key == 'storage_protocol':
+                if req == "vstorageobject":
+                    continue
             # Either not scoped format, or in capabilities scope
             scope = key.split(':')
 

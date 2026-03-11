@@ -30,7 +30,6 @@ from cinder.i18n import _
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 from cinder.volume import volume_utils
 
-
 LOG = logging.getLogger(__name__)
 LINKED_CLONE_TYPE = 'linked'
 FULL_CLONE_TYPE = 'full'
@@ -481,6 +480,15 @@ class VMwareVolumeOps(object):
             return summary.maintenanceMode in ['enteringMaintenance',
                                                'inMaintenance']
         return False
+
+    def _get_mount_path(self, datastore):
+        info = self._session.invoke_api(vim_util, 'get_object_property',
+                                        self._session.vim, datastore,
+                                        'info')
+        remote_path = info.nas.remotePath
+        remote_ip = info.nas.remoteHost
+        mount_path = "%s:%s" % (remote_ip, remote_path)
+        return mount_path
 
     def _get_parent(self, child, parent_type):
         """Get immediate parent of given type via 'parent' property.
@@ -2216,6 +2224,7 @@ class VMwareVolumeOps(object):
         profile_spec.profileId = profile_id
         return profile_spec
 
+    @volume_utils.trace
     def create_fcd(self, cinder_uuid, name, size_mb,
                    ds_ref, disk_type, profile_id=None,
                    key_id=None):
@@ -2301,17 +2310,25 @@ class VMwareVolumeOps(object):
         dc_ref = self.get_dc(fcd_location.ds_ref())
         ds_name, folder, _ = split_datastore_path(vmdk_file)
         LOG.debug("Deleting fcd: %s.", fcd_location)
-        task = self._session.invoke_api(self._session.vim,
-                                        'DeleteVStorageObject_Task',
-                                        vstorage_mgr,
-                                        id=fcd_location.id(cf),
-                                        datastore=fcd_location.ds_ref())
-        self._session.wait_for_task(task)
-        folder_path = f"[{ds_name}] {folder}"
-        file_list = self.file_list_in_folder(fcd_location.ds_ref(),
-                                             folder_path)
-        if delete_folder and file_list == []:
-            self.delete_datastore_folder(ds_name, folder, dc_ref)
+        try:
+            task = self._session.invoke_api(self._session.vim,
+                                            'DeleteVStorageObject_Task',
+                                            vstorage_mgr,
+                                            id=fcd_location.id(cf),
+                                            datastore=fcd_location.ds_ref())
+            self._session.wait_for_task(task)
+        except exceptions.FileNotFoundException:
+            LOG.warning("Fcd not found: %s.", fcd_location.fcd_id)
+        except Exception as e:
+            LOG.exception(e)
+        else:
+            folder_path = f"[{ds_name}] {folder}"
+            file_list = self.file_list_in_folder(fcd_location.ds_ref(),
+                                                 folder_path)
+            if delete_folder and file_list == []:
+                self.delete_datastore_folder(ds_name, folder, dc_ref)
+
+            return True
 
     def clone_fcd(
             self, volume, fcd_location, dest_ds_ref,
@@ -2508,14 +2525,19 @@ class VMwareVolumeOps(object):
 
         vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
         cf = self._session.vim.client.factory
-        task = self._session.invoke_api(
-            self._session.vim,
-            'DeleteSnapshot_Task',
-            vstorage_mgr,
-            id=fcd_snap_loc.fcd_loc.id(cf),
-            datastore=fcd_snap_loc.fcd_loc.ds_ref(),
-            snapshotId=fcd_snap_loc.id(cf))
-        self._session.wait_for_task(task)
+        try:
+            task = self._session.invoke_api(
+                self._session.vim,
+                'DeleteSnapshot_Task',
+                vstorage_mgr,
+                id=fcd_snap_loc.fcd_loc.id(cf),
+                datastore=fcd_snap_loc.fcd_loc.ds_ref(),
+                snapshotId=fcd_snap_loc.id(cf))
+            self._session.wait_for_task(task)
+        except exceptions.FileNotFoundException:
+            LOG.warning("Fcd snapshot not found: %s.", fcd_snap_loc.snap_id)
+            return True
+        return True
 
     def create_fcd_from_snapshot(self, fcd_snap_loc, name,
                                  cinder_uuid, profile_id=None, key_id=None):
@@ -2714,6 +2736,90 @@ class VMwareVolumeOps(object):
                         res.append(i.folderPath + j.path)
 
         return res
+
+    def get_datastore_property(self, ds_ref, property_name):
+        key_num = None
+        props = self.get_datastore_properties(ds_ref)
+        for junk, values in props['availableField']:
+            for v in values:
+                if v.name == property_name:
+                    key_num = v.key
+        for junk, values in props['customValue']:
+            for v in values:
+                if v.key == key_num:
+                    return v.value
+        return None
+
+    def get_netapp_for_ds(self, ds_ref):
+        return self.get_datastore_property(ds_ref, 'netapp_fqdn')
+
+    def migrate_unattached_qtree(self, fcd_loc, tgt_ds_mpath,
+                                 new_disk_path, netapp_api,
+                                 netapp_host, context):
+        src_mpath = self._get_mount_path(fcd_loc.ds_ref())
+        # src_mpath - <ip>:/<vol_name>/<qtree>
+        # eg.: 192.168.8.1:/nfs_stnpca2_st01_ds1/nfs_stnpca2_st01_ds1_vc_b_2
+        src_ds_mpath = src_mpath.split(':')[1]
+        src_qtree = src_ds_mpath.split('/')[2]
+        tgt_qtree = tgt_ds_mpath.split('/')[2]
+        src_vmdk_path = self.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+        _, folder_path, src_vmdk_file = split_datastore_path(src_vmdk_path)
+        _, tgt_folder_path, tgt_vmdk_file = split_datastore_path(new_disk_path
+                                                                 )
+        netapp_vol = src_ds_mpath.split('/')[1]
+        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        tgt_flat_file = tgt_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        # We are moving the raw file (flat)
+        source_path = "%s/%s%s" % (src_qtree, folder_path, src_flat_file)
+        destination_path = "%s/%s%s" % (tgt_qtree, tgt_folder_path,
+                                        tgt_flat_file)
+        LOG.debug("Moving src file %(src_file)s to %(dst_file)s",
+                  {'src_file': source_path, 'dst_file': destination_path})
+        path = netapp_vol + "/%s/%s" % (src_qtree, folder_path)
+        src_bytes_used = netapp_api.get_file_sizes_by_dir(context,
+                                                          host=netapp_host,
+                                                          path=path)
+        netapp_api.swap_files(context, host=netapp_host,
+                              vol_name=netapp_vol,
+                              original_file=destination_path,
+                              new_file=source_path)
+        path = netapp_vol + "/%s/%s" % (tgt_qtree, tgt_folder_path)
+        dst_bytes_used = netapp_api.get_file_sizes_by_dir(context,
+                                                          host=netapp_host,
+                                                          path=path)
+        for f in src_bytes_used:
+            if f['name'] == src_flat_file:
+                src_bytes = f['file-size']
+        for f in dst_bytes_used:
+            if f['name'] == tgt_flat_file:
+                dst_bytes = f['file-size']
+        LOG.debug("Qtree migration info src size:%f , dst size:%f",
+                  src_bytes, dst_bytes)
+        # If the move is success, than the src bytes are the same as the dst.
+        return src_bytes == dst_bytes
+
+    def set_qos(self, context, ds_ref, netapp_api, netapp_host,
+                vmdk_path,
+                qos_profile_name):
+        mpath = self._get_mount_path(ds_ref).split(':')[1]
+        netapp_vol = mpath.split('/')[1]
+        len_mpath = len(mpath.split('/'))
+        _, folder_path, src_vmdk_file = split_datastore_path(vmdk_path)
+        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+        if len_mpath == 2:
+            rel_path_to_ds = "%s%s" % (folder_path, src_flat_file)
+        if len_mpath == 3:
+            # qtree longer mount path
+            qtree_name = mpath.split('/')[2]
+            rel_path_to_ds = "%s/%s%s" % (qtree_name, folder_path,
+                                          src_flat_file)
+        if len_mpath > 3:
+            # longer mount path not supported
+            return NotImplementedError
+        netapp_api.file_assign_qos(context, host=netapp_host,
+                                   vol_name=netapp_vol,
+                                   qos_policy_group_name=qos_profile_name,
+                                   path=rel_path_to_ds)
 
 
 class FcdLocation(object):

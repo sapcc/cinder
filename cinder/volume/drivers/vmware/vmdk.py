@@ -21,7 +21,7 @@ Disk) files stored in datastores. For ease of managing the VMDKs, the
 driver creates a virtual machine for each of the volumes. This virtual
 machine is never powered on and is often referred as the shadow VM.
 """
-
+import itertools
 import math
 import re
 import ssl
@@ -29,7 +29,9 @@ import ssl
 import OpenSSL
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_service import loopingcall
 from oslo_utils import excutils
+from oslo_utils import timeutils
 from oslo_utils import units
 from oslo_utils import uuidutils
 from oslo_utils import versionutils
@@ -44,13 +46,17 @@ from cinder import context
 from cinder import exception
 # This is needed to register the SAP config options
 from cinder.common import sap # noqa
+from cinder import coordination
 from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
 from cinder.keymgr import kmip
 from cinder.objects import snapshot as snapshot_obj
+from cinder.objects import volume as volume_obj
+from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder.volume import configuration
 from cinder.volume import driver
+from cinder.volume.drivers.netapp import remote as netapp_remote_api
 from cinder.volume.drivers.vmware import datastore as hub
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
 from cinder.volume.drivers.vmware import remote as remote_api
@@ -69,6 +75,7 @@ CREATE_PARAM_DISK_LESS = 'disk_less'
 CREATE_PARAM_BACKING_NAME = 'name'
 CREATE_PARAM_DISK_SIZE = 'disk_size'
 CREATE_PARAM_TEMP_BACKING = 'temp_backing'
+CREATE_PARAM_USE_IMAGE_CACHE = 'use_image_cache'
 
 TMP_IMAGES_DATASTORE_FOLDER_PATH = "cinder_temp/"
 
@@ -228,6 +235,17 @@ vmdk_opts = [
                default="http://barbican-api:9311",
                help='Barbican base URL passed to the KMIP API to register a '
                     'key. The URL must be accessible by the KMIP API.'),
+    cfg.BoolOpt('enable_image_cache', default=False,
+                help='Enable the image cache feature for the backend.'),
+    cfg.IntOpt('image_cache_max_size_gb', default=100,
+               help='Maximum size in GiB that an image is allowed to '
+                    'have in order to be cached.'),
+    cfg.IntOpt('image_cache_purge_interval', default=600,
+               help='Number of seconds between runs of the periodic task '
+                    'to purge the cached volume images.'),
+    cfg.IntOpt('image_cache_age_seconds', default=3600 * 24,
+               help='Minimum number of seconds after which a cached image '
+                    'has to be deleted.'),
 ]
 
 CONF = cfg.CONF
@@ -370,6 +388,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # flag this driver as supporting independent snapshots
     has_independent_snapshots = True
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
     def __init__(self, *args, **kwargs):
         super(VMwareVcVmdkDriver, self).__init__(*args, **kwargs)
 
@@ -387,8 +412,12 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             remote_api.VmdkDriverRemoteService(self)
         ])
         self._remote_api = remote_api.VmdkDriverRemoteApi()
+        self._remote_netapp_api = netapp_remote_api.SAPNetappDriverRemoteApi()
+        self._scheduler_rpcapi = scheduler_rpcapi.SchedulerAPI()
         self._storage_profiles = []
         self._volume_type_by_backend = None
+        self._sap_netapp_credentials = {}
+        self._all_pools_cache = {}
 
         self._kmip_api = kmip.KMIPRestApiClient(
             kmip_url=self.configuration.kmip_api_url,
@@ -439,6 +468,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                   % storage_profile)
                         raise exception.InvalidInput(reason=reason)
 
+        self._start_periodic_tasks()
+
     def _init_vendor_properties(self):
         """Set some vmware specific properties."""
 
@@ -457,6 +488,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     def _update_volume_stats(self):
         if self.configuration.safe_get('vmware_enable_volume_stats'):
             self._stats = self._get_volume_stats()
+            self._get_all_pools(refresh=True)
         else:
             self._stats = self._get_fake_stats()
 
@@ -600,6 +632,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if not datastores:
             backend_state = 'down'
             data['backend_state'] = backend_state
+
+        cached_images = []
+        if self.configuration.enable_image_cache:
+            cached_images = self._get_cached_images()
+
         if self.configuration.vmware_datastores_as_pools:
             pools = []
             for ds_name in datastores:
@@ -647,6 +684,20 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         aggregate_id = \
                             custom_attributes['cinder_aggregate_id']
 
+                if summary.type == "NFS41":
+                    mount_path = self.volumeops._get_mount_path(
+                        summary.datastore)
+                else:
+                    mount_path = ""
+                # Calculate the extra capacity consumed by cached images
+                extra_capacity = 0
+                for cached_img in cached_images:
+                    ds_ref = cached_img['ds_ref']
+                    if (ds_ref and vim_util.get_moref_value(ds_ref) ==
+                            vim_util.get_moref_value(
+                                datastore['datastore_object'])):
+                        extra_capacity += cached_img['disk_size'] / units.Gi
+
                 pool = {'pool_name': summary.name,
                         'total_capacity_gb': round(
                             summary.capacity / units.Gi),
@@ -668,6 +719,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                         'pool_down_reason': pool_down_reason,
                         'custom_attributes': custom_attributes,
                         'independent_snapshots': independent_snapshot,
+                        'mount_path': mount_path,
+                        'extra_provisioned_capacity_gb': (
+                            int(math.ceil(extra_capacity))),
                         }
                 if aggregate_id:
                     pool['aggregate_id'] = aggregate_id
@@ -697,6 +751,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     global_capacity += summary.capacity
                     global_free += summary.freeSpace
 
+        # Calculate the extra capacity consumed by cached images
+        extra_capacity = 0
+        for cached_img in cached_images:
+            extra_capacity += cached_img['disk_size'] / units.Gi
+
         data_no_pools = {
             'reserved_percentage': self.configuration.reserved_percentage,
             'total_capacity_gb': round(global_capacity / units.Gi),
@@ -705,6 +764,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             'thick_provisioning_support': True,
             'max_over_subscription_ratio': max_over_subscription_ratio,
             'connection_capabilities': connection_capabilities,
+            'extra_provisioned_capacity_gb': (
+                int(math.ceil(extra_capacity))),
         }
         data.update(data_no_pools)
 
@@ -1111,6 +1172,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             'name': volume.name,
             'profile_id': self._get_storage_profile_id(volume),
             'datastore': self.volumeops.get_datastore(backing).value,
+            'version': self.ATTACHMENT_VERSION,
         }
 
         # vmdk connector in os-brick needs additional connection info.
@@ -1941,36 +2003,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             context, volume, image_service, image_meta['id'])
         return (ret, True)
 
-    def copy_image_to_volume(self, context, volume, image_service, image_id,
-                             disable_sparse=False):
-        """Creates volume from image.
-
-        This method only supports Glance image of VMDK disk format.
-        Uses flat vmdk file copy for "sparse" and "preallocated" disk types
-        Uses HttpNfc import API for "streamOptimized" disk types. This API
-        creates a backing VM that wraps the VMDK in the vCenter inventory.
-
-        :param context: context
-        :param volume: Volume object
-        :param image_service: Glance image service
-        :param image_id: Glance image id
-        :param disable_sparse: Enable or disable sparse copy. Default=False.
-                               This parameter is ignored by VMDK driver.
-        """
-        LOG.debug("Copy glance image: %s to create new volume.", image_id)
-
-        # Verify glance image is vmdk disk format
-        metadata = image_service.show(context, image_id)
-        VMwareVcVmdkDriver._validate_disk_format(metadata['disk_format'])
-
-        # Validate container format; only 'bare' and 'ova' are supported.
-        container_format = metadata.get('container_format')
-        if (container_format and container_format not in ['bare', 'ova']):
-            msg = _("Container format: %s is unsupported, only 'bare' and "
-                    "'ova' are supported.") % container_format
-            LOG.error(msg)
-            raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
-
+    def _do_copy_image_to_volume(self, context, volume, image_service,
+                                 image_id, metadata):
         # Get the disk type, adapter type and size of vmdk image
         image_disk_type = ImageDiskType.PREALLOCATED
         image_adapter_type = self._get_adapter_type(volume)
@@ -2003,6 +2037,47 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                               "to volume: %(vol)s.",
                               {'id': image_id, 'vol': volume['name']})
 
+    def copy_image_to_volume(self, context, volume, image_service, image_id,
+                             disable_sparse=False):
+        """Creates volume from image.
+
+        This method only supports Glance image of VMDK disk format.
+        Uses flat vmdk file copy for "sparse" and "preallocated" disk types
+        Uses HttpNfc import API for "streamOptimized" disk types. This API
+        creates a backing VM that wraps the VMDK in the vCenter inventory.
+
+        :param context: context
+        :param volume: Volume object
+        :param image_service: Glance image service
+        :param image_id: Glance image id
+        :param disable_sparse: Enable or disable sparse copy. Default=False.
+                               This parameter is ignored by VMDK driver.
+        """
+        LOG.debug("Copy glance image: %s to create new volume.", image_id)
+
+        # Verify glance image is vmdk disk format
+        metadata = image_service.show(context, image_id)
+        VMwareVcVmdkDriver._validate_disk_format(metadata['disk_format'])
+
+        # Validate container format; only 'bare' and 'ova' are supported.
+        container_format = metadata.get('container_format')
+        if (container_format and container_format not in ['bare', 'ova']):
+            msg = _("Container format: %s is unsupported, only 'bare' and "
+                    "'ova' are supported.") % container_format
+            LOG.error(msg)
+            raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
+
+        img_backing = None
+        if self._can_use_image_cache(volume, metadata['size']):
+            img_backing = self._get_or_create_cached_image_backing(
+                context, volume, image_service, image_id, metadata)
+
+        if img_backing:
+            self._create_volume_from_cached_image(volume, img_backing)
+        else:
+            self._do_copy_image_to_volume(
+                context, volume, image_service, image_id, metadata)
+
         LOG.debug("Volume: %(id)s created from image: %(image_id)s.",
                   {'id': volume['id'],
                    'image_id': image_id})
@@ -2027,6 +2102,51 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self, context, volume, image_service, image_id):
         # We don't do anything special as encryption is handled by the vCenter
         self.copy_image_to_volume(context, volume, image_service, image_id)
+
+    def _can_use_image_cache(self, volume, image_size):
+        if not self.configuration.enable_image_cache:
+            LOG.debug("Image cache was requested for volume %s, but it "
+                      "wasn't enabled in the backend configuration.",
+                      volume['id'])
+            return False
+
+        max_size = self.configuration.image_cache_max_size_gb * units.Gi
+        if image_size > max_size:
+            LOG.debug("The requested image cannot be cached because it's "
+                      "too big (%(image_size)s > %(max_size)s)",
+                      {'image_size': image_size,
+                       'max_size': max_size})
+            return False
+
+        return True
+
+    @coordination.synchronized("image-cache-{image_id}")
+    def _get_or_create_cached_image_backing(self, context, volume,
+                                            image_service,
+                                            image_id, metadata):
+        """Caches the image as VM Templates and returns the mo-ref"""
+        backing = self.volumeops.get_backing(image_id, image_id)
+        image_size_in_bytes = metadata['size']
+        if not backing:
+            img_volume = volume_obj.Volume._from_db_object(
+                context, volume_obj.Volume(), dict(
+                    id=image_id,
+                    host=volume['host'],
+                    volume_type_id=volume['volume_type_id'],
+                    project_id=self._cache_project_name(),
+                    size=image_size_in_bytes / units.Gi
+                ))
+            self._do_copy_image_to_volume(
+                context, img_volume, image_service, image_id, metadata)
+            backing = self.volumeops.get_backing(image_id, image_id)
+            cache_name = f"{self._cache_project_name()} ({image_id})"
+            self.volumeops.rename_backing(backing, cache_name)
+            self.volumeops.mark_backing_as_template(backing)
+        return backing
+
+    def _cache_project_name(self):
+        backend_name = self.configuration.safe_get('volume_backend_name')
+        return f"{backend_name}_image_cache"
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Creates glance image from volume.
@@ -2585,6 +2705,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if self.configuration.vmware_storage_profile:
             self._get_storage_profiles()
 
+        # Initialize the pools cache
+        self._get_all_pools(refresh=True)
+
         LOG.info("Successfully setup driver: %(driver)s for server: "
                  "%(ip)s.", {'driver': self.__class__.__name__,
                              'ip': self.configuration.vmware_host_ip})
@@ -2927,6 +3050,26 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             self._extend_backing(clone, volume['size'],
                                  VMwareVcVmdkDriver._get_disk_type(volume))
         LOG.info("Successfully created clone: %s.", clone)
+
+    def _create_volume_from_cached_image(self, volume, img_backing):
+        (host, rp, folder, summary) = self._select_ds_for_volume(
+            volume)
+        datastore = summary.datastore
+        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+
+        backing = self.volumeops.clone_backing(
+            volume['id'],
+            img_backing,
+            None,
+            volumeops.FULL_CLONE_TYPE,
+            datastore,
+            disk_type=disk_type,
+            host=host,
+            resource_pool=rp,
+            folder=folder)
+
+        self.volumeops.update_backing_uuid(backing, volume['id'])
+        self.volumeops.update_backing_disk_uuid(backing, volume['id'])
 
     @volume_utils.trace
     def _create_volume_from_template(self, volume, path):
@@ -3339,6 +3482,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     @volume_utils.trace
     def _migrate_to_fcd(self, context, volume, host):
 
+        cross_vc = False
         info = host['capabilities']['location_info']
         false_ret = (False, None)
         if 'location_info' not in host['capabilities']:
@@ -3348,6 +3492,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             (driver_name, vcenter) = info.split(':')
         except ValueError:
             return false_ret
+        if self._vcenter_instance_uuid != vcenter:
+            cross_vc = True
         dest_host = host['host']
         tgt_ds = self._remote_api.select_ds_for_volume(
             context, cinder_host=dest_host, volume=volume
@@ -3357,7 +3503,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         if not backing:
             # we need to create the backing and then migrate it.
             LOG.debug("Backing does not exist for volume.", resource=volume)
-            backing = self._create_backing(volume)
+            # backing = self._create_backing(volume)
+            # At the moment due to a bug we created lot of emptry backing
+            # We fail if backing does not exists...
             if not backing:
                 msg = ("Failed to create backing for vmdk volume prior to "
                        "migration to fcd.")
@@ -3398,21 +3546,29 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         self.volumeops.delete_backing(backing)
         ds_ref = vim_util.get_moref(tgt_ds['datastore'], 'Datastore')
         profile_id = tgt_ds.get('profile_id')
+        get_sl = self._remote_api.get_service_locator_info
         if (ds_ref.value != summary.datastore.value):
             # Migration required
-            if vol_status == 'available':
+            if volume['attach_status'] == 'detached':
+                if cross_vc:
+                    service_locator = get_sl(context, dest_host)
+                else:
+                    service_locator = None
                 self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
-                                            service=None,
+                                            service=service_locator,
                                             profile_id=profile_id)
                 old_mref = summary.datastore.value
                 new_prov_loc = prov_loc.replace(old_mref, ds_ref.value)
-                prov_loc = self._provider_location_to_ds_name_location(
-                    new_prov_loc
-                )
+                if cross_vc:
+                    prov_loc = self._remote_api.get_fcd_provider_location(
+                        context, dest_host, fcd_loc.fcd_id, ds_ref.value)
+                else:
+                    prov_loc = self._provider_location_to_ds_name_location(
+                        new_prov_loc)
                 volume.update({'provider_location': prov_loc})
                 volume.save()
                 return (True, None)
-            else:
+            if volume['attach_status'] == 'attached':
                 attachments = volume.volume_attachment
                 instance_uuid = attachments[0]['instance_uuid']
                 get_vm_by_uuid = self.volumeops.get_backing_by_uuid
@@ -3428,6 +3584,20 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 prov_loc = self._provider_location_to_ds_name_location(
                     fcd_loc_new.provider_location()
                 )
+            else:
+                # we are in an uncertan state,
+                # so we don't move the fcd and override the host
+                prov_loc = self._provider_location_to_ds_name_location(
+                    prov_loc
+                )
+                volume.update({'provider_location': prov_loc})
+                volume.save()
+                new_host = volume['host'].replace('@vmware#',
+                                                  '@vmware_fcd#')
+                model_updates = {
+                    'host': new_host
+                }
+                return (True, model_updates)
 
         else:
             prov_loc = self._provider_location_to_ds_name_location(
@@ -3445,3 +3615,151 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 vmdk_path, dc_ref
             )
         return (True, None)
+
+    def _get_all_pools(self, refresh=False):
+        if not self._all_pools_cache or refresh:
+            self._all_pools_cache = self._scheduler_rpcapi.get_pools(
+                context.get_admin_context())
+        return self._all_pools_cache
+
+    def get_netapp_cinder_host(self, netapp_fqdn):
+        # Example netapp host cinder-volume-netapp-b-0@stnpca2_st051_nfs
+        # Example vmware host cinder-volume-vmware-vc-b-0@vmware_fcd
+        pools = [pool for pool in self._get_all_pools()
+                 if pool['capabilities'].get('netapp_server_hostname')
+                 == netapp_fqdn]
+
+        if not pools:
+            return None
+
+        return volume_utils.extract_host(pools[0]['name'], 'backend')
+
+    def _start_periodic_tasks(self):
+        if self.configuration.enable_image_cache:
+            lock_name = f"{self._cache_project_name()}-purge_cache"
+
+            @coordination.synchronized(lock_name)
+            def _purge_image_cache_locked():
+                self._purge_image_cache()
+
+            LOG.info("Starting the purge_image_cache periodic task.")
+            image_cache_ptask = loopingcall.FixedIntervalLoopingCall(
+                _purge_image_cache_locked,)
+            image_cache_ptask.start(
+                interval=self.configuration.image_cache_purge_interval,
+                stop_on_exception=False)
+
+    def _purge_image_cache(self):
+        """Deletes expired images from the cache"""
+        cached_images = self._get_cached_images()
+        age_seconds = self.configuration.image_cache_age_seconds
+        for cached_image in cached_images:
+            if not timeutils.is_older_than(
+                    cached_image['created_at'],
+                    age_seconds):
+                continue
+
+            try:
+                self.volumeops.delete_backing(cached_image['vm_ref'])
+                LOG.debug("Deleted expired image (%s) from the cache.",
+                          cached_image['name'])
+            except exceptions.VimException:
+                LOG.exception("Failed to delete the expired image %s",
+                              cached_image['name'])
+
+    def _get_cached_images(self):
+        folder_refs = self._get_image_cache_folder_refs()
+        return list(itertools.chain(
+            *[self._get_cached_images_in_folder(folder_ref)
+              for folder_ref in folder_refs]))
+
+    def _get_image_cache_folder_refs(self):
+        vim = self.session.vim
+        max_objects = self.configuration.vmware_max_objects_retrieval
+        retrieve_result = self.session.invoke_api(
+            vim_util, 'get_objects', vim, 'Datacenter', max_objects)
+        folder_refs = []
+        with vim_util.WithRetrieval(vim, retrieve_result) as objects:
+            for dc_obj in objects:
+                if not dc_obj.propSet[0].val:
+                    continue
+                folder_ref = self._get_volume_group_folder(
+                    dc_obj.obj, self._cache_project_name())
+                folder_refs.append(folder_ref)
+        return folder_refs
+
+    def _get_cached_images_in_folder(self, folder_ref):
+        """Returns the cached images as list of dict
+
+        [{"name": "<uuid>",
+          "vm_ref": ManagedObjectReference,
+          "ds_ref": ManagedObjectReference,
+          "disk_size: 1024,
+          "created_at": datetime}]
+
+        Where
+            - name: the name of the template VM ("Cinder Cache ({image_id})")
+            - vm_ref: ManagedObjectReference to the template VM
+            - ds_ref: ManagedObjectReference to the VM's datastore
+            - disk_size: size in bytes
+            - created_at: date when the image cache was created
+        """
+        client_factory = self.session.vim.client.factory
+        prop_spec = vim_util.build_property_spec(
+            client_factory, 'VirtualMachine',
+            ['name', 'config.template', 'config.hardware.device',
+             'config.createDate'])
+        obj_spec = vim_util.build_object_spec(
+            client_factory, folder_ref,
+            [vim_util.build_recursive_traversal_spec(client_factory)])
+        filter_spec = vim_util.build_property_filter_spec(
+            client_factory, [prop_spec], [obj_spec])
+
+        options = client_factory.create('ns0:RetrieveOptions')
+        max_objects = self.configuration.vmware_max_objects_retrieval
+        options.maxObjects = max_objects
+        try:
+            retrieve_result = self.session.vim.RetrievePropertiesEx(
+                self.session.vim.service_content.propertyCollector,
+                specSet=[filter_spec], options=options)
+        except exceptions.VimFaultException as excep:
+            if exceptions.NOT_AUTHENTICATED in excep.fault_list:
+                # Check if session is active to decide if NotAuthenticated
+                # indicates empty result returned by RetrievePropertiesEx (as
+                # implemented in oslo.vmware) or it's a real exception.
+                if self.session.is_current_session_active():
+                    return []
+            raise
+
+        cached_images = []
+        with vim_util.WithRetrieval(self.session.vim,
+                                    retrieve_result) as results:
+            for obj in results:
+                props = vim_util.propset_dict(obj.propSet)
+                if not props:
+                    continue
+                name = props.get('name')
+                is_template = props.get('config.template')
+                devices = props.get('config.hardware.device')
+                created_at = props.get('config.createDate')
+                disk_size = 0
+                ds_ref = None
+                if devices.__class__.__name__ == "ArrayOfVirtualDevice":
+                    devices = devices.VirtualDevice
+
+                for device in devices:
+                    if device.__class__.__name__ == "VirtualDisk":
+                        disk_size = device.capacityInKB * units.Ki
+                        if device.backing:
+                            ds_ref = device.backing.datastore
+                        break
+
+                if is_template and created_at:
+                    cached_images.append({
+                        'name': name,
+                        'vm_ref': obj.obj,
+                        'ds_ref': ds_ref,
+                        'disk_size': disk_size,
+                        'created_at': created_at
+                    })
+        return cached_images

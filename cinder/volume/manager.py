@@ -654,6 +654,47 @@ class VolumeManager(manager.CleanableManager,
     def recount_host_stats(self, context):
         self._count_host_stats(context, export_volumes=False)
 
+    @volume_utils.trace
+    def set_pool_state(self, context, host, status):
+        # Set the pool state for the host.
+        # The status is either "available" or "drain".
+        # If the status is "drain", we will set the pool state to "down".
+        # If the status is "available", we will set the pool state to "up".
+        # We will also set the pool state reason to the status.
+
+        # extract the pool name from the host
+        requested_pool_name = volume_utils.extract_host(host, 'pool')
+        requested_pool_state = "up" if status == "available" else "down"
+        if status == "drain":
+            requested_pool_state_reason = "pool marked as draining"
+        else:
+            requested_pool_state_reason = ""
+        LOG.info(
+            "Setting pool '%s' state to '%s' with reason '%s'",
+            requested_pool_name,
+            requested_pool_state,
+            requested_pool_state_reason
+        )
+        for pool_name in self.stats['pools']:
+            pool = self.stats['pools'][pool_name]
+            if pool_name == requested_pool_name:
+                pool['pool_state'] = requested_pool_state
+                pool['pool_state_reason'] = requested_pool_state_reason
+
+        # if the driver has the ability to set the pool state,
+        # we will call the driver to set the pool state.
+        if hasattr(self.driver, 'set_pool_state'):
+            self.driver.set_pool_state(
+                requested_pool_name,
+                requested_pool_state,
+                requested_pool_state_reason,
+            )
+        else:
+            LOG.warning(
+                "Driver %s does not have the ability to set the pool state.",
+                self.driver.__class__.__name__
+            )
+
     @coordination.synchronized('volume-stats-{self.host}')
     def _count_host_stats(self, context, export_volumes=False):
         """Recount the number of volumes and allocated capacity."""
@@ -936,6 +977,7 @@ class VolumeManager(manager.CleanableManager,
                 request_spec,
                 filter_properties,
                 image_volume_cache=self.image_volume_cache,
+                service_uuid=self.service_uuid
             )
         except Exception:
             msg = _("Create manager volume flow failed.")
@@ -1001,10 +1043,6 @@ class VolumeManager(manager.CleanableManager,
 
         # Shared targets is only relevant for some connections.
         volume.shared_targets = self._driver_shares_targets()
-        # TODO(geguileo): service_uuid won't be enough on Active/Active
-        # deployments. There can be 2 services handling volumes from the same
-        # backend.
-        volume.service_uuid = self.service_uuid
         volume.save()
 
         # propagate any scheduler hint affinity/anti-affinity metadata to
@@ -3625,6 +3663,7 @@ class VolumeManager(manager.CleanableManager,
                 self.host,
                 volume,
                 ref,
+                service_uuid=self.service_uuid,
             )
         except Exception:
             msg = _("Failed to create manage_existing flow.")

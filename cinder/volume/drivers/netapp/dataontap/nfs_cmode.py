@@ -21,6 +21,7 @@
 Volume driver for NetApp NFS storage.
 """
 
+import json
 import os
 import uuid
 
@@ -42,6 +43,7 @@ from cinder.volume.drivers.netapp.dataontap.utils import data_motion
 from cinder.volume.drivers.netapp.dataontap.utils import loopingcalls
 from cinder.volume.drivers.netapp.dataontap.utils import utils as dot_utils
 from cinder.volume.drivers.netapp import options as na_opts
+from cinder.volume.drivers.netapp import remote as remote_api
 from cinder.volume.drivers.netapp import utils as na_utils
 from cinder.volume import volume_utils
 
@@ -73,6 +75,27 @@ class NetAppCmodeNfsDriver(
 
     VERSION = "4.0.0"
 
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
+    # SAP: the attachment version
+    # Any changes to the connection_info returned by
+    # the driver's initialize_connection should
+    # increment this version.
+    # 1.0.0 - initial version
+    ATTACHMENT_VERSION = '1.0.0'
+
     REQUIRED_CMODE_FLAGS = ['netapp_vserver']
     SUPPORTS_ACTIVE_ACTIVE = True
 
@@ -86,6 +109,9 @@ class NetAppCmodeNfsDriver(
         self.replication_enabled = (
             True if self.get_replication_backend_names(
                 self.configuration) else False)
+        self.additional_endpoints.extend([
+            remote_api.SAPNetappDriverRemoteService(self)
+        ])
 
     def do_setup(self, context):
         """Do the customized set up on client for cluster mode."""
@@ -271,7 +297,7 @@ class NetAppCmodeNfsDriver(
 
         new_file_path = prefix_path_on_backend + new_file
         original_file_path = prefix_path_on_backend + original_file
-        tmp_file_path = prefix_path_on_backend + 'tmp-%s' % original_file
+        tmp_file_path = prefix_path_on_backend + original_file + '_tmp'
 
         try:
             self.zapi_client.rename_file(original_file_path, tmp_file_path)
@@ -322,6 +348,29 @@ class NetAppCmodeNfsDriver(
                                                               export_path)
         return vserver, exp_volume
 
+    @volume_utils.trace
+    def set_pool_state(self, pool_name, state, state_reason):
+        """Set the pool state for the volume."""
+
+        # The pool_name is in the format of
+        # <ip_address>:/<volume_name>   or
+        # <ip_address>:<volume_name>/<qtree_name>
+        # We have to extract the volume_name from the pool_name.
+        volume_name = pool_name.split('/')[1]
+
+        pool_json = json.dumps(
+            {'pool_state': state, 'pool_down_reason': state_reason}
+        )
+        LOG.info("Setting pool state for %s to '%s'", volume_name, pool_json)
+
+        # Set a json string in the comment field to keep track
+        # of the pool state and the reason for the pool state.
+        if hasattr(self.zapi_client, 'set_volume_comment'):
+            self.zapi_client.set_volume_comment(volume_name, pool_json)
+        else:
+            LOG.warning("Driver %s can't set the pool state",
+                        self.driver_name)
+
     def _update_volume_stats(self):
         """Retrieve stats info from vserver."""
 
@@ -332,6 +381,8 @@ class NetAppCmodeNfsDriver(
         data['vendor_name'] = 'NetApp'
         data['driver_version'] = self.VERSION
         data['storage_protocol'] = constants.NFS_VARIANT
+        netapp_server_fqdn = self.configuration.netapp_server_hostname
+        data['netapp_server_hostname'] = netapp_server_fqdn
         data['pools'] = self._get_pool_stats(
             filter_function=self.get_filter_function(),
             goodness_function=self.get_goodness_function())
@@ -341,6 +392,18 @@ class NetAppCmodeNfsDriver(
         data['replication_enabled'] = self.replication_enabled
 
         self._stats = data
+
+    @volume_utils.trace
+    def _get_volume_comment(self, volume_name):
+        """Get the comment for a volume."""
+        if hasattr(self.zapi_client, 'get_volume_comment'):
+            comments = self.zapi_client.get_volume_comment(volume_name)
+            try:
+                info = json.loads(comments)
+            except Exception:
+                return None
+            return info
+        return None
 
     def _get_pool_stats(self, filter_function=None, goodness_function=None):
         """Retrieve pool (Data ONTAP flexvol) stats.
@@ -382,7 +445,7 @@ class NetAppCmodeNfsDriver(
             pool['consistencygroup_support'] = True
             pool['consistent_group_snapshot_enabled'] = True
             pool['multiattach'] = True
-            pool['online_extend_support'] = False
+            pool['online_extend_support'] = True
 
             is_flexgroup = ssc_vol_info.get('netapp_is_flexgroup') == 'true'
             if is_flexgroup:
@@ -437,6 +500,27 @@ class NetAppCmodeNfsDriver(
             pool['utilization'] = na_utils.round_down(utilization)
             pool['filter_function'] = filter_function
             pool['goodness_function'] = goodness_function
+            netapp_server_fqdn = self.configuration.netapp_server_hostname
+            pool['netapp_server_hostname'] = netapp_server_fqdn
+
+            # SAP
+            # Get the comment section of the volume and see if
+            # it's marked as down by an admin
+            if len(ssc.items()) > 0:
+                pool['backend_state'] = 'up'
+            else:
+                pool['backend_state'] = 'down'
+            backend_az = self.configuration.safe_get(
+                'backend_availability_zone')
+            pool['backend_availability_zone'] = backend_az
+            pool['pool_state'] = 'up'
+            pool['pool_down_reason'] = ''
+            pool_info = self._get_volume_comment(ssc_vol_name)
+            if pool_info:
+                pool['pool_state'] = pool_info.get('pool_state', 'up')
+                pool['pool_down_reason'] = pool_info.get('pool_down_reason')
+            LOG.info('Pool state for volume %s: %s',
+                     ssc_vol_name, pool['pool_state'])
 
             # Add replication capabilities/stats
             pool.update(
@@ -472,11 +556,16 @@ class NetAppCmodeNfsDriver(
                 continue
 
             try:
-                flexvol = self.zapi_client.get_flexvol(
+                flexvol = self.zapi_client.get_flexvol_zapi(
                     flexvol_path=junction_path)
                 pools[flexvol['name']] = {'pool_name': share}
             except exception.VolumeBackendAPIException:
                 LOG.exception('Flexvol not found for NFS share %s.', share)
+                # Get flexvol name from ssc in case of failure
+                # We are not dinamicly removing pools
+                flexvol_name = self._get_flexvol_name_for_share(share)
+                if flexvol_name:
+                    pools[flexvol_name] = {'pool_name': share}
 
         return pools
 
@@ -1269,3 +1358,12 @@ class NetAppCmodeNfsDriver(
 
         return self.migrate_volume_ontap_assisted(
             volume, host, self.backend_name, self.configuration.netapp_vserver)
+
+    # SAP: the attachment version
+    # We override this so we can add the version to the connection info
+    # For the volume checker.
+    def initialize_connection(self, volume, connector):
+        conn_info = super(nfs_base.NetAppNfsDriver,
+                          self).initialize_connection(volume, connector)
+        conn_info['data']['version'] = self.ATTACHMENT_VERSION
+        return conn_info
