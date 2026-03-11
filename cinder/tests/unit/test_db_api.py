@@ -749,7 +749,9 @@ class DBAPIVolumeTestCase(BaseTest):
     def test_volume_destroy_deletes_dependent_data(self, mock_model_query):
         """Addresses LP Bug #1542169."""
         db.volume_destroy(self.ctxt, fake.VOLUME_ID)
-        expected_call_count = 1 + len(sqlalchemy_api.VOLUME_DEPENDENT_MODELS)
+        # 2 calls for volume (one to get volume for history, one to update) +
+        # 1 for each dependent model
+        expected_call_count = 2 + len(sqlalchemy_api.VOLUME_DEPENDENT_MODELS)
         self.assertEqual(expected_call_count, mock_model_query.call_count)
 
     def test_volume_get_all(self):
