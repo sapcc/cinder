@@ -227,6 +227,22 @@ class MigrationsWalk(
         db_utils.index_exists(connection,
                               'volumes', 'volumes_deleted_host_idx')
 
+    def _check_633b14d87cec(self, connection):
+        """Test volume_history table was created."""
+        table = db_utils.get_table(connection, 'volume_history')
+        self.assertIn('id', table.c)
+        self.assertIn('volume_id', table.c)
+        self.assertIn('project_id', table.c)
+        self.assertIn('user_id', table.c)
+        self.assertIn('request_id', table.c)
+        self.assertIn('action', table.c)
+        self.assertIn('changes', table.c)
+        self.assertIn('created_at', table.c)
+        self.assertIn('deleted_at', table.c)
+        self.assertIn('deleted', table.c)
+        db_utils.index_exists(
+            connection, 'volume_history', 'volume_history_volume_id_idx')
+
 
 class TestMigrationsWalkSQLite(
     MigrationsWalk,

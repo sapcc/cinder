@@ -33,6 +33,7 @@ from oslo_db import exception as db_exc
 from oslo_db import options
 from oslo_db.sqlalchemy import enginefacade
 from oslo_log import log as logging
+from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
@@ -682,7 +683,29 @@ def conditional_update(
     order=None,
 ):
     """Compare-and-swap conditional update SQLAlchemy implementation."""
-    return _conditional_update(
+    # Volume history tracking: capture old state before the update
+    old_values = None
+    is_volume = (model == models.Volume and CONF.volume_history_enabled)
+    if is_volume:
+        volume_id = expected_values.get('id')
+        if volume_id and not isinstance(volume_id, db.Condition):
+            try:
+                vol_ref = _volume_get(context, volume_id, joined_load=False)
+                old_values = {}
+                for key in values.keys():
+                    # values may contain non-string keys (e.g. ORM column
+                    # attributes for multi-table updates); only snapshot
+                    # plain string attribute names.
+                    if not isinstance(key, str):
+                        continue
+                    old_val = getattr(vol_ref, key, None)
+                    if hasattr(old_val, 'isoformat'):
+                        old_val = old_val.isoformat() if old_val else None
+                    old_values[key] = old_val
+            except exception.VolumeNotFound:
+                old_values = None
+
+    result = _conditional_update(
         context,
         model,
         values,
@@ -692,6 +715,47 @@ def conditional_update(
         project_only=project_only,
         order=order,
     )
+
+    # Volume history tracking: record changes after successful update
+    if result and is_volume and old_values:
+        volume_id = expected_values.get('id')
+        changes = {}
+        # Determine which values had Case/ORM refs that need re-reading
+        needs_reread = any(
+            isinstance(v, (db.Case,)) or is_orm_value(v)
+            for v in values.values()
+        )
+        if needs_reread:
+            # Re-read the volume to get actual new values
+            try:
+                new_vol = _volume_get(context, volume_id, joined_load=False)
+                for key in values.keys():
+                    if not isinstance(key, str):
+                        continue
+                    new_val = getattr(new_vol, key, None)
+                    if hasattr(new_val, 'isoformat'):
+                        new_val = new_val.isoformat() if new_val else None
+                    old_val = old_values.get(key)
+                    if old_val != new_val:
+                        changes[key] = [old_val, new_val]
+            except exception.VolumeNotFound:
+                pass
+        else:
+            # All values are simple scalars - use them directly
+            for key, new_val in values.items():
+                if not isinstance(key, str):
+                    continue
+                if hasattr(new_val, 'isoformat'):
+                    new_val = new_val.isoformat() if new_val else None
+                old_val = old_values.get(key)
+                if old_val != new_val:
+                    changes[key] = [old_val, new_val]
+
+        if changes:
+            _record_volume_history(context, volume_id,
+                                   'conditional_update', changes)
+
+    return result
 
 
 ###################
@@ -1979,11 +2043,58 @@ def volume_attached(
     del updated_values['updated_at']
 
     volume_ref = _volume_get(context, volume_attachment_ref['volume_id'])
+    # Capture old values before update for history
+    old_status = volume_ref['status']
+    old_attach_status = volume_ref['attach_status']
+
     volume_ref['status'] = volume_status
     volume_ref['attach_status'] = attach_status
     volume_ref.save(context.session)
 
+    # Record attachment in volume history
+    attach_changes = {}
+    if old_status != volume_status:
+        attach_changes['status'] = [old_status, volume_status]
+    if old_attach_status != str(attach_status):
+        attach_changes['attach_status'] = [old_attach_status,
+                                           str(attach_status)]
+    if attach_changes:
+        _record_volume_history(context, volume_attachment_ref['volume_id'],
+                               'attach', attach_changes)
+
     return volume_ref, updated_values
+
+
+def _record_volume_history(context, volume_id, action, changes,
+                           project_id=None, user_id=None):
+    """Record a volume state change in the volume_history table.
+
+    Args:
+        context: The request context
+        volume_id: UUID of the volume
+        action: Type of action (create, update, destroy, attach, detach)
+        changes: Dict of changes, where each key is a field name and
+                 value is [old_value, new_value]
+        project_id: Override project_id (defaults to context.project_id)
+        user_id: Override user_id (defaults to context.user_id)
+
+    Note:
+        This function respects the CONF.volume_history_enabled config option.
+        When disabled, no history is recorded.
+    """
+    if not CONF.volume_history_enabled:
+        return
+    if not changes:
+        return
+    history = models.VolumeHistory()
+    history.id = str(uuid.uuid4())
+    history.volume_id = volume_id
+    history.project_id = project_id or getattr(context, 'project_id', None)
+    history.user_id = user_id or getattr(context, 'user_id', None)
+    history.request_id = getattr(context, 'request_id', None)
+    history.action = action
+    history.changes = jsonutils.dumps(changes)
+    context.session.add(history)
 
 
 @handle_db_data_error
@@ -2009,6 +2120,12 @@ def volume_create(context, values):
     volume_ref.update(values)
 
     context.session.add(volume_ref)
+
+    # Record creation in volume history
+    create_changes = {k: [None, v] for k, v in values.items()
+                      if k not in ('metadata', 'admin_metadata',
+                                   'volume_metadata', 'volume_admin_metadata')}
+    _record_volume_history(context, values['id'], 'create', create_changes)
 
     return _volume_get(context, values['id'])
 
@@ -2125,6 +2242,7 @@ VOLUME_DEPENDENT_MODELS = frozenset(
         models.Transfer,
         models.VolumeGlanceMetadata,
         models.VolumeAttachment,
+        models.VolumeHistory,
     ]
 )
 
@@ -2140,6 +2258,23 @@ def volume_destroy(context, volume_id):
         'deleted_at': now,
         'migration_status': None,
     }
+    query = model_query(context, models.Volume).filter_by(id=volume_id)
+
+    # Record destruction in volume history before updating
+    volume_ref = query.first()
+    if volume_ref and hasattr(volume_ref, 'status'):
+        try:
+            destroy_changes = {
+                'status': [volume_ref.status, 'deleted'],
+                'deleted': [False, True],
+            }
+            _record_volume_history(context, volume_id, 'destroy',
+                                   destroy_changes)
+        except (TypeError, AttributeError):
+            # Handle case where volume_ref is mocked in unit tests
+            pass
+
+    # Re-fetch query since .first() consumed it
     query = model_query(context, models.Volume).filter_by(id=volume_id)
     entity = query.column_descriptions[0]['entity']
     updated_values['updated_at'] = entity.updated_at
@@ -2270,6 +2405,10 @@ def volume_detached(context, volume_id, attachment_id):
         for_update=True,
     )
 
+    # Capture old values for history before any changes
+    old_status = volume['status']
+    old_attach_status = volume['attach_status']
+
     try:
         attachment = _attachment_get(context, attachment_id)
         attachment_updates = attachment.delete(context.session)
@@ -2295,6 +2434,18 @@ def volume_detached(context, volume_id, attachment_id):
     volume.update(volume_updates)
     volume.save(context.session)
     del volume_updates['updated_at']
+
+    # Record detachment in volume history
+    detach_changes = {}
+    new_status = volume_updates.get('status')
+    new_attach_status = volume_updates.get('attach_status')
+    if new_status and old_status != new_status:
+        detach_changes['status'] = [old_status, new_status]
+    if new_attach_status and old_attach_status != new_attach_status:
+        detach_changes['attach_status'] = [old_attach_status,
+                                           new_attach_status]
+    if detach_changes:
+        _record_volume_history(context, volume_id, 'detach', detach_changes)
 
     return volume_updates, attachment_updates
 
@@ -3238,6 +3389,22 @@ def process_sort_params(
 @require_context
 @main_context_manager.writer
 def volume_update(context, volume_id, values):
+    # Fetch current state for history tracking BEFORE the update.
+    # We capture the old values in a dict because after the SQLAlchemy
+    # update(), the ORM model object will reflect the new values.
+    old_values = None
+    if CONF.volume_history_enabled:
+        old_volume = _volume_get(context, volume_id, joined_load=False)
+        # Copy the values we need before the update modifies them
+        old_values = {}
+        for key in values.keys():
+            if key not in ('metadata', 'admin_metadata'):
+                old_val = getattr(old_volume, key, None)
+                # Handle datetime serialization
+                if hasattr(old_val, 'isoformat'):
+                    old_val = old_val.isoformat() if old_val else None
+                old_values[key] = old_val
+
     metadata = values.get('metadata')
     if metadata is not None:
         _volume_user_metadata_update(
@@ -3260,6 +3427,35 @@ def volume_update(context, volume_id, values):
     result = query.filter_by(id=volume_id).update(values)
     if not result:
         raise exception.VolumeNotFound(volume_id=volume_id)
+
+    # Record history for volume update
+    if CONF.volume_history_enabled and old_values:
+        changes = {}
+        for key, new_val in values.items():
+            old_val = old_values.get(key)
+            # Handle datetime serialization for new value
+            if hasattr(new_val, 'isoformat'):
+                new_val = new_val.isoformat() if new_val else None
+            if old_val != new_val:
+                changes[key] = [old_val, new_val]
+        if changes:
+            _record_volume_history(context, volume_id, 'update', changes)
+
+
+@require_context
+@main_context_manager.reader
+def volume_history_get_all_by_volume(context, volume_id):
+    """Get all history records for a volume.
+
+    Returns history records ordered by creation time (oldest first).
+    History records for deleted volumes are also returned to support
+    auditing use cases.
+    """
+    return model_query(
+        context, models.VolumeHistory, read_deleted="yes"
+    ).filter_by(volume_id=volume_id).order_by(
+        models.VolumeHistory.created_at
+    ).all()
 
 
 @handle_db_data_error

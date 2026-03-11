@@ -1290,3 +1290,24 @@ class AttachmentSpecs(BASE, CinderBase):
         'AttachmentSpecs.attachment_id == VolumeAttachment.id,'
         'AttachmentSpecs.deleted == False)',
     )
+
+
+class VolumeHistory(BASE, CinderBase):
+    """Represents a historical record of changes to a volume.
+
+    Each record captures a JSON delta of changed fields (old/new values)
+    along with contextual metadata (user, project, request_id).
+    """
+    __tablename__ = 'volume_history'
+    __table_args__ = (
+        sa.Index('volume_history_volume_id_idx', 'volume_id'),
+    )
+
+    id = sa.Column(sa.String(36), primary_key=True)
+    volume_id = sa.Column(
+        sa.String(36), sa.ForeignKey('volumes.id'), nullable=False)
+    project_id = sa.Column(sa.String(255))
+    user_id = sa.Column(sa.String(255))
+    request_id = sa.Column(sa.String(255))
+    action = sa.Column(sa.String(64), nullable=False)
+    changes = sa.Column(sa.Text)
