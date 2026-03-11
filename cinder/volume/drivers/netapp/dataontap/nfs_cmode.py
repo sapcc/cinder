@@ -506,6 +506,13 @@ class NetAppCmodeNfsDriver(
             # SAP
             # Get the comment section of the volume and see if
             # it's marked as down by an admin
+            if len(ssc.items()) > 0:
+                pool['backend_state'] = 'up'
+            else:
+                pool['backend_state'] = 'down'
+            backend_az = self.configuration.safe_get(
+                'backend_availability_zone')
+            pool['backend_availability_zone'] = backend_az
             pool['pool_state'] = 'up'
             pool['pool_down_reason'] = ''
             pool_info = self._get_volume_comment(ssc_vol_name)
