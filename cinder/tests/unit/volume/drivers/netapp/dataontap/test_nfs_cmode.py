@@ -271,7 +271,7 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             'consistencygroup_support': True,
             'consistent_group_snapshot_enabled': True,
             'replication_enabled': False,
-            'online_extend_support': False,
+            'online_extend_support': True,
             'netapp_is_flexgroup': 'false',
         }]
         if report_provisioned_capacity:

@@ -705,10 +705,15 @@ class NetAppNfsDriverTestCase(test.TestCase):
 
         self.assertIn("nfs://host/path/image-id", locations)
 
-    @ddt.data(None, 'raw', 'qcow2')
     @mock.patch('cinder.objects.volume.Volume.get_by_id')
-    def test_extend_volume(self, file_format, mock_get):
+    @ddt.data({'file_format': None, 'is_locked': True},
+              {'file_format': 'raw', 'is_locked': True},
+              {'file_format': 'qcow2', 'is_locked': False})
+    @ddt.unpack
+    def test_extend_volume(self, mock_get, file_format, is_locked):
 
+        self.mock_object(self.driver, '_is_volume_attached',
+                         return_value=is_locked)
         volume = fake_volume.fake_volume_obj(self.ctxt)
         if file_format:
             volume.admin_metadata = {'format': file_format}
@@ -721,15 +726,20 @@ class NetAppNfsDriverTestCase(test.TestCase):
         self.mock_object(self.driver,
                          'local_path',
                          return_value=path)
-        mock_resize_image_file = self.mock_object(self.driver,
-                                                  '_resize_image_file')
+        if is_locked:
+            mock_resize_image_file = self.mock_object(
+                self.driver, '_resize_image_file',
+                side_effect=processutils.ProcessExecutionError(
+                    stderr="another process using the image"))
+        else:
+            mock_resize_image_file = self.mock_object(self.driver,
+                                                      '_resize_image_file')
         mock_get_volume_extra_specs = self.mock_object(
             na_utils, 'get_volume_extra_specs', return_value=fake.EXTRA_SPECS)
         mock_do_qos_for_volume = self.mock_object(self.driver,
                                                   '_do_qos_for_volume')
 
         self.driver.extend_volume(volume, new_size)
-
         mock_resize_image_file.assert_called_once_with(path, new_size,
                                                        file_format=file_format)
         mock_get_volume_extra_specs.assert_called_once_with(volume)
@@ -738,14 +748,15 @@ class NetAppNfsDriverTestCase(test.TestCase):
                                                        cleanup=False)
 
     @mock.patch('cinder.objects.volume.Volume.get_by_id')
-    def test_extend_volume_resize_error(self, mock_get):
+    @ddt.data(netapp_api.NaApiError, processutils.ProcessExecutionError)
+    def test_extend_volume_resize_error(self, mock_get, exception_obj):
 
         volume = fake_volume.fake_volume_obj(self.ctxt)
         mock_get.return_value = volume
         new_size = 100
-        volume_copy = copy.copy(volume)
-        volume_copy['size'] = new_size
 
+        self.mock_object(self.driver, '_is_volume_attached',
+                         return_value=True)
         path = '%s/%s' % (fake.NFS_SHARE, fake.NFS_VOLUME['name'])
         self.mock_object(self.driver,
                          'local_path',
