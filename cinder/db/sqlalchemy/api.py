@@ -3321,6 +3321,22 @@ def process_sort_params(
 @require_context
 @main_context_manager.writer
 def volume_update(context, volume_id, values):
+    # Fetch current state for history tracking BEFORE the update.
+    # We capture the old values in a dict because after the SQLAlchemy
+    # update(), the ORM model object will reflect the new values.
+    old_values = None
+    if CONF.volume_history_enabled:
+        old_volume = _volume_get(context, volume_id, joined_load=False)
+        # Copy the values we need before the update modifies them
+        old_values = {}
+        for key in values.keys():
+            if key not in ('metadata', 'admin_metadata'):
+                old_val = getattr(old_volume, key, None)
+                # Handle datetime serialization
+                if hasattr(old_val, 'isoformat'):
+                    old_val = old_val.isoformat() if old_val else None
+                old_values[key] = old_val
+
     metadata = values.get('metadata')
     if metadata is not None:
         _volume_user_metadata_update(
@@ -3340,30 +3356,22 @@ def volume_update(context, volume_id, values):
         )
 
     query = _volume_get_query(context, joined_load=False)
-    # Only record history and update if there are actual column changes
-    if values:
-        # Fetch current values for history delta
-        volume_ref = query.filter_by(id=volume_id).first()
-        if not volume_ref:
-            raise exception.VolumeNotFound(volume_id=volume_id)
-        history_changes = {}
-        for key, val in values.items():
-            old_val = getattr(volume_ref, key, None)
-            if old_val != val:
-                history_changes[key] = [old_val, val]
-        # Re-fetch query for update
-        query = _volume_get_query(context, joined_load=False)
-        result = query.filter_by(id=volume_id).update(values)
-        if not result:
-            raise exception.VolumeNotFound(volume_id=volume_id)
-        if history_changes:
-            _record_volume_history(context, volume_id, 'update',
-                                   history_changes)
-    else:
-        # Only metadata was updated, verify volume exists
-        result = query.filter_by(id=volume_id).first()
-        if not result:
-            raise exception.VolumeNotFound(volume_id=volume_id)
+    result = query.filter_by(id=volume_id).update(values)
+    if not result:
+        raise exception.VolumeNotFound(volume_id=volume_id)
+
+    # Record history for volume update
+    if CONF.volume_history_enabled and old_values:
+        changes = {}
+        for key, new_val in values.items():
+            old_val = old_values.get(key)
+            # Handle datetime serialization for new value
+            if hasattr(new_val, 'isoformat'):
+                new_val = new_val.isoformat() if new_val else None
+            if old_val != new_val:
+                changes[key] = [old_val, new_val]
+        if changes:
+            _record_volume_history(context, volume_id, 'update', changes)
 
 
 @require_context
