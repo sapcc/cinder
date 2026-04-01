@@ -19,6 +19,7 @@ Classes and utility methods for datastore selection.
 
 from collections.abc import Iterable
 import random
+import time
 
 from oslo_log import log as logging
 from oslo_vmware import pbm
@@ -64,6 +65,8 @@ class DatastoreSelector(object):
         self._max_objects = max_objects
         self._ds_regex = ds_regex
         self._profile_id_cache = {}
+        self._ds_name_cache = {}  # {name: (moref, timestamp)}
+        self._ds_cache_ttl = 300  # 5 minutes
         self._random_ds = random_ds
         self._random_ds_range = random_ds_range
 
@@ -358,6 +361,14 @@ class DatastoreSelector(object):
         return datastores
 
     def get_ds_ref_by_name(self, name):
+        # Check cache first
+        if name in self._ds_name_cache:
+            moref, timestamp = self._ds_name_cache[name]
+            if time.time() - timestamp < self._ds_cache_ttl:
+                return moref
+            # Cache expired, remove it
+            del self._ds_name_cache[name]
+
         vim = self._session.vim
 
         retrieve_result = self._session.invoke_api(
@@ -372,21 +383,55 @@ class DatastoreSelector(object):
             for obj_content in objects:
                 props = self._get_object_properties(obj_content)
                 if props['name'] == name:
+                    # Cache the result
+                    self._ds_name_cache[name] = (obj_content.obj, time.time())
                     return obj_content.obj
         return None
+
+    def _get_datastore_by_name(self, name):
+        """Fetch a single datastore by name with optimized vCenter query.
+
+        Instead of fetching ALL datastores and filtering, this method
+        queries vCenter directly for the specific datastore by name,
+        reducing the amount of data transferred and processing time.
+
+        :param name: Datastore name to find
+        :return: dict with 'summary' and 'host' keys, or None if not found
+        """
+        vim = self._session.vim
+
+        # First, find the datastore reference by name (uses cache)
+        ds_ref = self.get_ds_ref_by_name(name)
+        if not ds_ref:
+            return None
+
+        # Now fetch only the properties we need for this specific datastore
+        retrieve_result = self._session.invoke_api(
+            vim_util,
+            'get_object_properties',
+            vim,
+            ds_ref,
+            ['host', 'summary'])
+
+        if not retrieve_result:
+            return None
+
+        props = self._get_object_properties(retrieve_result[0])
+        if ('host' in props and
+                hasattr(props['host'], 'DatastoreHostMount')):
+            props['host'] = props['host'].DatastoreHostMount
+
+        return props
 
     def select_datastore_by_name(self, name):
         """Find a datastore by it's name.
 
             Returns a host_ref and datastore summary.
-        """
 
-        resource_pool = None
-        datastore = None
-        datastores = self._get_datastores()
-        for k, v in datastores.items():
-            if v['summary'].name == name:
-                datastore = v
+        This method uses an optimized query that fetches only the
+        specific datastore needed rather than all datastores in vCenter.
+        """
+        datastore = self._get_datastore_by_name(name)
 
         if not datastore:
             # this shouldn't ever happen as the scheduler told us
