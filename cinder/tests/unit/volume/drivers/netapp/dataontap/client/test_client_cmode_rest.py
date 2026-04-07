@@ -4223,3 +4223,35 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         }
         self.client.send_request.assert_called_once_with(
             '/protocols/nvme/subsystem-maps', 'delete', query=query)
+
+    def test_break_locks(self):
+        client_address = '192.168.1.10'
+        path = '/fake_vol/fake_file'
+        lock_uuid = fake_client.FAKE_UUID
+        get_response = {
+            'records': [{'uuid': lock_uuid}],
+            'num_records': 1,
+        }
+        self.mock_object(self.client, 'send_request',
+                         side_effect=[get_response, None])
+
+        self.client.break_locks(client_address, path)
+
+        self.client.send_request.assert_has_calls([
+            mock.call('/protocols/locks', 'get',
+                      query={'client_address': client_address, 'path': path}),
+            mock.call(f'/protocols/locks/{lock_uuid}', 'delete'),
+        ])
+
+    def test_break_locks_no_locks(self):
+        client_address = '192.168.1.10'
+        path = '/fake_vol/fake_file'
+        get_response = {'records': [], 'num_records': 0}
+        self.mock_object(self.client, 'send_request',
+                         return_value=get_response)
+
+        self.client.break_locks(client_address, path)
+
+        self.client.send_request.assert_called_once_with(
+            '/protocols/locks', 'get',
+            query={'client_address': client_address, 'path': path})

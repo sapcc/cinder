@@ -231,7 +231,15 @@ netapp_nfs_extra_opts = [
                      'cinder-volume process to execute the file.'),
                deprecated_for_removal=True,
                deprecated_reason='The CopyOfflload tool is no longer '
-                                 'available for downloading.'), ]
+                                 'available for downloading.'),
+    cfg.BoolOpt('netapp_nfs_break_locks',
+                default=False,
+                help=('When enabled, all NFS locks held by the detaching '
+                      'host on the backing file are broken on '
+                      'terminate_connection. This requires the REST client '
+                      '(netapp_use_legacy_client = False); if the legacy '
+                      'ZAPI client is active this option has no effect.'
+                      'Primary use-case is instance HA failover.')), ]
 netapp_san_opts = [
     cfg.StrOpt('netapp_lun_ostype',
                help=('This option defines the type of operating system that'
