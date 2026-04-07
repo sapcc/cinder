@@ -2542,6 +2542,22 @@ class RestClient(object):
             f'/storage/volumes/{unique_volume["uuid"]}/files/{orig_file_name}',
             'patch', body=body)
 
+    def break_locks(self, client_address, path):
+        """Break all NFS locks on path held by client_address."""
+        query = {'client_address': client_address, 'path': path}
+        locks = self.send_request(
+            '/protocols/locks', 'get', query=query).get('records', [])
+        # Warning as it should only happen in instance-ha use-case
+        # but not in normal operations
+        for lock in locks:
+            lock_uuid = lock.get('uuid')
+            if not lock_uuid:
+                continue
+            LOG.warning('Breaking NFS lock %s on %s for %s.',
+                        lock_uuid, path, client_address)
+            self.send_request(
+                f'/protocols/locks/{lock_uuid}', 'delete')
+
     def get_namespace_list(self):
         """Gets the list of namespaces on filer.
 

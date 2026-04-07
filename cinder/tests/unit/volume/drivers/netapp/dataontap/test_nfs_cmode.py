@@ -2388,3 +2388,65 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
                          side_effect=side_effect)
 
         self.driver._swap_files(fake.FLEXVOL, fake.VOLUME_NAME, new_file)
+
+    def test_terminate_connection(self):
+        connector = {'ip': fake.FC_CONNECTOR['ip']}
+        ctxt = mock.Mock()
+        vol_fields = {
+            'id': fake.VOLUME_ID,
+            'name': fake.NFS_FILE_PATH,
+            'host': fake.NFS_HOST_STRING,
+            'provider_location': fake.PROVIDER_LOCATION,
+            'provider_id': None,
+        }
+        volume = fake_volume.fake_volume_obj(ctxt, **vol_fields)
+        path = '/%s/%s' % (fake.FLEXVOL, fake.VOLUME_ID)
+        self.driver.configuration.netapp_use_legacy_client = False
+        self.driver.configuration.netapp_nfs_break_locks = True
+
+        self.mock_object(volume_utils, 'resolve_hostname',
+                         return_value=fake.FC_CONNECTOR['ip'])
+        self.mock_object(self.driver, '_get_flexvol_name_for_share',
+                         return_value=fake.FLEXVOL)
+
+        self.driver.terminate_connection(volume, connector)
+
+        volume_utils.resolve_hostname.assert_called_once_with(
+            connector['ip'])
+        self.driver._get_flexvol_name_for_share.assert_called_once_with(
+            fake.NFS_SHARE)
+        self.driver.zapi_client.break_locks.assert_called_once_with(
+            fake.FC_CONNECTOR['ip'], path)
+
+    def test_terminate_connection_provider_id(self):
+        connector = {'ip': fake.FC_CONNECTOR['ip']}
+        prov_id = 'backing-file-name'
+        ctxt = mock.Mock()
+        vol_fields = {
+            'id': fake.VOLUME_ID,
+            'name': fake.NFS_FILE_PATH,
+            'host': fake.NFS_HOST_STRING,
+            'provider_location': fake.PROVIDER_LOCATION,
+            'provider_id': prov_id,
+        }
+        volume = fake_volume.fake_volume_obj(ctxt, **vol_fields)
+        path = '/%s/%s' % (fake.FLEXVOL, prov_id)
+        self.driver.configuration.netapp_use_legacy_client = False
+        self.driver.configuration.netapp_nfs_break_locks = True
+
+        self.mock_object(volume_utils, 'resolve_hostname',
+                         return_value=fake.FC_CONNECTOR['ip'])
+        self.mock_object(self.driver, '_get_flexvol_name_for_share',
+                         return_value=fake.FLEXVOL)
+
+        self.driver.terminate_connection(volume, connector)
+
+        self.driver.zapi_client.break_locks.assert_called_once_with(
+            fake.FC_CONNECTOR['ip'], path)
+
+    def test_terminate_connection_no_connector(self):
+        self.mock_object(self.driver, '_get_flexvol_name_for_share')
+
+        self.driver.terminate_connection(fake.NFS_VOLUME, None)
+
+        self.driver._get_flexvol_name_for_share.assert_not_called()

@@ -1336,3 +1336,19 @@ class NetAppCmodeNfsDriver(nfs_base.NetAppNfsDriver,
                           self).initialize_connection(volume, connector)
         conn_info['data']['version'] = self.ATTACHMENT_VERSION
         return conn_info
+
+    def terminate_connection(self, volume, connector, **kwargs):
+        if not connector:
+            return
+        if (self.configuration.netapp_use_legacy_client
+                or not self.configuration.netapp_nfs_break_locks):
+            return
+        srv_ip = volume_utils.resolve_hostname(connector['ip'])
+        prov_id = volume['provider_id']
+        share = volume_utils.extract_host(volume['host'], level='pool')
+        flexvol_name = self._get_flexvol_name_for_share(share)
+        filename = volume.name_id
+        if prov_id:
+            filename = prov_id
+        path = '/%s/%s' % (flexvol_name, filename)
+        self.zapi_client.break_locks(srv_ip, path)
