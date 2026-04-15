@@ -51,6 +51,20 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
         cctxt = self._get_cctxt(host=host)
         return cctxt.call(ctxt, 'get_file_sizes_by_dir', path=path)
 
+    @volume_utils.trace
+    def get_vserver_for_ip(self, ctxt, host, lif_ip):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'get_vserver_for_ip', lif_ip=lif_ip)
+
+    @volume_utils.trace
+    def clone_file(self, ctxt, host, flex_vol, src_path,
+                   dest_path, vserver, dest_exists=False, is_snapshot=False):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'clone_file', flex_vol=flex_vol,
+                          src_path=src_path, dest_path=dest_path,
+                          vserver=vserver, dest_exists=dest_exists,
+                          is_snapshot=is_snapshot)
+
     def file_assign_qos(self, ctxt, host, vol_name,
                         qos_policy_group_name, path):
         cctxt = self._get_cctxt(host=host)
@@ -76,6 +90,20 @@ class SAPNetappDriverRemoteService(object):
     def get_file_sizes_by_dir(self, ctxt, path):
         # Returns used bytes of a file
         return self._driver.zapi_client.get_file_sizes_by_dir(path)
+
+    def get_vserver_for_ip(self, ctxt, lif_ip):
+        # Returns vserver name from LIF ip
+        return self._driver._get_vserver_for_ip(lif_ip)
+
+    def clone_file(self, ctxt, flex_vol, src_path, dest_path, vserver,
+                   dest_exists, is_snapshot):
+        # Clones a file on ONTAP
+        self._driver.zapi_client.clone_file(flex_vol=flex_vol,
+                                            src_path=src_path,
+                                            dest_path=dest_path,
+                                            vserver=vserver,
+                                            dest_exists=dest_exists,
+                                            is_snapshot=is_snapshot)
 
     def file_assign_qos(self, ctxt, vol_name,
                         qos_policy_group_name, path):
