@@ -351,7 +351,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 volume.provider_location
             )
         )
-        summary = self.volumeops.summary(fcd_loc.ds_ref())
+        summary = self.volumeops.get_summary(fcd_loc.ds_ref())
         if summary.type == "NFS41":
             # We connect to KVM not VMware, only if DS is NFS
             if 'connection_capabilities' not in connector:
