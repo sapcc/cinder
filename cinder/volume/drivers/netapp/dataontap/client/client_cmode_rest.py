@@ -2955,5 +2955,5 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                                              'get', query=query)
         LOG.info('Volumes response: %s', volumes_response)
         if (volumes_response and volumes_response.get('num_records', 0) > 0):
-            return volumes_response['records'][0]['comment']
+            return volumes_response['records'][0].get('comment')
         return None

@@ -19,6 +19,8 @@ from cinder.policies import base
 
 
 SET_POOL_STATE_POLICY = "sap:set_pool_state"
+SET_AGGREGATE_ID_POLICY = "sap:set_aggregate_id"
+GET_AGGREGATE_ID_POLICY = "sap:get_aggregate_id"
 RECOUNT_STATS_POLICY = "sap:recount_host_stats"
 
 sap_policies = [
@@ -40,6 +42,26 @@ sap_policies = [
             {
                 'method': 'PUT',
                 'path': '/os-sap-contrib/set_pool_state'
+            }
+        ]),
+    policy.DocumentedRuleDefault(
+        name=SET_AGGREGATE_ID_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="Set or remove the aggregate_id for a pool",
+        operations=[
+            {
+                'method': 'PUT',
+                'path': '/os-sap-contrib/set_aggregate_id'
+            }
+        ]),
+    policy.DocumentedRuleDefault(
+        name=GET_AGGREGATE_ID_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="Get the aggregate_id for a pool",
+        operations=[
+            {
+                'method': 'PUT',
+                'path': '/os-sap-contrib/get_aggregate_id'
             }
         ]),
 ]
