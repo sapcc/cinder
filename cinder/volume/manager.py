@@ -695,6 +695,57 @@ class VolumeManager(manager.CleanableManager,
                 self.driver.__class__.__name__
             )
 
+    def set_aggregate_id(self, context, host, aggregate_id):
+        """Set the aggregate_id for a pool on this backend.
+
+        The aggregate_id is used by the scheduler to aggregate allocated
+        capacity across multiple backends sharing the same physical storage.
+        """
+        requested_pool_name = volume_utils.extract_host(host, 'pool')
+        LOG.info(
+            "Setting aggregate_id for pool '%s' to '%s'",
+            requested_pool_name,
+            aggregate_id,
+        )
+
+        # Update in-memory stats
+        for pool_name in self.stats['pools']:
+            pool = self.stats['pools'][pool_name]
+            if pool_name == requested_pool_name:
+                if aggregate_id:
+                    pool['aggregate_id'] = aggregate_id
+                else:
+                    pool.pop('aggregate_id', None)
+
+        # Persist to the driver's storage (flexvol comment field)
+        if hasattr(self.driver, 'set_aggregate_id'):
+            self.driver.set_aggregate_id(
+                requested_pool_name,
+                aggregate_id,
+            )
+        else:
+            LOG.warning(
+                "Driver %s does not support setting aggregate_id.",
+                self.driver.__class__.__name__
+            )
+
+    def get_aggregate_id(self, context, host):
+        """Get the aggregate_id for a pool from the backend driver.
+
+        Reads the authoritative value from the driver's storage
+        (e.g., the NetApp flexvol comment field).
+        """
+        requested_pool_name = volume_utils.extract_host(host, 'pool')
+
+        if hasattr(self.driver, 'get_aggregate_id'):
+            return self.driver.get_aggregate_id(requested_pool_name)
+        else:
+            LOG.warning(
+                "Driver %s does not support getting aggregate_id.",
+                self.driver.__class__.__name__
+            )
+            return None
+
     @coordination.synchronized('volume-stats-{self.host}')
     def _count_host_stats(self, context, export_volumes=False):
         """Recount the number of volumes and allocated capacity."""

@@ -179,6 +179,17 @@ class VolumeAPI(rpc.RPCAPI):
         cctxt = self._get_cctxt(host=host)
         cctxt.cast(ctxt, 'set_pool_state', host=host, status=status)
 
+    @rpc.assert_min_rpc_version('3.18')
+    def set_aggregate_id(self, ctxt, host, aggregate_id):
+        cctxt = self._get_cctxt(host=host)
+        cctxt.cast(ctxt, 'set_aggregate_id', host=host,
+                   aggregate_id=aggregate_id)
+
+    @rpc.assert_min_rpc_version('3.18')
+    def get_aggregate_id(self, ctxt, host):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'get_aggregate_id', host=host)
+
     def create_volume(self,
                       ctxt: context.RequestContext,
                       volume: 'objects.Volume',

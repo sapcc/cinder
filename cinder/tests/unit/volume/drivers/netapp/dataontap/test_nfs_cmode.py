@@ -14,6 +14,7 @@
 #    under the License.
 """Mock unit tests for the NetApp cmode nfs storage driver."""
 
+import json
 from unittest import mock
 import uuid
 
@@ -141,6 +142,7 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         self.mock_object(self.driver, '_get_pool_stats', return_value={})
         expected_stats = {
             'driver_version': self.driver.VERSION,
+            'has_aggregate_pool': False,
             'netapp_server_hostname': '127.0.0.1',
             'pools': {},
             'sparse_copy_volume': True,
@@ -311,6 +313,199 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         if cluster_credentials:
             mock_get_aggrs.assert_called_once_with()
             mock_get_aggr_capacities.assert_called_once_with(['aggr1'])
+
+    def test_get_pool_stats_with_aggregate_id(self):
+        """Test that aggregate_id from comment field appears in pool stats."""
+        self.driver.using_cluster_credentials = True
+        conf = self.driver.configuration
+        conf.netapp_driver_reports_provisioned_capacity = False
+        self.driver.zapi_client = mock.Mock()
+        ssc = {
+            'vola': {
+                'pool_name': '10.10.10.10:/vola',
+                'thick_provisioning_support': True,
+                'thin_provisioning_support': False,
+                'netapp_thin_provisioned': 'false',
+                'netapp_compression': 'false',
+                'netapp_mirrored': 'false',
+                'netapp_dedup': 'true',
+                'netapp_aggregate': 'aggr1',
+                'netapp_raid_type': 'raid_dp',
+                'netapp_disk_type': 'SSD',
+                'consistent_group_snapshot_enabled': True,
+                'netapp_is_flexgroup': 'false',
+            },
+        }
+        self.mock_object(self.driver.ssc_library, 'get_ssc',
+                         return_value=ssc)
+        self.mock_object(self.driver.ssc_library, 'get_ssc_aggregates',
+                         return_value=['aggr1'])
+        self.mock_object(self.driver, 'get_replication_backend_names',
+                         return_value=[])
+
+        capacity = {
+            'reserved_percentage': fake.RESERVED_PERCENTAGE,
+            'max_over_subscription_ratio': fake.MAX_OVER_SUBSCRIPTION_RATIO,
+            'total_capacity_gb': 100.0,
+            'free_capacity_gb': 80.0,
+        }
+        self.mock_object(self.driver, '_get_share_capacity_info',
+                         return_value=capacity)
+        self.mock_object(self.driver.zapi_client,
+                         'get_flexvol_dedupe_used_percent',
+                         return_value=55.0)
+        aggr_capacities = {
+            'aggr1': {
+                'percent-used': 45,
+                'size-available': 59055800320.0,
+                'size-total': 107374182400.0,
+            },
+        }
+        self.mock_object(self.driver.zapi_client, 'get_aggregate_capacities',
+                         return_value=aggr_capacities)
+        self.driver.perf_library.get_node_utilization_for_pool = (
+            mock.Mock(return_value=30.0))
+
+        # Mock the comment field to return an aggregate_id
+        self.mock_object(
+            self.driver, '_get_volume_comment',
+            return_value={'pool_state': 'up', 'pool_down_reason': '',
+                          'aggregate_id': 'shared-ds-001'})
+
+        result = self.driver._get_pool_stats(filter_function='filter',
+                                             goodness_function='goodness')
+
+        self.assertEqual('shared-ds-001', result[0]['aggregate_id'])
+
+    def test_update_volume_stats_has_aggregate_pool(self):
+        """Test that has_aggregate_pool is set when pools have aggregate_id."""
+        pool_with_agg = {
+            'pool_name': '10.10.10.10:/vola',
+            'aggregate_id': 'shared-ds-001',
+        }
+        pool_without_agg = {
+            'pool_name': '10.10.10.10:/volb',
+        }
+        self.mock_object(self.driver, '_get_pool_stats',
+                         return_value=[pool_with_agg, pool_without_agg])
+        self.mock_object(self.driver, 'get_filter_function',
+                         return_value=None)
+        self.mock_object(self.driver, 'get_goodness_function',
+                         return_value=None)
+
+        self.driver._update_volume_stats()
+
+        self.assertTrue(self.driver._stats['has_aggregate_pool'])
+
+    def test_update_volume_stats_no_aggregate_pool(self):
+        """Test has_aggregate_pool is False when no pools have aggregate_id."""
+        pool_without_agg = {
+            'pool_name': '10.10.10.10:/vola',
+        }
+        self.mock_object(self.driver, '_get_pool_stats',
+                         return_value=[pool_without_agg])
+        self.mock_object(self.driver, 'get_filter_function',
+                         return_value=None)
+        self.mock_object(self.driver, 'get_goodness_function',
+                         return_value=None)
+
+        self.driver._update_volume_stats()
+
+        self.assertFalse(self.driver._stats.get('has_aggregate_pool', False))
+
+    def test_set_pool_state_preserves_existing_comment(self):
+        """Test that set_pool_state does not blow away other comment fields."""
+        self.driver.zapi_client = mock.Mock()
+        # Existing comment has an aggregate_id
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value='{"aggregate_id": "shared-ds-001"}')
+        self.driver.zapi_client.set_volume_comment = mock.Mock()
+
+        self.driver.set_pool_state('10.10.10.10:/vola', 'down',
+                                   'pool marked as draining')
+
+        # Verify the aggregate_id was preserved
+        call_args = self.driver.zapi_client.set_volume_comment.call_args
+        written_json = json.loads(call_args[0][1])
+        self.assertEqual('shared-ds-001', written_json['aggregate_id'])
+        self.assertEqual('down', written_json['pool_state'])
+        self.assertEqual('pool marked as draining',
+                         written_json['pool_down_reason'])
+
+    def test_set_aggregate_id(self):
+        """Test setting aggregate_id in the flexvol comment field."""
+        self.driver.zapi_client = mock.Mock()
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value='{"pool_state": "up", "pool_down_reason": ""}')
+        self.driver.zapi_client.set_volume_comment = mock.Mock()
+
+        self.driver.set_aggregate_id('10.10.10.10:/vola', 'shared-ds-001')
+
+        # Verify it merged into existing comment JSON
+        call_args = self.driver.zapi_client.set_volume_comment.call_args
+        written_json = json.loads(call_args[0][1])
+        self.assertEqual('shared-ds-001', written_json['aggregate_id'])
+        self.assertEqual('up', written_json['pool_state'])
+        self.assertEqual('', written_json['pool_down_reason'])
+
+    def test_set_aggregate_id_no_existing_comment(self):
+        """Test setting aggregate_id when no existing comment exists."""
+        self.driver.zapi_client = mock.Mock()
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value=None)
+        self.driver.zapi_client.set_volume_comment = mock.Mock()
+
+        self.driver.set_aggregate_id('10.10.10.10:/vola', 'shared-ds-001')
+
+        call_args = self.driver.zapi_client.set_volume_comment.call_args
+        written_json = json.loads(call_args[0][1])
+        self.assertEqual('shared-ds-001', written_json['aggregate_id'])
+
+    def test_remove_aggregate_id(self):
+        """Test removing aggregate_id by passing None."""
+        self.driver.zapi_client = mock.Mock()
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value='{"pool_state": "up", "pool_down_reason": "", '
+                         '"aggregate_id": "shared-ds-001"}')
+        self.driver.zapi_client.set_volume_comment = mock.Mock()
+
+        self.driver.set_aggregate_id('10.10.10.10:/vola', None)
+
+        call_args = self.driver.zapi_client.set_volume_comment.call_args
+        written_json = json.loads(call_args[0][1])
+        self.assertNotIn('aggregate_id', written_json)
+        self.assertEqual('up', written_json['pool_state'])
+
+    def test_get_aggregate_id(self):
+        """Test getting aggregate_id from the flexvol comment field."""
+        self.driver.zapi_client = mock.Mock()
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value='{"pool_state": "up", "aggregate_id": '
+                         '"shared-ds-001"}')
+
+        result = self.driver.get_aggregate_id('10.10.10.10:/vola')
+
+        self.assertEqual('shared-ds-001', result)
+
+    def test_get_aggregate_id_not_set(self):
+        """Test getting aggregate_id when none is set."""
+        self.driver.zapi_client = mock.Mock()
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value='{"pool_state": "up"}')
+
+        result = self.driver.get_aggregate_id('10.10.10.10:/vola')
+
+        self.assertIsNone(result)
+
+    def test_get_aggregate_id_no_comment(self):
+        """Test getting aggregate_id when no comment exists."""
+        self.driver.zapi_client = mock.Mock()
+        self.driver.zapi_client.get_volume_comment = mock.Mock(
+            return_value=None)
+
+        result = self.driver.get_aggregate_id('10.10.10.10:/vola')
+
+        self.assertIsNone(result)
 
     @ddt.data({}, None)
     def test_get_pool_stats_no_ssc_vols(self, ssc):

@@ -336,26 +336,83 @@ class NetAppCmodeNfsDriver(
 
     @volume_utils.trace
     def set_pool_state(self, pool_name, state, state_reason):
-        """Set the pool state for the volume."""
+        """Set the pool state for the volume.
 
+        Reads the existing comment JSON first to preserve any other
+        fields (e.g., aggregate_id), then merges the pool_state and
+        pool_down_reason fields, and writes back.
+        """
         # The pool_name is in the format of
         # <ip_address>:/<volume_name>   or
         # <ip_address>:<volume_name>/<qtree_name>
         # We have to extract the volume_name from the pool_name.
         volume_name = pool_name.split('/')[1]
 
-        pool_json = json.dumps(
-            {'pool_state': state, 'pool_down_reason': state_reason}
-        )
+        # Read existing comment to preserve other fields
+        existing = self._get_volume_comment(volume_name) or {}
+
+        existing['pool_state'] = state
+        existing['pool_down_reason'] = state_reason
+
+        pool_json = json.dumps(existing)
         LOG.info("Setting pool state for %s to '%s'", volume_name, pool_json)
 
-        # Set a json string in the comment field to keep track
-        # of the pool state and the reason for the pool state.
         if hasattr(self.zapi_client, 'set_volume_comment'):
             self.zapi_client.set_volume_comment(volume_name, pool_json)
         else:
             LOG.warning("Driver %s can't set the pool state",
                         self.driver_name)
+
+    @volume_utils.trace
+    def set_aggregate_id(self, pool_name, aggregate_id):
+        """Set or remove the aggregate_id in the flexvol comment field.
+
+        The aggregate_id is stored as part of the JSON comment on the
+        NetApp flexvol. This is used by the scheduler to aggregate
+        allocated capacity across backends sharing the same physical
+        storage.
+
+        :param pool_name: NFS share path (e.g., '10.10.10.10:/vola')
+        :param aggregate_id: The aggregate ID string, or None to remove it
+        """
+        volume_name = pool_name.split('/')[1]
+
+        # Read existing comment to preserve other fields (pool_state, etc.)
+        existing = self._get_volume_comment(volume_name) or {}
+
+        if aggregate_id:
+            existing['aggregate_id'] = aggregate_id
+        else:
+            existing.pop('aggregate_id', None)
+
+        comment_json = json.dumps(existing)
+        LOG.info("Setting aggregate_id for %s to '%s'",
+                 volume_name, aggregate_id)
+
+        if hasattr(self.zapi_client, 'set_volume_comment'):
+            self.zapi_client.set_volume_comment(volume_name, comment_json)
+        else:
+            LOG.warning("Driver %s can't set the aggregate_id",
+                        self.driver_name)
+
+    @volume_utils.trace
+    def get_aggregate_id(self, pool_name):
+        """Get the aggregate_id from the flexvol comment field.
+
+        :param pool_name: NFS share path (e.g., '10.10.10.10:/vola')
+        :returns: The aggregate_id string, or None if not set
+        """
+        volume_name = pool_name.split('/')[1]
+
+        if hasattr(self.zapi_client, 'get_volume_comment'):
+            raw = self.zapi_client.get_volume_comment(volume_name)
+            if raw:
+                try:
+                    info = json.loads(raw)
+                    return info.get('aggregate_id')
+                except Exception:
+                    return None
+        return None
 
     def _update_volume_stats(self):
         """Retrieve stats info from vserver."""
@@ -373,6 +430,16 @@ class NetAppCmodeNfsDriver(
             filter_function=self.get_filter_function(),
             goodness_function=self.get_goodness_function())
         data['sparse_copy_volume'] = True
+
+        # SAP: Check if any pool has an aggregate_id set.
+        # This tells the scheduler to run _propagate_aggregate_stats
+        # to sum allocated capacity across backends sharing an aggregate.
+        has_aggregate_pool = False
+        for pool in data['pools']:
+            if pool.get('aggregate_id'):
+                has_aggregate_pool = True
+                break
+        data['has_aggregate_pool'] = has_aggregate_pool
 
         # Used for service state report
         data['replication_enabled'] = self.replication_enabled
@@ -505,6 +572,13 @@ class NetAppCmodeNfsDriver(
             if pool_info:
                 pool['pool_state'] = pool_info.get('pool_state', 'up')
                 pool['pool_down_reason'] = pool_info.get('pool_down_reason')
+                # SAP: Check if an aggregate_id is set in the comment.
+                # This is used by the scheduler to aggregate allocated
+                # capacity across multiple backends sharing the same
+                # physical storage (e.g., NetApp NFS + VMware FCD).
+                agg_id = pool_info.get('aggregate_id')
+                if agg_id:
+                    pool['aggregate_id'] = agg_id
             LOG.info('Pool state for volume %s: %s',
                      ssc_vol_name, pool['pool_state'])
 
