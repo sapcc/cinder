@@ -2538,6 +2538,18 @@ class API(base.Base):
         ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
         self.volume_rpcapi.set_pool_state(ctxt, host, status)
 
+    def set_aggregate_id(self, ctxt, host, aggregate_id):
+        """SAP.  Set the aggregate_id for the host/pool."""
+        ctxt.authorize(sap_policy.SET_AGGREGATE_ID_POLICY)
+        ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
+        self.volume_rpcapi.set_aggregate_id(ctxt, host, aggregate_id)
+
+    def get_aggregate_id(self, ctxt, host):
+        """SAP.  Get the aggregate_id for the host/pool."""
+        ctxt.authorize(sap_policy.GET_AGGREGATE_ID_POLICY)
+        ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
+        return self.volume_rpcapi.get_aggregate_id(ctxt, host)
+
     def check_volume_filters(self,
                              filters: dict,
                              strict: bool = False) -> None:
