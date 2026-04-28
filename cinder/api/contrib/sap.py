@@ -32,6 +32,7 @@ from cinder.common import constants
 from cinder import exception
 from cinder.i18n import _
 from cinder.policies import services as policy
+from cinder.policies import sap as sap_policy
 from cinder import volume
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import volume_utils
@@ -57,6 +58,23 @@ schema_set_pool_state = {
         'host': parameter_types.cinder_host,
         'status': {'type': ['string', 'null'],
                    'format': 'pool_status'},
+    },
+    'additionalProperties': False,
+}
+
+schema_set_aggregate_id = {
+    'type': 'object',
+    'properties': {
+        'host': parameter_types.cinder_host,
+        'aggregate_id': {'type': ['string', 'null']},
+    },
+    'additionalProperties': False,
+}
+
+schema_get_aggregate_id = {
+    'type': 'object',
+    'properties': {
+        'host': parameter_types.cinder_host,
     },
     'additionalProperties': False,
 }
@@ -107,6 +125,10 @@ class SAPContribController(wsgi.Controller):
             return self._recount_host_stats(req, context, body=body)
         elif id == "set_pool_state":
             return self._set_pool_state(req, context, body=body)
+        elif id == "set_aggregate_id":
+            return self._set_aggregate_id(req, context, body=body)
+        elif id == "get_aggregate_id":
+            return self._get_aggregate_id(req, context, body=body)
         else:
             raise exception.InvalidInput(reason=_("Unknown action"))
 
@@ -149,6 +171,30 @@ class SAPContribController(wsgi.Controller):
         self._volume_api_proxy(self.volume_api.set_pool_state,
                                context, host, update['status'])
         return webob.Response(status_int=HTTPStatus.ACCEPTED)
+
+    @validation.schema(schema_set_aggregate_id)
+    @volume_utils.trace
+    def _set_aggregate_id(self, req, context, body):
+        """Set the aggregate_id for a pool."""
+        cluster_name, host = common.get_cluster_host(req, body,
+                                                     mv.REPLICATION_CLUSTER)
+        aggregate_id = body.get('aggregate_id', None)
+
+        self._volume_api_proxy(self.volume_api.set_aggregate_id,
+                               context, host, aggregate_id)
+        return webob.Response(status_int=HTTPStatus.ACCEPTED)
+
+    @validation.schema(schema_get_aggregate_id)
+    @volume_utils.trace
+    def _get_aggregate_id(self, req, context, body):
+        """Get the aggregate_id for a pool from the backend driver."""
+        cluster_name, host = common.get_cluster_host(req, body,
+                                                     mv.REPLICATION_CLUSTER)
+        aggregate_id = self._volume_api_proxy(
+            self.volume_api.get_aggregate_id, context, host)
+
+        resp_body = {'host': host, 'aggregate_id': aggregate_id}
+        return {'aggregate_info': resp_body}
 
 
 class Sap(extensions.ExtensionDescriptor):
