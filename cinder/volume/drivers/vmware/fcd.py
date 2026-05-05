@@ -19,6 +19,7 @@ VMware VStorageObject driver
 Volume driver based on VMware VStorageObject aka First Class Disk (FCD). This
 driver requires a minimum vCenter version of 6.5.
 """
+import json
 import time
 
 from oslo_config import cfg
@@ -334,6 +335,156 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         return connection_info
 
     @volume_utils.trace
+    def prepare_retype(self, context, volume, new_type, host):
+        """Validate FCD location and store migration metadata.
+
+        Resolves the NetApp host for the volume's datastore, validates the
+        VMDK path, and stores all computed paths in admin_metadata for use
+        by finalize_retype/abort_retype. Does NOT execute any renames.
+
+        :returns: (True, model_update) on success
+        :raises: VolumeDriverException if validation fails
+        """
+        fcd_loc = vops.FcdLocation.from_provider_location(
+            self._provider_location_to_moref_location(
+                volume.provider_location))
+
+        # Resolve the NetApp host that manages this datastore
+        netapp_fqdn = self.volumeops.get_netapp_for_ds(fcd_loc.ds_ref())
+        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+        if not netapp_host:
+            raise exception.VolumeDriverException(
+                message=_("Cannot resolve NetApp cinder host for "
+                          "FQDN: %s") % netapp_fqdn)
+
+        # Validate VMDK path is retrievable from vSphere
+        vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+
+        # Derive ZAPI paths for the renames
+        datastore_name, folder_path, vmdk_file = (
+            vops.split_datastore_path(vmdk_path))
+        flat_file = vmdk_file.replace('.vmdk', '-flat.vmdk')
+        # folder_path from split_datastore_path() is already stripped;
+        # rstrip('/') is defensive in case of unexpected trailing slashes.
+        source_dir = "/vol/%s/%s" % (datastore_name, folder_path.rstrip('/'))
+        temp_dir = source_dir + '_tmp'
+        source_flat = "%s/%s" % (temp_dir, flat_file)
+        dest_file = "/vol/%s/%s" % (
+            datastore_name, CONF.volume_name_template % volume.id)
+
+        # Get the NFS mount path that will become the new provider_location
+        mount_path = self.volumeops._get_mount_path(fcd_loc.ds_ref())
+
+        # Store migration state for finalize/abort
+        migration_info = {
+            'netapp_host': netapp_host,
+            'source_dir': source_dir,
+            'temp_dir': temp_dir,
+            'source_flat': source_flat,
+            'dest_file': dest_file,
+            'new_provider_location': mount_path,
+            'original_provider_location': volume.provider_location,
+        }
+
+        # Merge into existing admin_metadata to avoid deleting pre-existing
+        # keys (volume.save() with admin_metadata uses delete=True).
+        existing_meta = dict(volume.admin_metadata or {})
+        existing_meta['kvm_migration_info'] = json.dumps(migration_info)
+
+        model_update = {
+            'admin_metadata': existing_meta
+        }
+
+        LOG.info("prepare_retype: validated migration paths for volume "
+                 "%(vol)s — source_dir=%(src)s, dest=%(dst)s",
+                 {'vol': volume.id, 'src': source_dir, 'dst': dest_file})
+
+        return (True, model_update)
+
+    @volume_utils.trace
+    def finalize_retype(self, context, volume):
+        """Execute FCD-to-NFS renames on NetApp filer.
+
+        Reads migration metadata stored by prepare_retype, executes two
+        rename operations:
+          1. Rename FCD source directory to temp path
+          2. Rename flat-vmdk from temp path to final NFS volume filename
+
+        If rename #2 fails after #1 succeeded, reverses #1 before re-raising.
+
+        :returns: dict with provider_location update
+        :raises: VolumeDriverException if no migration metadata found
+        """
+        raw_info = (volume.admin_metadata or {}).get('kvm_migration_info')
+        if not raw_info:
+            raise exception.VolumeDriverException(
+                message=_("No kvm_migration_info in admin_metadata for "
+                          "volume %s — was prepare_retype called?")
+                % volume.id)
+
+        try:
+            info = json.loads(raw_info)
+        except (ValueError, TypeError) as e:
+            raise exception.VolumeDriverException(
+                message=_("Corrupt kvm_migration_info for volume "
+                          "%(vol)s: %(err)s") % {'vol': volume.id,
+                                                 'err': e})
+
+        netapp_host = info['netapp_host']
+        source_dir = info['source_dir']
+        temp_dir = info['temp_dir']
+        source_flat = info['source_flat']
+        dest_file = info['dest_file']
+        new_provider_location = info['new_provider_location']
+
+        netapp_api = self._remote_netapp_api
+
+        # Rename #1: FCD directory → temp directory
+        netapp_api.rename_file_or_dir(
+            context, host=netapp_host,
+            old_name=source_dir, new_name=temp_dir)
+
+        # Rename #2: flat-vmdk → final NFS volume filename
+        try:
+            netapp_api.rename_file_or_dir(
+                context, host=netapp_host,
+                old_name=source_flat, new_name=dest_file)
+        except Exception:
+            # Reverse rename #1 to restore original state
+            LOG.exception("finalize_retype: rename #2 failed for volume "
+                          "%(vol)s, reversing rename #1", {'vol': volume.id})
+            try:
+                netapp_api.rename_file_or_dir(
+                    context, host=netapp_host,
+                    old_name=temp_dir, new_name=source_dir)
+            except Exception:
+                LOG.exception("finalize_retype: CRITICAL — failed to reverse "
+                              "rename #1 for volume %(vol)s. Manual "
+                              "intervention required.", {'vol': volume.id})
+            raise
+
+        LOG.info("finalize_retype: renames complete for volume %(vol)s — "
+                 "new provider_location=%(pl)s",
+                 {'vol': volume.id, 'pl': new_provider_location})
+
+        return {'provider_location': new_provider_location}
+
+    @volume_utils.trace
+    def abort_retype(self, context, volume):
+        """Abort a prepared retype — no-op since renames happen in finalize.
+
+        Before finalize: no renames have been executed, so this is a no-op.
+        The manager will clear migration_status.
+
+        :returns: None
+        """
+        raw_info = (volume.admin_metadata or {}).get('kvm_migration_info')
+        if raw_info:
+            LOG.info("abort_retype: clearing migration metadata for "
+                     "volume %s (no renames to reverse)", volume.id)
+        return None
+
+    @volume_utils.trace
     def initialize_connection(self, volume, connector, initiator_data=None):
         """Allow connection to connector and return connection info.
 
@@ -346,6 +497,16 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                                initialize_connection calls.
         :returns: A dictionary of connection information.
         """
+        # Defensive guard: after KVM migration, provider_location is in NFS
+        # format (e.g. "10.0.0.1:/nfs_vol") which is not parseable as FCD.
+        if volume.provider_location and '@' not in volume.provider_location:
+            raise exception.VolumeDriverException(
+                message=_("Volume %(vol)s has non-FCD provider_location "
+                          "'%(pl)s'. This volume may have been migrated to "
+                          "NFS and should be managed by the NetApp NFS "
+                          "driver.") % {'vol': volume.id,
+                                        'pl': volume.provider_location})
+
         fcd_loc = vops.FcdLocation.from_provider_location(
             self._provider_location_to_moref_location(
                 volume.provider_location

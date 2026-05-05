@@ -72,6 +72,12 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
                           qos_policy_group_name=qos_policy_group_name,
                           path=path)
 
+    @volume_utils.trace
+    def rename_file_or_dir(self, ctxt, host, old_name, new_name):
+        cctxt = self._get_cctxt(host=host)
+        return cctxt.call(ctxt, 'rename_file_or_dir',
+                          old_name=old_name, new_name=new_name)
+
 
 class SAPNetappDriverRemoteService(object):
     RPC_API_VERSION = SAPNetappDriverRemoteApi.RPC_API_VERSION
@@ -113,3 +119,7 @@ class SAPNetappDriverRemoteService(object):
                        qos_policy_group_name=qos_policy_group_name,
                        qos_policy_group_is_adaptive=True,
                        file_path=path)
+
+    def rename_file_or_dir(self, ctxt, old_name, new_name):
+        # Renames a file or directory on ONTAP via ZAPI file-rename-file
+        return self._driver.zapi_client.rename_file(old_name, new_name)

@@ -15,6 +15,7 @@
 
 """Test suite for VMware vCenter FCD driver."""
 
+import json
 from unittest import mock
 
 import ddt
@@ -849,3 +850,331 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
                     ds_sel.get_profile_id.assert_called_once_with(new_profile)
                     vops.update_fcd_policy.assert_called_once_with(
                         fcd_loc, new_profile_id.uniqueId)
+
+    # --- Phased retype tests (KVM migration) ---
+
+    @mock.patch.object(FCD_DRIVER, 'get_netapp_cinder_host')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, '_provider_location_to_moref_location')
+    def test_prepare_retype_success(
+            self, provider_location_to_moref, vops_mock,
+            get_netapp_cinder_host):
+        """prepare_retype validates FCD and stores migration metadata."""
+        volume = self._create_volume_obj()
+        volume.provider_location = 'fcd-id-123@datastore1'
+        volume.admin_metadata = {}
+
+        provider_location_to_moref.return_value = 'fcd-id-123@ds-moref-1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.ds_ref.return_value = mock.sentinel.ds_ref
+
+        with mock.patch.object(
+                volumeops.FcdLocation, 'from_provider_location',
+                return_value=fcd_loc):
+            vops_mock.get_netapp_for_ds.return_value = 'netapp.fqdn.local'
+            get_netapp_cinder_host.return_value = (
+                'cinder-volume-netapp@backend')
+            vops_mock.get_vmdk_path_for_fcd.return_value = (
+                '[datastore1] fcd-id-123/fcd-id-123.vmdk')
+            vops_mock._get_mount_path.return_value = '10.0.0.1:/nfs_vol/qtree'
+
+            new_type = {'id': 'new-type-id'}
+            host = 'dest-host@backend#pool'
+
+            success, model_update = self._driver.prepare_retype(
+                self._context, volume, new_type, host)
+
+        self.assertTrue(success)
+        self.assertIsNotNone(model_update)
+        self.assertIn('admin_metadata', model_update)
+        meta = model_update['admin_metadata']
+        self.assertIn('kvm_migration_info', meta)
+
+        info = json.loads(meta['kvm_migration_info'])
+        self.assertEqual('cinder-volume-netapp@backend',
+                         info['netapp_host'])
+        self.assertEqual('/vol/datastore1/fcd-id-123',
+                         info['source_dir'])
+        self.assertEqual('/vol/datastore1/fcd-id-123_tmp',
+                         info['temp_dir'])
+        self.assertEqual('/vol/datastore1/fcd-id-123_tmp/fcd-id-123-flat.vmdk',
+                         info['source_flat'])
+        self.assertEqual(
+            '/vol/datastore1/volume-%s' % self.VOL_ID,
+            info['dest_file'])
+        self.assertEqual('10.0.0.1:/nfs_vol/qtree',
+                         info['new_provider_location'])
+
+    @mock.patch.object(FCD_DRIVER, 'get_netapp_cinder_host')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, '_provider_location_to_moref_location')
+    def test_prepare_retype_no_netapp_host(
+            self, provider_location_to_moref, vops_mock,
+            get_netapp_cinder_host):
+        """prepare_retype fails if NetApp host cannot be resolved."""
+        volume = self._create_volume_obj()
+        volume.provider_location = 'fcd-id-123@datastore1'
+
+        provider_location_to_moref.return_value = 'fcd-id-123@ds-moref-1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.ds_ref.return_value = mock.sentinel.ds_ref
+
+        with mock.patch.object(
+                volumeops.FcdLocation, 'from_provider_location',
+                return_value=fcd_loc):
+            vops_mock.get_netapp_for_ds.return_value = 'netapp.fqdn.local'
+            get_netapp_cinder_host.return_value = None
+
+            new_type = {'id': 'new-type-id'}
+            host = 'dest-host@backend#pool'
+
+            self.assertRaises(
+                cinder_exceptions.VolumeDriverException,
+                self._driver.prepare_retype,
+                self._context, volume, new_type, host)
+
+    @mock.patch.object(FCD_DRIVER, 'get_netapp_cinder_host')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, '_provider_location_to_moref_location')
+    def test_prepare_retype_preserves_existing_admin_metadata(
+            self, provider_location_to_moref, vops_mock,
+            get_netapp_cinder_host):
+        """prepare_retype preserves pre-existing admin_metadata keys."""
+        volume = self._create_volume_obj()
+        volume.provider_location = 'fcd-id-123@datastore1'
+        volume.admin_metadata = {'readonly': 'False', 'custom_key': 'value'}
+
+        provider_location_to_moref.return_value = 'fcd-id-123@ds-moref-1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.ds_ref.return_value = mock.sentinel.ds_ref
+
+        with mock.patch.object(
+                volumeops.FcdLocation, 'from_provider_location',
+                return_value=fcd_loc):
+            vops_mock.get_netapp_for_ds.return_value = 'netapp.fqdn.local'
+            get_netapp_cinder_host.return_value = (
+                'cinder-volume-netapp@backend')
+            vops_mock.get_vmdk_path_for_fcd.return_value = (
+                '[datastore1] fcd-id-123/fcd-id-123.vmdk')
+            vops_mock._get_mount_path.return_value = '10.0.0.1:/nfs_vol/qtree'
+
+            new_type = {'id': 'new-type-id'}
+            host = 'dest-host@backend#pool'
+
+            success, model_update = self._driver.prepare_retype(
+                self._context, volume, new_type, host)
+
+        self.assertTrue(success)
+        meta = model_update['admin_metadata']
+        # Pre-existing keys must be preserved
+        self.assertEqual('False', meta['readonly'])
+        self.assertEqual('value', meta['custom_key'])
+        # New migration key must be present
+        self.assertIn('kvm_migration_info', meta)
+
+    def test_finalize_retype_corrupt_metadata_raises(self):
+        """finalize_retype raises on corrupt (non-JSON) migration metadata."""
+        volume = self._create_volume_obj()
+        volume.admin_metadata = {
+            'kvm_migration_info': 'not-valid-json{{{',
+        }
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        self.assertRaises(
+            cinder_exceptions.VolumeDriverException,
+            self._driver.finalize_retype,
+            self._context, volume)
+
+        netapp_api_mock.rename_file_or_dir.assert_not_called()
+
+    def test_finalize_retype_success(self):
+        """finalize_retype executes both renames and returns model_update."""
+        volume = self._create_volume_obj()
+        migration_info = {
+            'netapp_host': 'cinder-volume-netapp@backend',
+            'source_dir': '/vol/nfs_vol/fcd-uuid',
+            'temp_dir': '/vol/nfs_vol/fcd-uuid_tmp',
+            'source_flat': '/vol/nfs_vol/fcd-uuid_tmp/fcd-uuid-flat.vmdk',
+            'dest_file': '/vol/nfs_vol/volume-%s' % self.VOL_ID,
+            'new_provider_location': '10.0.0.1:/nfs_vol/qtree',
+            'original_provider_location': 'fcd-uuid@datastore1',
+        }
+        volume.admin_metadata = {
+            'kvm_migration_info': json.dumps(migration_info)
+        }
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        result = self._driver.finalize_retype(self._context, volume)
+
+        # Verify both renames were called
+        calls = netapp_api_mock.rename_file_or_dir.call_args_list
+        self.assertEqual(2, len(calls))
+        # Rename #1: source dir → temp dir
+        self.assertEqual(
+            mock.call(self._context,
+                      host='cinder-volume-netapp@backend',
+                      old_name='/vol/nfs_vol/fcd-uuid',
+                      new_name='/vol/nfs_vol/fcd-uuid_tmp'),
+            calls[0])
+        # Rename #2: flat file → dest
+        self.assertEqual(
+            mock.call(self._context,
+                      host='cinder-volume-netapp@backend',
+                      old_name='/vol/nfs_vol/fcd-uuid_tmp/fcd-uuid-flat.vmdk',
+                      new_name='/vol/nfs_vol/volume-%s' % self.VOL_ID),
+            calls[1])
+
+        # Verify model_update
+        self.assertIsNotNone(result)
+        self.assertEqual('10.0.0.1:/nfs_vol/qtree',
+                         result['provider_location'])
+
+    def test_finalize_retype_rename2_fails_reverses_rename1(self):
+        """If rename #2 fails, finalize reverses rename #1."""
+        volume = self._create_volume_obj()
+        migration_info = {
+            'netapp_host': 'cinder-volume-netapp@backend',
+            'source_dir': '/vol/nfs_vol/fcd-uuid',
+            'temp_dir': '/vol/nfs_vol/fcd-uuid_tmp',
+            'source_flat': '/vol/nfs_vol/fcd-uuid_tmp/fcd-uuid-flat.vmdk',
+            'dest_file': '/vol/nfs_vol/volume-%s' % self.VOL_ID,
+            'new_provider_location': '10.0.0.1:/nfs_vol/qtree',
+            'original_provider_location': 'fcd-uuid@datastore1',
+        }
+        volume.admin_metadata = {
+            'kvm_migration_info': json.dumps(migration_info)
+        }
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        # First rename succeeds, second fails
+        netapp_api_mock.rename_file_or_dir.side_effect = [
+            None,  # rename #1 OK
+            Exception('ZAPI rename failed'),  # rename #2 fails
+            None,  # reversal of rename #1
+        ]
+
+        self.assertRaises(
+            Exception,
+            self._driver.finalize_retype,
+            self._context, volume)
+
+        # Verify reversal was attempted
+        calls = netapp_api_mock.rename_file_or_dir.call_args_list
+        self.assertEqual(3, len(calls))
+        # Third call reverses rename #1
+        self.assertEqual(
+            mock.call(self._context,
+                      host='cinder-volume-netapp@backend',
+                      old_name='/vol/nfs_vol/fcd-uuid_tmp',
+                      new_name='/vol/nfs_vol/fcd-uuid'),
+            calls[2])
+
+    def test_finalize_retype_double_failure_raises_original(self):
+        """If rename #2 and its reversal both fail, original error propagates."""
+        volume = self._create_volume_obj()
+        migration_info = {
+            'netapp_host': 'cinder-volume-netapp@backend',
+            'source_dir': '/vol/nfs_vol/fcd-uuid',
+            'temp_dir': '/vol/nfs_vol/fcd-uuid_tmp',
+            'source_flat': '/vol/nfs_vol/fcd-uuid_tmp/fcd-uuid-flat.vmdk',
+            'dest_file': '/vol/nfs_vol/volume-%s' % self.VOL_ID,
+            'new_provider_location': '10.0.0.1:/nfs_vol/qtree',
+            'original_provider_location': 'fcd-uuid@datastore1',
+        }
+        volume.admin_metadata = {
+            'kvm_migration_info': json.dumps(migration_info)
+        }
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        # Rename #1 OK, rename #2 fails, reversal also fails
+        netapp_api_mock.rename_file_or_dir.side_effect = [
+            None,
+            Exception('ZAPI rename failed'),
+            Exception('Reversal also failed'),
+        ]
+
+        ex = self.assertRaises(
+            Exception,
+            self._driver.finalize_retype,
+            self._context, volume)
+
+        # Original error propagates (not the reversal error)
+        self.assertIn('ZAPI rename failed', str(ex))
+        # All 3 calls attempted — didn't crash on double failure
+        self.assertEqual(3, netapp_api_mock.rename_file_or_dir.call_count)
+
+    def test_finalize_retype_no_migration_info_raises(self):
+        """finalize_retype raises if no migration metadata found."""
+        volume = self._create_volume_obj()
+        volume.admin_metadata = {}
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        self.assertRaises(
+            cinder_exceptions.VolumeDriverException,
+            self._driver.finalize_retype,
+            self._context, volume)
+
+        netapp_api_mock.rename_file_or_dir.assert_not_called()
+
+    def test_abort_retype_pre_finalize_noop(self):
+        """abort_retype before finalize is a no-op (clears metadata)."""
+        volume = self._create_volume_obj()
+        migration_info = {
+            'netapp_host': 'cinder-volume-netapp@backend',
+            'source_dir': '/vol/nfs_vol/fcd-uuid',
+            'temp_dir': '/vol/nfs_vol/fcd-uuid_tmp',
+            'source_flat': '/vol/nfs_vol/fcd-uuid_tmp/fcd-uuid-flat.vmdk',
+            'dest_file': '/vol/nfs_vol/volume-%s' % self.VOL_ID,
+            'new_provider_location': '10.0.0.1:/nfs_vol/qtree',
+            'original_provider_location': 'fcd-uuid@datastore1',
+        }
+        volume.admin_metadata = {
+            'kvm_migration_info': json.dumps(migration_info)
+        }
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        result = self._driver.abort_retype(self._context, volume)
+
+        self.assertIsNone(result)
+        # No renames should happen pre-finalize
+        netapp_api_mock.rename_file_or_dir.assert_not_called()
+
+    def test_abort_retype_no_metadata_noop(self):
+        """abort_retype with no metadata is a no-op."""
+        volume = self._create_volume_obj()
+        volume.admin_metadata = {}
+
+        netapp_api_mock = mock.Mock()
+        self._driver._remote_netapp_api = netapp_api_mock
+
+        result = self._driver.abort_retype(self._context, volume)
+
+        self.assertIsNone(result)
+        netapp_api_mock.rename_file_or_dir.assert_not_called()
+
+    def test_initialize_connection_non_fcd_provider_location(self):
+        """initialize_connection handles NFS provider_location gracefully."""
+        volume = self._create_volume_obj()
+        # Post-migration NFS format provider_location (no '@')
+        volume.provider_location = '10.0.0.1:/nfs_vol/qtree'
+        connector = {'host': 'kvm-host-1'}
+
+        self.assertRaises(
+            cinder_exceptions.VolumeDriverException,
+            self._driver.initialize_connection,
+            volume, connector)
