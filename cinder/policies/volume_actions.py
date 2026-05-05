@@ -31,6 +31,14 @@ UPLOAD_IMAGE_POLICY = "volume_extension:volume_actions:upload_image"
 MIGRATE_POLICY = "volume_extension:volume_admin_actions:migrate_volume"
 MIGRATE_COMPLETE_POLICY = \
     "volume_extension:volume_admin_actions:migrate_volume_completion"
+PREPARE_RETYPE_POLICY = \
+    "volume_extension:volume_admin_actions:prepare_retype"
+FINALIZE_RETYPE_POLICY = \
+    "volume_extension:volume_admin_actions:finalize_retype"
+ABORT_RETYPE_POLICY = \
+    "volume_extension:volume_admin_actions:abort_retype"
+REFRESH_CONNECTION_POLICY = \
+    "volume_extension:volume_admin_actions:refresh_connection"
 DETACH_POLICY = "volume_extension:volume_actions:detach"
 ATTACH_POLICY = "volume_extension:volume_actions:attach"
 BEGIN_DETACHING_POLICY = "volume_extension:volume_actions:begin_detaching"
@@ -235,6 +243,46 @@ volume_action_policies = [
             'method': 'POST',
             'path':
                 '/volumes/{volume_id}/action (os-migrate_volume_completion)'}
+        ],
+    ),
+    policy.DocumentedRuleDefault(
+        name=PREPARE_RETYPE_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="Prepare a volume for phased retype.",
+        operations=[{
+            'method': 'POST',
+            'path':
+                '/volumes/{volume_id}/action (os-prepare_retype)'}
+        ],
+    ),
+    policy.DocumentedRuleDefault(
+        name=FINALIZE_RETYPE_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="Finalize a phased retype.",
+        operations=[{
+            'method': 'POST',
+            'path':
+                '/volumes/{volume_id}/action (os-finalize_retype)'}
+        ],
+    ),
+    policy.DocumentedRuleDefault(
+        name=ABORT_RETYPE_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="Abort a phased retype.",
+        operations=[{
+            'method': 'POST',
+            'path':
+                '/volumes/{volume_id}/action (os-abort_retype)'}
+        ],
+    ),
+    policy.DocumentedRuleDefault(
+        name=REFRESH_CONNECTION_POLICY,
+        check_str=base.RULE_ADMIN_API,
+        description="Refresh connection_info on a volume attachment.",
+        operations=[{
+            'method': 'POST',
+            'path':
+                '/volumes/{volume_id}/action (os-refresh_connection)'}
         ],
     ),
     policy.DocumentedRuleDefault(

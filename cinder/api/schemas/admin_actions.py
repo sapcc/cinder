@@ -139,3 +139,72 @@ reset_status_backup = {
 reset_status_snapshot = copy.deepcopy(reset_status_backup)
 reset_status_snapshot['properties']['os-reset_status'][
     'properties']['status']['format'] = 'snapshot_status'
+
+
+# Phased retype schemas
+
+prepare_retype = {
+    'type': 'object',
+    'properties': {
+        'os-prepare_retype': {
+            'type': 'object',
+            'properties': {
+                'new_type_id': parameter_types.uuid,
+                'host': {'type': 'string', 'maxLength': 255},
+            },
+            'required': ['new_type_id', 'host'],
+            'additionalProperties': False,
+        },
+    },
+    'required': ['os-prepare_retype'],
+    'additionalProperties': False,
+}
+
+
+finalize_retype = {
+    'type': 'object',
+    'properties': {
+        'os-finalize_retype': {
+            'type': 'object',
+            'properties': {
+                'new_type_id': parameter_types.uuid,
+                'new_host': {'type': 'string', 'maxLength': 255},
+            },
+            'required': ['new_type_id', 'new_host'],
+            'additionalProperties': False,
+        },
+    },
+    'required': ['os-finalize_retype'],
+    'additionalProperties': False,
+}
+
+
+abort_retype = {
+    'type': 'object',
+    'properties': {
+        'os-abort_retype': {
+            'type': 'object',
+            'properties': {},
+            'additionalProperties': False,
+        },
+    },
+    'required': ['os-abort_retype'],
+    'additionalProperties': False,
+}
+
+
+refresh_connection = {
+    'type': 'object',
+    'properties': {
+        'os-refresh_connection': {
+            'type': 'object',
+            'properties': {
+                'attachment_id': parameter_types.uuid,
+            },
+            'required': ['attachment_id'],
+            'additionalProperties': False,
+        },
+    },
+    'required': ['os-refresh_connection'],
+    'additionalProperties': False,
+}

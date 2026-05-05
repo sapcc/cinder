@@ -142,9 +142,11 @@ class VolumeAPI(rpc.RPCAPI):
         3.17 - SAP - Added recount_host_stats (async)
         3.18 - Add reimage method
         3.18 - SAP - Added set_pool_state (async)
+        3.19 - SAP - Added prepare_retype, finalize_retype, abort_retype,
+               refresh_connection (sync)
     """
 
-    RPC_API_VERSION = '3.18'
+    RPC_API_VERSION = '3.19'
     RPC_DEFAULT_VERSION = '3.0'
     TOPIC = constants.VOLUME_TOPIC
     BINARY = constants.VOLUME_BINARY
@@ -564,3 +566,26 @@ class VolumeAPI(rpc.RPCAPI):
     def reimage(self, ctxt, volume, image_meta):
         cctxt = self._get_cctxt(volume.service_topic_queue, version='3.18')
         cctxt.cast(ctxt, 'reimage', volume=volume, image_meta=image_meta)
+
+    @rpc.assert_min_rpc_version('3.19')
+    def prepare_retype(self, ctxt, volume, new_type_id, host):
+        cctxt = self._get_cctxt(volume.service_topic_queue, version='3.19')
+        return cctxt.call(ctxt, 'prepare_retype', volume=volume,
+                          new_type_id=new_type_id, host=host)
+
+    @rpc.assert_min_rpc_version('3.19')
+    def finalize_retype(self, ctxt, volume, new_type_id, new_host):
+        cctxt = self._get_cctxt(volume.service_topic_queue, version='3.19')
+        return cctxt.call(ctxt, 'finalize_retype', volume=volume,
+                          new_type_id=new_type_id, new_host=new_host)
+
+    @rpc.assert_min_rpc_version('3.19')
+    def abort_retype(self, ctxt, volume):
+        cctxt = self._get_cctxt(volume.service_topic_queue, version='3.19')
+        return cctxt.call(ctxt, 'abort_retype', volume=volume)
+
+    @rpc.assert_min_rpc_version('3.19')
+    def refresh_connection(self, ctxt, volume, attachment_id):
+        cctxt = self._get_cctxt(volume.service_topic_queue, version='3.19')
+        return cctxt.call(ctxt, 'refresh_connection', volume=volume,
+                          attachment_id=attachment_id)

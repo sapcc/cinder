@@ -283,6 +283,62 @@ class VolumeAdminController(AdminController):
                                                         new_volume, error)
         return {'save_volume_id': ret}
 
+    @wsgi.response(HTTPStatus.ACCEPTED)
+    @wsgi.action('os-prepare_retype')
+    @validation.schema(admin_actions.prepare_retype)
+    def _prepare_retype(self, req, id, body):
+        """Prepare a volume for phased retype."""
+        context = req.environ['cinder.context']
+        volume = self._get(context, id)
+        self.authorize(context, 'prepare_retype', target_obj=volume)
+        params = body['os-prepare_retype']
+        new_type_id = params['new_type_id']
+        # Wrap host string into dict expected by manager/driver layer.
+        # Mirrors the pattern in _migrate_volume where the scheduler
+        # assembles a host dict from the dest_backend object.
+        host = {'host': params['host']}
+        result = self.volume_api.prepare_retype(context, volume,
+                                                new_type_id, host)
+        return {'model_update': result}
+
+    @wsgi.response(HTTPStatus.ACCEPTED)
+    @wsgi.action('os-finalize_retype')
+    @validation.schema(admin_actions.finalize_retype)
+    def _finalize_retype(self, req, id, body):
+        """Finalize a phased retype."""
+        context = req.environ['cinder.context']
+        volume = self._get(context, id)
+        self.authorize(context, 'finalize_retype', target_obj=volume)
+        params = body['os-finalize_retype']
+        new_type_id = params['new_type_id']
+        new_host = params['new_host']
+        self.volume_api.finalize_retype(context, volume,
+                                        new_type_id, new_host)
+
+    @wsgi.response(HTTPStatus.ACCEPTED)
+    @wsgi.action('os-abort_retype')
+    @validation.schema(admin_actions.abort_retype)
+    def _abort_retype(self, req, id, body):
+        """Abort a phased retype."""
+        context = req.environ['cinder.context']
+        volume = self._get(context, id)
+        self.authorize(context, 'abort_retype', target_obj=volume)
+        self.volume_api.abort_retype(context, volume)
+
+    @wsgi.response(HTTPStatus.ACCEPTED)
+    @wsgi.action('os-refresh_connection')
+    @validation.schema(admin_actions.refresh_connection)
+    def _refresh_connection(self, req, id, body):
+        """Refresh connection_info on a volume attachment."""
+        context = req.environ['cinder.context']
+        volume = self._get(context, id)
+        self.authorize(context, 'refresh_connection', target_obj=volume)
+        params = body['os-refresh_connection']
+        attachment_id = params['attachment_id']
+        result = self.volume_api.refresh_connection(context, volume,
+                                                    attachment_id)
+        return {'connection_info': result}
+
 
 class SnapshotAdminController(AdminController):
     """AdminController for Snapshots."""

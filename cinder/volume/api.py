@@ -1707,9 +1707,11 @@ class API(base.Base):
                  'previous_status': volume.status}
         expected: dict
         if attached:
-            expected = {'status': 'in-use'}
+            expected = {'status': 'in-use',
+                        'migration_status': self.AVAILABLE_MIGRATION_STATUS}
         else:
-            expected = {'status': 'available'}
+            expected = {'status': 'available',
+                        'migration_status': self.AVAILABLE_MIGRATION_STATUS}
         orig_status = {'status': volume.status}
 
         def _roll_back_status() -> None:
@@ -2600,7 +2602,8 @@ class API(base.Base):
         expected = {'multiattach': vref.multiattach,
                     'status': (('available', 'in-use', 'downloading')
                                if vref.multiattach
-                               else ('available', 'downloading'))}
+                               else ('available', 'downloading')),
+                    'migration_status': self.AVAILABLE_MIGRATION_STATUS}
 
         result = vref.conditional_update({'status': 'reserved'}, expected)
 
@@ -2951,6 +2954,45 @@ class API(base.Base):
         self.volume_rpcapi.reimage(context,
                                    volume,
                                    image_meta)
+
+    # Phased retype (Nova-orchestrated cross-hypervisor migration)
+
+    def prepare_retype(self, context, volume, new_type_id, host):
+        """Prepare a volume for phased retype."""
+        # Validate volume is in a state that allows retype
+        expected = {'status': ('available', 'in-use'),
+                    'migration_status': self.AVAILABLE_MIGRATION_STATUS}
+        result = volume.conditional_update(
+            {'migration_status': 'starting'}, expected)
+        if not result:
+            msg = (_("Volume %(vol_id)s status must be available or in-use "
+                     "and not currently migrating. Current status: "
+                     "%(status)s, migration_status: %(m_status)s.") %
+                   {'vol_id': volume.id, 'status': volume.status,
+                    'm_status': volume.migration_status})
+            raise exception.InvalidVolume(reason=msg)
+
+        try:
+            return self.volume_rpcapi.prepare_retype(context, volume,
+                                                     new_type_id, host)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                volume.conditional_update({'migration_status': None},
+                                          {'migration_status': 'starting'})
+
+    def finalize_retype(self, context, volume, new_type_id, new_host):
+        """Finalize a phased retype."""
+        return self.volume_rpcapi.finalize_retype(context, volume,
+                                                  new_type_id, new_host)
+
+    def abort_retype(self, context, volume):
+        """Abort a phased retype."""
+        return self.volume_rpcapi.abort_retype(context, volume)
+
+    def refresh_connection(self, context, volume, attachment_id):
+        """Refresh connection_info on a volume attachment."""
+        return self.volume_rpcapi.refresh_connection(context, volume,
+                                                     attachment_id)
 
 
 class HostAPI(base.Base):

@@ -4838,6 +4838,168 @@ class VolumeManager(manager.CleanableManager,
             volume.update(model_update_default)
             volume.save()
 
+    # Phased retype (Nova-orchestrated cross-hypervisor migration)
+
+    def prepare_retype(self,
+                       ctxt: context.RequestContext,
+                       volume: objects.Volume,
+                       new_type_id: str,
+                       host: dict) -> dict:
+        """Prepare a volume for phased retype.
+
+        Sets migration_status to block concurrent operations, then calls
+        the driver hook. Returns model_update from the driver.
+        """
+        volume_utils.require_driver_initialized(self.driver)
+
+        new_type = objects.VolumeType.get_by_id(ctxt, new_type_id)
+
+        # Set migration_status to block concurrent ops (delete, extend,
+        # attach, snapshot, retype, migrate).
+        volume.migration_status = 'preparing'
+        volume.save()
+
+        try:
+            success, model_update = self.driver.prepare_retype(
+                ctxt, volume, new_type, host)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception("Driver prepare_retype failed.",
+                              resource=volume)
+                volume.migration_status = 'error'
+                volume.save()
+
+        if not success:
+            volume.migration_status = 'error'
+            volume.save()
+            msg = _("Driver does not support phased retype for this volume.")
+            raise exception.VolumeMigrationFailed(reason=msg)
+
+        # Persist any model_update from the driver
+        if model_update:
+            volume.update(model_update)
+
+        volume.migration_status = 'prepared'
+        volume.save()
+
+        LOG.info("Phased retype prepared successfully.", resource=volume)
+        return model_update or {}
+
+    def finalize_retype(self,
+                        ctxt: context.RequestContext,
+                        volume: objects.Volume,
+                        new_type_id: str,
+                        new_host: str) -> None:
+        """Finalize a phased retype.
+
+        Calls the driver hook, then directly updates volume fields.
+        Must be idempotent — safe to re-call on already-finalized volumes.
+        """
+        volume_utils.require_driver_initialized(self.driver)
+
+        # Idempotency: if migration_status is already cleared (None) or
+        # 'success', the volume was already finalized.
+        if volume.migration_status in (None, 'success'):
+            LOG.info("Volume already finalized, skipping.", resource=volume)
+            return
+
+        try:
+            driver_update = self.driver.finalize_retype(ctxt, volume)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception("Driver finalize_retype failed.",
+                              resource=volume)
+                volume.migration_status = 'error'
+                volume.save()
+
+        # Direct field update — bypasses finish_volume_migration() to avoid
+        # _name_id mismatch.
+        update = {
+            '_name_id': None,
+            'host': new_host,
+            'volume_type_id': new_type_id,
+        }
+        if driver_update:
+            # Driver may return provider_location, etc.
+            update.update(driver_update)
+
+        with volume.obj_as_admin():
+            volume.update(update)
+            volume.migration_status = None
+            volume.save()
+
+        LOG.info("Phased retype finalized successfully.", resource=volume)
+
+    def abort_retype(self,
+                     ctxt: context.RequestContext,
+                     volume: objects.Volume) -> None:
+        """Abort a phased retype.
+
+        Calls the driver hook, then restores original status.
+        Must be idempotent — safe to call when no prepare has occurred.
+        """
+        volume_utils.require_driver_initialized(self.driver)
+
+        # Idempotency: if migration_status is already cleared, nothing to do.
+        if volume.migration_status in (None, 'success'):
+            LOG.info("Volume not in retype state, nothing to abort.",
+                     resource=volume)
+            return
+
+        try:
+            self.driver.abort_retype(ctxt, volume)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception("Driver abort_retype failed.",
+                              resource=volume)
+                volume.migration_status = 'error'
+                volume.save()
+
+        volume.migration_status = None
+        volume.save()
+
+        LOG.info("Phased retype aborted successfully.", resource=volume)
+
+    def refresh_connection(self,
+                           ctxt: context.RequestContext,
+                           volume: objects.Volume,
+                           attachment_id: str) -> dict:
+        """Refresh connection_info on an attachment without status transitions.
+
+        Re-calls driver.initialize_connection() using the connector stored
+        on the attachment, and updates the attachment's connection_info
+        directly. Does not change volume or attachment status.
+        """
+        volume_utils.require_driver_initialized(self.driver)
+
+        attachment = objects.VolumeAttachment.get_by_id(ctxt, attachment_id)
+        connector = attachment.connector
+        if not connector:
+            raise exception.InvalidInput(
+                reason=_("Attachment %s has no connector.") % attachment_id)
+
+        # NOTE: We intentionally skip validate_connector() and
+        # create_export() here. This method targets NFS/NAS backends where
+        # exports are always present and connector validation is not
+        # required. Drivers needing create_export must override the hooks.
+        try:
+            conn_info = self.driver.initialize_connection(volume, connector)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception("Failed to refresh connection for "
+                              "attachment %(att)s.",
+                              {'att': attachment_id}, resource=volume)
+
+        # Update the attachment's connection_info directly — no status
+        # transitions. This mirrors the pattern in
+        # vmdk.py:_update_fcd_attachment_info_for_nova().
+        attachment.connection_info = conn_info
+        attachment.save()
+
+        LOG.info("Refreshed connection_info for attachment %(att)s.",
+                 {'att': attachment_id}, resource=volume)
+        return conn_info
+
     # Replication V2.1 and a/a method
     def failover(self,
                  context: context.RequestContext,

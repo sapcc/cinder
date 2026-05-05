@@ -1438,6 +1438,48 @@ class BaseVD(object, metaclass=abc.ABCMeta):
     def retype(self, context, volume, new_type, diff, host):
         return False, None
 
+    def prepare_retype(self, context, volume, new_type, host):
+        """Prepare a volume for phased retype (Nova-orchestrated).
+
+        Called during the prepare phase of a cross-hypervisor migration.
+        Drivers that support phased retype should override this method.
+
+        :param context: Security/policy info for the request.
+        :param volume: Volume object being retyped.
+        :param new_type: Target volume type dict.
+        :param host: Dict describing the target host/backend.
+        :returns: A tuple (success, model_update).
+                  success: True if the driver handled prepare, False otherwise.
+                  model_update: Dict of volume fields to persist (or None).
+        """
+        return False, None
+
+    def finalize_retype(self, context, volume):
+        """Finalize a phased retype after data movement is complete.
+
+        Called during the finalize phase. Drivers should perform any
+        backend-level commit operations (e.g. file renames). Must be
+        idempotent - safe to re-call on already-finalized volumes.
+
+        :param context: Security/policy info for the request.
+        :param volume: Volume object being retyped.
+        :returns: Dict of volume model updates (e.g. provider_location)
+                  or None.
+        """
+        return None
+
+    def abort_retype(self, context, volume):
+        """Abort a phased retype and roll back any prepare-phase changes.
+
+        Called when the orchestrator decides to abort the migration.
+        Must be idempotent - safe to call multiple times or when no
+        prepare has occurred.
+
+        :param context: Security/policy info for the request.
+        :param volume: Volume object being retyped.
+        """
+        return None
+
     def create_cloned_volume(self, volume, src_vref):
         """Creates a clone of the specified volume.
 
