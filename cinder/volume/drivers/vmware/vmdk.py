@@ -3073,8 +3073,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     def _create_volume_from_cached_image(self, volume, img_backing):
         (host, rp, folder, summary) = self._select_ds_for_volume(
             volume)
-        datastore = summary.datastore
+        tgt_datastore = summary.datastore
         disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+        datastore = self.volumeops.get_datastore(img_backing)
 
         backing = self.volumeops.clone_backing(
             volume['id'],
@@ -3089,6 +3090,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         self.volumeops.update_backing_uuid(backing, volume['id'])
         self.volumeops.update_backing_disk_uuid(backing, volume['id'])
+        self.volumeops.relocate_backing(backing, tgt_datastore, rp, host)
 
     @volume_utils.trace
     def _create_volume_from_template(self, volume, path):
