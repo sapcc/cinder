@@ -682,8 +682,9 @@ class NetAppRestApiServerTests(test.TestCase):
     @ddt.unpack
     def test_send_http_request_http_error(self, error, raised):
         self.mock_object(netapp_api, 'LOG')
-        self.mock_object(self.rest_client, '_build_session')
-        self.rest_client._session = mock.Mock()
+        _mock_session = mock.Mock()
+        self.mock_object(self.rest_client, '_build_session',
+                         mock.Mock(return_value=_mock_session))
         self.mock_object(
             self.rest_client, '_get_request_method', mock.Mock(
                 return_value=mock.Mock(side_effect=error)))
@@ -721,10 +722,10 @@ class NetAppRestApiServerTests(test.TestCase):
         self.mock_object(netapp_api, 'LOG')
         mock_json_dumps = self.mock_object(
             jsonutils, 'dumps', mock.Mock(return_value='fake_dump_body'))
-        mock_build_session = self.mock_object(
-            self.rest_client, '_build_session')
         _mock_session = mock.Mock()
-        self.rest_client._session = _mock_session
+        mock_build_session = self.mock_object(
+            self.rest_client, '_build_session',
+            mock.Mock(return_value=_mock_session))
         response = mock.Mock()
         response.content = resp_content
         response.status_code = 10
@@ -852,13 +853,13 @@ class NetAppRestApiServerTests(test.TestCase):
             mock.Mock(return_value='fake_auth'))
         self.rest_client._ssl_verify = 'fake_ssl'
 
-        self.rest_client._build_session(zapi_fakes.FAKE_HEADERS)
+        result = self.rest_client._build_session(zapi_fakes.FAKE_HEADERS)
 
-        self.assertEqual(fake_session, self.rest_client._session)
-        self.assertEqual('fake_auth', self.rest_client._session.auth)
-        self.assertEqual('fake_ssl', self.rest_client._session.verify)
+        self.assertEqual(fake_session, result)
+        self.assertEqual('fake_auth', result.auth)
+        self.assertEqual('fake_ssl', result.verify)
         self.assertEqual(zapi_fakes.FAKE_HEADERS,
-                         self.rest_client._session.headers)
+                         result.headers)
         mock_requests_session.assert_called_once_with()
         mock_auth.assert_called_once_with()
 
