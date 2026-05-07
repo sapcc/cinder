@@ -795,18 +795,26 @@ class RestNaServer(object):
         return '%s://%s:%s/api/' % (self._protocol, host, self._port)
 
     def _build_session(self, headers):
-        """Builds a session in the client."""
-        self._session = requests.Session()
+        """Builds a session for a REST request.
+
+        Returns a new session object each time to avoid race conditions
+        when multiple greenthreads make concurrent REST calls. Previously,
+        the session was stored on self._session, which caused a race where
+        one greenthread's headers (e.g., with X-Dot-SVM-Name tunneling)
+        could be overwritten by another greenthread's _build_session call.
+        """
+        session = requests.Session()
 
         # NOTE(felipe_rodrigues): request resilient of temporary network
         # failures (like name resolution failure), retrying until 5 times.
         max_retries = Retry(total=5, connect=5, read=2, backoff_factor=1)
         adapter = HTTPAdapter(max_retries=max_retries)
-        self._session.mount('%s://' % self._protocol, adapter)
+        session.mount('%s://' % self._protocol, adapter)
 
-        self._session.auth = self._create_basic_auth_handler()
-        self._session.verify = self._ssl_verify
-        self._session.headers = headers
+        session.auth = self._create_basic_auth_handler()
+        session.verify = self._ssl_verify
+        session.headers = headers
+        return session
 
     def _build_headers(self, enable_tunneling):
         """Build and return headers for a REST request."""
@@ -833,8 +841,8 @@ class RestNaServer(object):
         """
         data = jsonutils.dumps(body) if body else {}
 
-        self._build_session(headers)
-        request_method = self._get_request_method(method, self._session)
+        session = self._build_session(headers)
+        request_method = self._get_request_method(method, session)
 
         try:
             if self._timeout is not None:
