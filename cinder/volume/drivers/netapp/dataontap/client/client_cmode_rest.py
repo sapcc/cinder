@@ -856,7 +856,23 @@ class RestClient(object):
         raise exception.NotFound("No Vserver found to receive EMS messages.")
 
     def send_ems_log_message(self, message_dict):
-        """Sends a message to the Data ONTAP EMS log."""
+        """Sends a message to the Data ONTAP EMS log.
+
+        NOTE: This method uses a deep copy of self.connection to avoid a race
+        condition with concurrent greenthreads. The EMS log must be sent to
+        the cluster admin vserver, which requires changing the vserver used
+        for SVM tunneling (X-Dot-SVM-Name header). Previously, this method
+        mutated self.connection._vserver directly, which caused concurrent
+        REST calls (e.g., during _update_ssc / volume discovery at startup)
+        to pick up the wrong vserver in their X-Dot-SVM-Name header, resulting
+        in "Volume not found" errors when the request was tunneled to the
+        wrong SVM.
+
+        By using a local deep copy of the connection, we ensure that:
+        1. self.connection is never mutated (no shared state corruption)
+        2. Concurrent greenthreads continue using the correct data vserver
+        3. The EMS request is isolated with its own connection/session state
+        """
 
         body = {
             'computer_name': message_dict['computer-name'],
@@ -869,28 +885,21 @@ class RestClient(object):
             'event_description': message_dict['event-description'],
         }
 
-        bkp_connection = copy.copy(self.connection)
-        bkp_timeout = self.connection.get_timeout()
-        bkp_vserver = self.vserver
-
-        self.connection.set_timeout(25)
+        # Use a deep copy of the connection to avoid mutating shared state.
+        # This prevents a race condition where concurrent greenthreads could
+        # read the wrong vserver from self.connection while EMS temporarily
+        # switches it to the cluster admin vserver.
+        ems_connection = copy.deepcopy(self.connection)
+        ems_connection.set_timeout(25)
         try:
-            # TODO(nahimsouza): Vserver is being set to replicate the ZAPI
-            # behavior, but need to check if this could be removed in REST API
-            self.connection.set_vserver(
+            ems_connection.set_vserver(
                 self._get_ems_log_destination_vserver())
-            self.send_request('/support/ems/application-logs',
-                              'post', body=body)
+            ems_connection.invoke_successfully(
+                '/api/support/ems/application-logs', 'post',
+                body=body, enable_tunneling=True)
             LOG.debug('EMS executed successfully.')
         except netapp_api.NaApiError as e:
             LOG.warning('Failed to invoke EMS. %s', e)
-        finally:
-            # Restores the data
-            timeout = (
-                bkp_timeout if bkp_timeout is not None else DEFAULT_TIMEOUT)
-            self.connection.set_timeout(timeout)
-            self.connection = copy.copy(bkp_connection)
-            self.connection.set_vserver(bkp_vserver)
 
     def get_performance_counter_info(self, object_name, counter_name):
         """Gets info about one or more Data ONTAP performance counters."""
