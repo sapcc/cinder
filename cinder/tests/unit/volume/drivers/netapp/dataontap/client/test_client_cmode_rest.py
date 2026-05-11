@@ -1064,7 +1064,8 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
 
         mock_list_vservers.assert_called_once_with()
 
-    def test_send_ems_log_message(self):
+    @mock.patch('copy.deepcopy')
+    def test_send_ems_log_message(self, mock_deepcopy):
 
         message_dict = {
             'computer-name': '25-dev-vm',
@@ -1090,14 +1091,102 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
             'event_description': message_dict['event-description'],
         }
 
+        mock_ems_connection = mock.Mock()
+        mock_ems_connection.invoke_successfully.return_value = (201, {})
+        mock_deepcopy.return_value = mock_ems_connection
+
         self.mock_object(self.client, '_get_ems_log_destination_vserver',
                          return_value='vserver_name')
-        self.mock_object(self.client, 'send_request')
 
         self.client.send_ems_log_message(message_dict)
 
-        self.client.send_request.assert_called_once_with(
-            '/support/ems/application-logs', 'post', body=body)
+        # Verify deepcopy was called with self.connection
+        mock_deepcopy.assert_called_once_with(self.client.connection)
+        # Verify the local copy was configured correctly
+        mock_ems_connection.set_timeout.assert_called_once_with(25)
+        mock_ems_connection.set_vserver.assert_called_once_with('vserver_name')
+        # Verify invoke_successfully was called on the LOCAL copy,
+        # not self.connection
+        mock_ems_connection.invoke_successfully.assert_called_once_with(
+            '/api/support/ems/application-logs', 'post',
+            body=body, enable_tunneling=True)
+
+    @mock.patch('copy.deepcopy')
+    def test_send_ems_log_message_does_not_mutate_connection(self,
+                                                             mock_deepcopy):
+        """Verify send_ems_log_message does not mutate self.connection.
+
+        This test ensures the fix for the EMS vserver race condition:
+        send_ems_log_message must use a local deep copy of self.connection
+        so that concurrent greenthreads are not affected by the temporary
+        vserver change needed for EMS logging.
+        """
+        message_dict = {
+            'computer-name': '25-dev-vm',
+            'event-source': 'Cinder driver NetApp_iSCSI_Cluster_direct',
+            'app-version': '20.1.0.dev|vendor|Linux-5.4.0-120-generic-x86_64',
+            'category': 'provisioning',
+            'log-level': '5',
+            'auto-support': 'false',
+            'event-id': '1',
+            'event-description': 'test'
+        }
+
+        original_vserver = self.client.connection.get_vserver()
+        original_timeout = self.client.connection.get_timeout()
+
+        mock_ems_connection = mock.Mock()
+        mock_ems_connection.invoke_successfully.return_value = (201, {})
+        mock_deepcopy.return_value = mock_ems_connection
+
+        self.mock_object(self.client, '_get_ems_log_destination_vserver',
+                         return_value='cluster_admin_vserver')
+
+        self.client.send_ems_log_message(message_dict)
+
+        # Verify self.connection was NOT mutated
+        self.assertEqual(original_vserver,
+                         self.client.connection.get_vserver())
+        self.assertEqual(original_timeout,
+                         self.client.connection.get_timeout())
+        # Verify the EMS vserver was set on the LOCAL copy only
+        mock_ems_connection.set_vserver.assert_called_once_with(
+            'cluster_admin_vserver')
+
+    @mock.patch('copy.deepcopy')
+    def test_send_ems_log_message_failure_does_not_mutate_connection(
+            self, mock_deepcopy):
+        """Verify connection is not mutated even when EMS call fails."""
+        message_dict = {
+            'computer-name': '25-dev-vm',
+            'event-source': 'Cinder driver NetApp_iSCSI_Cluster_direct',
+            'app-version': '20.1.0.dev|vendor|Linux-5.4.0-120-generic-x86_64',
+            'category': 'provisioning',
+            'log-level': '5',
+            'auto-support': 'false',
+            'event-id': '1',
+            'event-description': 'test'
+        }
+
+        original_vserver = self.client.connection.get_vserver()
+        original_timeout = self.client.connection.get_timeout()
+
+        mock_ems_connection = mock.Mock()
+        mock_ems_connection.invoke_successfully.side_effect = (
+            netapp_api.NaApiError(code='fake'))
+        mock_deepcopy.return_value = mock_ems_connection
+
+        self.mock_object(self.client, '_get_ems_log_destination_vserver',
+                         return_value='cluster_admin_vserver')
+
+        # Should not raise — error is caught internally
+        self.client.send_ems_log_message(message_dict)
+
+        # Verify self.connection was NOT mutated even on failure
+        self.assertEqual(original_vserver,
+                         self.client.connection.get_vserver())
+        self.assertEqual(original_timeout,
+                         self.client.connection.get_timeout())
 
     @ddt.data('cp_phase_times', 'domain_busy')
     def test_get_performance_counter_info(self, counter_name):
