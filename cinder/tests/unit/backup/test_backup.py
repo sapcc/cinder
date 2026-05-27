@@ -61,6 +61,7 @@ class BaseBackupTest(test.TestCase):
         self.backup_mgr.host = 'testhost'
         self.backup_mgr.is_initialized = True
         self.ctxt = context.get_admin_context()
+        self.addCleanup(self._cleanup_threadpool)
 
         paths = ['cinder.volume.rpcapi.VolumeAPI.delete_snapshot',
                  'cinder.volume.rpcapi.VolumeAPI.delete_volume',
@@ -74,6 +75,12 @@ class BaseBackupTest(test.TestCase):
             self.volume_patches[name] = mock.patch(path)
             self.volume_mocks[name] = self.volume_patches[name].start()
             self.addCleanup(self.volume_patches[name].stop)
+
+    def _cleanup_threadpool(self):
+        """Ensure the manager's GreenPool is drained after each test."""
+        tp = getattr(self.backup_mgr, '_tp', None)
+        if tp is not None and hasattr(tp, 'waitall'):
+            tp.waitall()
 
     def _create_backup_db_entry(self, volume_id=str(uuid.uuid4()),
                                 restore_volume_id=None,
@@ -243,6 +250,9 @@ class BackupTestCase(BaseBackupTest):
 
         self.override_config('backup_service_inithost_offload', False)
         self.override_config('periodic_interval', 0)
+        # Disable freshness check so freshly-created test backups are
+        # cleaned up (in production, stuck backups are old enough to pass).
+        self.override_config('service_down_time', 0)
 
         vol1_id = self._create_volume_db_entry()
         self._create_volume_attach(vol1_id)

@@ -1330,6 +1330,14 @@ class CreateVolumeOnFinishTask(NotifyVolumeActionTask):
             # or are there other side-effects that this will cause if the
             # status isn't updated correctly (aka it will likely be stuck in
             # 'creating' if this fails)??
+            # NOTE: This is an unconditional status write (not a
+            # conditional_update). This acts as defense-in-depth: if the
+            # new pod's init_host cleanup set this volume to 'error'
+            # (e.g., because the worker heartbeat failed), this write
+            # overwrites it back to 'available' since the operation
+            # actually succeeded. Under normal operation with the worker
+            # heartbeat active, the new pod's cleanup should skip this
+            # entry entirely via the freshness guard.
             volume.update(update)
             volume.save()
             # Now use the parent to notify.

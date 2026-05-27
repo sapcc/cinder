@@ -227,6 +227,31 @@ def clean_snapshot_locks(func):
     return wrapper
 
 
+def reject_if_draining(func):
+    """Decorator to reject new operations if the service is draining.
+
+    During graceful shutdown, Service.stop() sets _draining=True on the
+    manager. Any RPC entrypoint decorated with this will raise
+    ServiceUnavailable, causing the caller to retry on a healthy instance.
+
+    The operation name is automatically derived from the decorated
+    function's name.
+    """
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if getattr(self, "_draining", False):
+            LOG.warning(
+                "Rejecting %s request - service is draining",
+                func.__name__)
+            raise exception.ServiceUnavailable(
+                service_name="cinder-volume",
+                message="Service is shutting down, "
+                "cannot process %s" % func.__name__,
+            )
+        return func(self, *args, **kwargs)
+    return wrapper
+
+
 class VolumeManager(manager.CleanableManager,
                     manager.SchedulerDependentManager):
     """Manages attachable block storage devices."""
@@ -262,6 +287,8 @@ class VolumeManager(manager.CleanableManager,
         super(VolumeManager, self).__init__(  # type: ignore
             service_name='volume',
             *args, **kwargs)
+        # Flag to indicate graceful shutdown in progress (defense in depth)
+        self._draining = False
         # NOTE(dulek): service_name=None means we're running in unit tests.
         service_name = service_name or 'backend_defaults'
         self.configuration = config.Configuration(volume_backend_opts,
@@ -573,6 +600,10 @@ class VolumeManager(manager.CleanableManager,
                   added_to_cluster=None,
                   **kwargs) -> None:
         """Perform any required initialization."""
+        # Reset draining state in case this is a service restart
+        # (e.g., oslo.service ProcessLauncher with restart_method='mutate')
+        self._draining = False
+
         if not self.driver.supported:
             volume_utils.log_unsupported_driver_warning(self.driver)
 
@@ -931,7 +962,7 @@ class VolumeManager(manager.CleanableManager,
                 return True
 
         # For Volume creating and downloading and for Snapshot downloading
-        # statuses we have to set status to error
+        # statuses we have to set status to error.
         if vo_resource.status in ('creating', 'downloading'):
             vo_resource.status = 'error'
             vo_resource.save()
@@ -946,6 +977,19 @@ class VolumeManager(manager.CleanableManager,
         accept any requests.
         """
         return self.driver.initialized
+
+    def signal_shutdown(self):
+        """Signal that shutdown is in progress.
+
+        This method is called by Service.stop() to indicate that graceful
+        shutdown has started. After this is called:
+
+        - New threadpool tasks will be rejected
+        - New RPC operations will be rejected by @reject_if_draining
+        """
+        self._draining = True
+        # Call parent's signal_shutdown to reject new threadpool tasks
+        super(VolumeManager, self).signal_shutdown()
 
     def _set_resource_host(self, resource: Union[objects.Volume,
                                                  objects.Group]) -> None:
@@ -987,6 +1031,7 @@ class VolumeManager(manager.CleanableManager,
                     LOG.exception("Failed to set scheduler hints.",
                                   resource=meta_vol)
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_CREATE)
     @objects.Volume.set_workers
     def create_volume(self, context, volume, request_spec=None,
@@ -1060,12 +1105,28 @@ class VolumeManager(manager.CleanableManager,
         # decide if allocated_capacity should be incremented.
         rescheduled = False
 
-        try:
+        def _run_flow_locked() -> None:
+            """Run the flow, optionally under a coordination lock."""
             if locked_action is None:
                 _run_flow()
             else:
                 with coordination.COORDINATOR.get_lock(locked_action):
                     _run_flow()
+
+        try:
+            # Run the flow directly in the RPC handler greenthread.
+            # The graceful shutdown three-phase sequence in
+            # cinder/service.py:Service.stop() lets us bypass
+            # rpcserver.stop() entirely. Phase 2 of that sequence calls
+            # pool.waitall() on the rpcserver's GreenPool, which waits
+            # for THIS greenthread to finish before allowing the process
+            # to exit. The greenthread is NOT killed during shutdown.
+            #
+            # Previous attempts used eventlet.tpool.execute() to run in a
+            # native thread, but this failed because rpcserver.stop() (in
+            # the old shutdown path) killed the CALLING greenthread,
+            # orphaning the native thread.
+            _run_flow_locked()
         except exception.VolumeNotFound:
             with excutils.save_and_reraise_exception():
                 utils.clean_volume_file_locks(source_volid, self.driver)
@@ -1173,6 +1234,7 @@ class VolumeManager(manager.CleanableManager,
         self.driver.delete_snapshot(snapshot)
         utils.clean_snapshot_file_locks(snapshot.id, self.driver)
 
+    @reject_if_draining
     @clean_volume_locks
     @coordination.synchronized('{volume.id}-delete_volume')
     @action_track.track_decorator(action_track.ACTION_VOLUME_DELETE)
@@ -1412,6 +1474,7 @@ class VolumeManager(manager.CleanableManager,
         self.create_snapshot(context, snapshot)
         return snapshot
 
+    @reject_if_draining
     def revert_to_snapshot(self, context, volume, snapshot) -> None:
         """Revert a volume to a snapshot.
 
@@ -1498,6 +1561,7 @@ class VolumeManager(manager.CleanableManager,
         self._notify_about_volume_usage(context, volume, "revert.end")
         self._notify_about_snapshot_usage(context, snapshot, "revert.end")
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_SNAPSHOT_CREATE)
     @objects.Snapshot.set_workers
     def create_snapshot(self, context, snapshot) -> ovo_fields.UUIDField:
@@ -1593,6 +1657,7 @@ class VolumeManager(manager.CleanableManager,
         )
         return snapshot.id
 
+    @reject_if_draining
     @clean_snapshot_locks
     @coordination.synchronized('{snapshot.id}-delete_snapshot')
     @action_track.track_decorator(action_track.ACTION_SNAPSHOT_DELETE)
@@ -1702,6 +1767,7 @@ class VolumeManager(manager.CleanableManager,
         )
         return None
 
+    @reject_if_draining
     @coordination.synchronized('{volume_id}')
     @action_track.track_decorator(action_track.ACTION_VOLUME_ATTACH)
     def attach_volume(self, context, volume_id, instance_uuid, host_name,
@@ -1797,6 +1863,7 @@ class VolumeManager(manager.CleanableManager,
         )
         return attachment
 
+    @reject_if_draining
     @coordination.synchronized('{volume_id}-{f_name}')
     @action_track.track_decorator(action_track.ACTION_VOLUME_DETACH)
     def detach_volume(self, context, volume_id, attachment_id=None,
@@ -2062,6 +2129,7 @@ class VolumeManager(manager.CleanableManager,
                                        False)
         return True
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_COPY_TO_IMAGE)
     def copy_volume_to_image(self,
                              context: context.RequestContext,
@@ -2205,6 +2273,7 @@ class VolumeManager(manager.CleanableManager,
 
         return conn_info
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_ATTACH)
     def initialize_connection(self,
                               context,
@@ -2305,6 +2374,7 @@ class VolumeManager(manager.CleanableManager,
                  resource=volume)
         return conn_info
 
+    @reject_if_draining
     def initialize_connection_snapshot(self,
                                        ctxt,
                                        snapshot_id: ovo_fields.UUIDField,
@@ -2368,6 +2438,7 @@ class VolumeManager(manager.CleanableManager,
                  resource=snapshot)
         return conn
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_DETACH)
     def terminate_connection(self,
                              context,
@@ -2392,6 +2463,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.info("Terminate volume connection completed successfully.",
                  resource=volume_ref)
 
+    @reject_if_draining
     def terminate_connection_snapshot(self,
                                       ctxt,
                                       snapshot_id: ovo_fields.UUIDField,
@@ -2411,6 +2483,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.info("Terminate snapshot connection completed successfully.",
                  resource=snapshot)
 
+    @reject_if_draining
     def remove_export(self, context, volume_id: ovo_fields.UUIDField) -> None:
         """Removes an export for a volume."""
         volume_utils.require_driver_initialized(self.driver)
@@ -2425,6 +2498,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.info("Remove volume export completed successfully.",
                  resource=volume_ref)
 
+    @reject_if_draining
     def remove_export_snapshot(self,
                                ctxt,
                                snapshot_id: ovo_fields.UUIDField) -> None:
@@ -2441,6 +2515,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.info("Remove snapshot export completed successfully.",
                  resource=snapshot)
 
+    @reject_if_draining
     def accept_transfer(self, context, volume_id, new_user, new_project,
                         no_snapshots=False) -> dict:
         volume_utils.require_driver_initialized(self.driver)
@@ -2789,6 +2864,7 @@ class VolumeManager(manager.CleanableManager,
                             "source volume may have been deleted.",
                             {'vol': new_volume.id})
 
+    @reject_if_draining
     def migrate_volume_completion(self,
                                   ctxt: context.RequestContext,
                                   volume,
@@ -2972,6 +3048,7 @@ class VolumeManager(manager.CleanableManager,
         extra_specs.pop('RESKEY:availability_zones', None)
         return not extra_specs
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_MIGRATE)
     def migrate_volume(self,
                        ctxt: context.RequestContext,
@@ -3397,6 +3474,7 @@ class VolumeManager(manager.CleanableManager,
                     context, snapshot, event_suffix,
                     extra_usage_info=extra_usage_info, host=self.host)
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_EXTEND)
     def extend_volume(self,
                       context: context.RequestContext,
@@ -3498,6 +3576,7 @@ class VolumeManager(manager.CleanableManager,
                  volume_utils.hosts_are_equivalent(self.driver.cluster_name,
                                                    cluster_name)))
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_VOLUME_RETYPE)
     def retype(self,
                context: context.RequestContext,
@@ -3672,6 +3751,7 @@ class VolumeManager(manager.CleanableManager,
                 replication_status = fields.ReplicationStatus.DISABLED
             model_update['replication_status'] = replication_status
 
+    @reject_if_draining
     def manage_existing(self,
                         ctxt: context.RequestContext,
                         volume: objects.Volume,
@@ -3773,6 +3853,7 @@ class VolumeManager(manager.CleanableManager,
         return self._get_my_resources(ctxt, objects.SnapshotList,
                                       limit, offset)
 
+    @reject_if_draining
     def get_manageable_volumes(self,
                                ctxt: context.RequestContext,
                                marker,
@@ -3803,6 +3884,7 @@ class VolumeManager(manager.CleanableManager,
                               "to driver error.")
         return driver_entries
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_GROUP_CREATE)
     def create_group(self,
                      context: context.RequestContext,
@@ -3863,6 +3945,7 @@ class VolumeManager(manager.CleanableManager,
                            'id': group.id})
         return group
 
+    @reject_if_draining
     def create_group_from_src(
             self,
             context: context.RequestContext,
@@ -4193,6 +4276,7 @@ class VolumeManager(manager.CleanableManager,
 
         self.db.volume_update(context, vol['id'], update)
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_GROUP_DELETE)
     def delete_group(self,
                      context: context.RequestContext,
@@ -4461,6 +4545,7 @@ class VolumeManager(manager.CleanableManager,
             volumes_ref.append(add_vol_ref)
         return volumes_ref
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_GROUP_UPDATE)
     def update_group(self,
                      context: context.RequestContext,
@@ -4565,6 +4650,7 @@ class VolumeManager(manager.CleanableManager,
                  resource={'type': 'group',
                            'id': group.id})
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_GROUP_SNAPSHOT_CREATE)
     def create_group_snapshot(
             self,
@@ -4741,6 +4827,7 @@ class VolumeManager(manager.CleanableManager,
 
         return model_update, snapshot_model_updates
 
+    @reject_if_draining
     @action_track.track_decorator(action_track.ACTION_GROUP_SNAPSHOT_DELETE)
     def delete_group_snapshot(self,
                               context: context.RequestContext,
@@ -4866,12 +4953,14 @@ class VolumeManager(manager.CleanableManager,
                                                 "delete.end",
                                                 snapshots)
 
+    @reject_if_draining
     @volume_utils.trace
     def update_migrated_volume_capacity(self, ctxt, volume, host,
                                         decrement=False):
         """Update allocated_capacity_gb for the migrated volume host."""
         self._update_allocated_capacity(volume, host=host, decrement=decrement)
 
+    @reject_if_draining
     def update_migrated_volume(self,
                                ctxt: context.RequestContext,
                                volume: objects.Volume,
@@ -4920,6 +5009,7 @@ class VolumeManager(manager.CleanableManager,
             volume.save()
 
     # Replication V2.1 and a/a method
+    @reject_if_draining
     def failover(self,
                  context: context.RequestContext,
                  secondary_backend_id=None) -> None:
@@ -5083,6 +5173,7 @@ class VolumeManager(manager.CleanableManager,
     # TODO(geguileo): In P - remove this
     failover_host = failover
 
+    @reject_if_draining
     def finish_failover(self,
                         context: context.RequestContext,
                         service, updates) -> None:
@@ -5102,6 +5193,7 @@ class VolumeManager(manager.CleanableManager,
             service.update(updates)
             service.save()
 
+    @reject_if_draining
     def failover_completed(self,
                            context: context.RequestContext,
                            updates) -> None:
@@ -5129,6 +5221,7 @@ class VolumeManager(manager.CleanableManager,
                 fields.ReplicationStatus.ERROR)
         service.save()
 
+    @reject_if_draining
     def freeze_host(self, context: context.RequestContext) -> bool:
         """Freeze management plane on this backend.
 
@@ -5159,6 +5252,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.info("Set backend status to frozen successfully.")
         return True
 
+    @reject_if_draining
     def thaw_host(self, context: context.RequestContext) -> bool:
         """UnFreeze management plane on this backend.
 
@@ -5188,6 +5282,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.info("Thawed backend successfully.")
         return True
 
+    @reject_if_draining
     def manage_existing_snapshot(self,
                                  ctxt: context.RequestContext,
                                  snapshot: objects.Snapshot,
@@ -5213,6 +5308,7 @@ class VolumeManager(manager.CleanableManager,
             flow_engine.run()
         return snapshot.id
 
+    @reject_if_draining
     def get_manageable_snapshots(self,
                                  ctxt: context.RequestContext,
                                  marker,
@@ -5242,6 +5338,7 @@ class VolumeManager(manager.CleanableManager,
                               "to driver error.")
         return driver_entries
 
+    @reject_if_draining
     def get_capabilities(self,
                          context: context.RequestContext,
                          discover: bool):
@@ -5252,6 +5349,7 @@ class VolumeManager(manager.CleanableManager,
         LOG.debug("Obtained capabilities list: %s.", capabilities)
         return capabilities
 
+    @reject_if_draining
     def get_backup_device(self,
                           ctxt: context.RequestContext,
                           backup: objects.Backup,
@@ -5280,6 +5378,7 @@ class VolumeManager(manager.CleanableManager,
             # so we fallback to returning the value itself.
             return backup_device
 
+    @reject_if_draining
     def secure_file_operations_enabled(
             self,
             ctxt: context.RequestContext,
@@ -5385,6 +5484,7 @@ class VolumeManager(manager.CleanableManager,
         )
         return connection_info
 
+    @reject_if_draining
     def attachment_update(self,
                           context: context.RequestContext,
                           vref: objects.Volume,
@@ -5521,6 +5621,7 @@ class VolumeManager(manager.CleanableManager,
         # going on here.
         return shared_connections
 
+    @reject_if_draining
     def attachment_delete(self,
                           context: context.RequestContext,
                           attachment_id: str,
@@ -5562,6 +5663,7 @@ class VolumeManager(manager.CleanableManager,
             )
 
     # Replication group API (Tiramisu)
+    @reject_if_draining
     def enable_replication(self,
                            ctxt: context.RequestContext,
                            group: objects.Group) -> None:
@@ -5647,6 +5749,7 @@ class VolumeManager(manager.CleanableManager,
                            'id': group.id})
 
     # Replication group API (Tiramisu)
+    @reject_if_draining
     def disable_replication(self,
                             ctxt: context.RequestContext,
                             group: objects.Group) -> None:
@@ -5733,6 +5836,7 @@ class VolumeManager(manager.CleanableManager,
                            'id': group.id})
 
     # Replication group API (Tiramisu)
+    @reject_if_draining
     def failover_replication(self, ctxt: context.RequestContext,
                              group: objects.Group,
                              allow_attached_volume: bool = False,
@@ -5832,6 +5936,7 @@ class VolumeManager(manager.CleanableManager,
                  resource={'type': 'group',
                            'id': group.id})
 
+    @reject_if_draining
     def list_replication_targets(self,
                                  ctxt: context.RequestContext,
                                  group: objects.Group) -> dict[str, list]:
@@ -5911,6 +6016,7 @@ class VolumeManager(manager.CleanableManager,
         self.db.volume_glance_metadata_bulk_create(context, volume.id,
                                                    volume_meta)
 
+    @reject_if_draining
     def reimage(self, context, volume, image_meta, image_snap=None):
         """Reimage a volume with specific image."""
         image_id = None

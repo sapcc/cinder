@@ -54,7 +54,8 @@ class TestCleanableManager(test.TestCase):
         mngr.init_host(service_id=self.service.id)
 
         self.assertEqual(self.service.id, mngr.service_id)
-        mock_cleanup.assert_called_once_with(mngr, mock.ANY, mock.ANY)
+        mock_cleanup.assert_called_once_with(
+            mngr, mock.ANY, mock.ANY, skip_fresh=True)
         clean_req = mock_cleanup.call_args[0][2]
         self.assertIsInstance(clean_req, objects.CleanupRequest)
         self.assertEqual(self.service.id, clean_req.service_id)

@@ -32,6 +32,7 @@ Volume backups can be created, restored, deleted and listed.
 """
 
 import contextlib
+import datetime
 import os
 import typing
 
@@ -203,7 +204,7 @@ class BackupManager(manager.SchedulerDependentManager):
         backups = objects.BackupList.get_all_by_host(ctxt, self.host)
         for backup in backups:
             try:
-                self._cleanup_one_backup(ctxt, backup)
+                self._cleanup_one_backup(ctxt, backup, skip_fresh=True)
             except Exception:
                 LOG.exception("Problem cleaning up backup %(bkup)s.",
                               {'bkup': backup['id']})
@@ -253,8 +254,22 @@ class BackupManager(manager.SchedulerDependentManager):
             snapshot.status = fields.SnapshotStatus.AVAILABLE
             snapshot.save()
 
-    def _cleanup_one_backup(self, ctxt, backup):
+    def _cleanup_one_backup(self, ctxt, backup, skip_fresh=False):
         if backup['status'] == fields.BackupStatus.CREATING:
+            # [GS] Check if the backup entry is fresh — if so, the old pod
+            # is still actively draining and we should not interfere.
+            # Only applied during init_host startup (skip_fresh=True).
+            if skip_fresh:
+                now = timeutils.utcnow(with_timezone=True)
+                updated = backup.updated_at
+                if (updated and hasattr(updated, 'tzinfo')
+                        and updated.tzinfo is None):
+                    updated = updated.replace(
+                        tzinfo=datetime.timezone.utc)
+                age = ((now - updated).total_seconds()
+                       if updated else 9999)
+                if age < CONF.service_down_time:
+                    return
             LOG.info('Resetting backup %s to error (was creating).',
                      backup['id'])
             self._cleanup_one_volume(ctxt, backup.volume_id)
@@ -263,6 +278,20 @@ class BackupManager(manager.SchedulerDependentManager):
             err = 'incomplete backup reset on manager restart'
             volume_utils.update_backup_error(backup, err)
         elif backup['status'] == fields.BackupStatus.RESTORING:
+            # [GS] Check if the backup entry is fresh — if so, the old pod
+            # is still actively draining and we should not interfere.
+            # Only applied during init_host startup (skip_fresh=True).
+            if skip_fresh:
+                now = timeutils.utcnow(with_timezone=True)
+                updated = backup.updated_at
+                if (updated and hasattr(updated, 'tzinfo')
+                        and updated.tzinfo is None):
+                    updated = updated.replace(
+                        tzinfo=datetime.timezone.utc)
+                age = ((now - updated).total_seconds()
+                       if updated else 9999)
+                if age < CONF.service_down_time:
+                    return
             LOG.info('Resetting backup %s to '
                      'available (was restoring).',
                      backup['id'])
@@ -756,6 +785,21 @@ class BackupManager(manager.SchedulerDependentManager):
             raise exception.InvalidBackup(reason=err)
 
         canceled = False
+        # [GS] Spawn a heartbeat greenthread that periodically touches the
+        # backup's updated_at field. This prevents the new pod's init_host
+        # from resetting the backup while the old pod is still draining.
+        import eventlet
+        _hb_stop = eventlet.event.Event()
+
+        def _backup_restore_heartbeat():
+            while not _hb_stop.ready():
+                try:
+                    backup.save()
+                except Exception:
+                    pass
+                eventlet.sleep(10)
+
+        hb_thread = eventlet.spawn(_backup_restore_heartbeat)
         try:
             self._run_restore(context, backup, volume, volume_is_new)
         except exception.BackupRestoreCancel:
@@ -773,6 +817,9 @@ class BackupManager(manager.SchedulerDependentManager):
                                 else fields.VolumeStatus.ERROR_RESTORING)})
                 backup.status = fields.BackupStatus.AVAILABLE
                 backup.save()
+        finally:
+            _hb_stop.send()
+            hb_thread.wait()
 
         if canceled:
             volume.status = fields.VolumeStatus.ERROR
@@ -886,11 +933,11 @@ class BackupManager(manager.SchedulerDependentManager):
                 self._detach_device(context, attach_info, volume, properties,
                                     force=True)
             except Exception:
+                LOG.exception("_detach_device failed during restore cleanup")
                 if not message_created:
                     self.message_api.create_from_request_context(
                         context,
                         detail=message_field.Detail.DETACH_ERROR)
-                raise
 
         # Regardless of whether the restore was successful, do some
         # housekeeping to ensure the restored volume's encryption key ID is
