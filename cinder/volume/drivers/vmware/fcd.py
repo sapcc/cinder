@@ -407,7 +407,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                             "this can be due to nova migration or "
                             "VMware issue", fcd_loc.fcd_id)
 
-        if connector['instance']:
+        if 'instance' in connector:
             ds_ref_val = self.esx_local_ds_mref(connector['instance'],
                                                 summary)
             if not ds_ref_val:
