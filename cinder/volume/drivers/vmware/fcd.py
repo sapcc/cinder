@@ -333,6 +333,18 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         }
         return connection_info
 
+    def esx_local_ds_mref(self, instance_ref, summary):
+        esxi_host = self.volumeops.get_host(instance_ref)
+        ds_ref = summary.datastore
+        mount_path = self.volumeops._get_mount_path(ds_ref)
+        datastores = self.volumeops.get_datastores_for_esx(esxi_host)
+        for ds in datastores:
+            mpath = self.volumeops._get_mount_path(ds)
+            if mpath == mount_path:
+                return ds
+        return None
+
+
     @volume_utils.trace
     def initialize_connection(self, volume, connector, initiator_data=None):
         """Allow connection to connector and return connection info.
@@ -396,13 +408,21 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                             "this can be due to nova migration or "
                             "VMware issue", fcd_loc.fcd_id)
 
+        if connector['instance']:
+            ds_ref_val = self.esx_local_ds_mref(connector['instance'],
+                                                summary)
+            if not ds_ref_val:
+                ds_ref_val = fcd_loc.ds_ref_val
+        else:
+            ds_ref_val = fcd_loc.ds_ref_val
+
         connection_info = {
             'driver_volume_type': self.STORAGE_TYPE,
             'data': {
                 'volume_id': volume.id,
                 'name': volume.name,
                 'id': fcd_loc.fcd_id,
-                'ds_ref_val': fcd_loc.ds_ref_val,
+                'ds_ref_val': ds_ref_val,
                 'ds_name': volume_utils.extract_host(volume.host,
                                                      level='pool'),
                 'adapter_type': self._get_adapter_type(volume),

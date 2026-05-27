@@ -988,6 +988,16 @@ class VMwareVolumeOps(object):
                                         self._session.vim, backing,
                                         'datastore').ManagedObjectReference[0]
 
+    def get_datastores_for_esx(self, host_ref):
+        """Get datastores connected to esxi.
+
+        :param host_ref: esxi moref
+        :return: Datastores array connected to esxi
+        """
+        return self._session.invode_api(vim_util 'get_object_property',
+                                        self._session.vim, host_ref,
+                                        'datastore')
+
     def get_summary(self, datastore):
         """Get datastore summary.
 
