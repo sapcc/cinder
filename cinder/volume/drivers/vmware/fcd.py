@@ -344,7 +344,6 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 return ds
         return None
 
-
     @volume_utils.trace
     def initialize_connection(self, volume, connector, initiator_data=None):
         """Allow connection to connector and return connection info.

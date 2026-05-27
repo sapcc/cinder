@@ -994,7 +994,7 @@ class VMwareVolumeOps(object):
         :param host_ref: esxi moref
         :return: Datastores array connected to esxi
         """
-        return self._session.invode_api(vim_util 'get_object_property',
+        return self._session.invode_api(vim_util, 'get_object_property',
                                         self._session.vim, host_ref,
                                         'datastore')
 
