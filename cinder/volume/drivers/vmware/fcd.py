@@ -334,7 +334,8 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         return connection_info
 
     def esx_local_ds_mref(self, instance_ref, summary):
-        esxi_host = self.volumeops.get_host(instance_ref)
+        instance = vim_util.get_moref(instance_ref, 'VirtualMachine')
+        esxi_host = self.volumeops.get_host(instance)
         ds_ref = summary.datastore
         mount_path = self.volumeops._get_mount_path(ds_ref)
         datastores = self.volumeops.get_datastores_for_esx(esxi_host)
