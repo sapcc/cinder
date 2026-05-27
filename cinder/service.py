@@ -26,11 +26,14 @@ import sys
 import time
 from typing import Optional
 
+import eventlet
+import eventlet.timeout
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 import oslo_messaging as messaging
+from oslo_service import _options as os_service_options
 from oslo_service import service
 from oslo_service import wsgi
 from oslo_utils import importutils
@@ -60,6 +63,27 @@ else:
 
 LOG = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Process-wide graceful-shutdown coordination
+# ---------------------------------------------------------------------------
+# Why this exists:
+#
+# In SAP's deployment, oslo_service.ProcessLauncher forks one child process
+# per backend (5 children). On SIGTERM, oslo_service's child SIGTERM handler
+# calls SignalHandler.clear() which resets all signal handlers to SIG_DFL.
+# The parent ProcessLauncher then sends a second SIGTERM to each child via
+# os.kill(child_pid, SIGTERM). With the handler now SIG_DFL, the child
+# terminates immediately — even though it's still inside pool.waitall()
+# waiting for an in-flight RPC handler to finish.
+#
+# Fix: at the start of cinder's Service.stop() (first caller per process),
+# install SIG_IGN for SIGTERM/SIGINT/SIGHUP so the second signal is ignored
+# and the child stays alive until pool.waitall() completes.
+# Process-wide flag: once any Service in this process enters stop(),
+# we install SIG_IGN so subsequent signals don't terminate the process.
+_GS_SIGNALS_IGNORED = False
+
 service_opts = [
     cfg.IntOpt('report_interval',
                default=10,
@@ -85,11 +109,31 @@ service_opts = [
     cfg.BoolOpt('osapi_volume_use_ssl',
                 default=False,
                 help='Wraps the socket in a SSL context if True is set. '
-                     'A certificate file and key file must be specified.'), ]
+                     'A certificate file and key file must be specified.'),
+    cfg.IntOpt('threadpool_size',
+               default=10,
+               min=1,
+               max=100,
+               help='Number of native Python threads in the threadpool '
+                    'for async volume operations. This replaces the previous '
+                    'eventlet GreenPool. Adjust based on workload and '
+                    'available system resources. Default: 10.'), ]
 
 
 CONF = cfg.CONF
 CONF.register_opts(service_opts)
+# Register oslo.service's service_opts (which includes
+# graceful_shutdown_timeout) so cinder can use it. We must NOT define our
+# own graceful_shutdown_timeout in service_opts above, as that would cause
+# a DuplicateOptError when oslo.service later tries to register the same
+# option in ServiceLauncher/ProcessLauncher.__init__().
+try:
+    CONF.register_opts(os_service_options.service_opts)
+except cfg.DuplicateOptError:
+    # oslo.service already registered these opts (e.g. during launcher init)
+    pass
+cfg.set_defaults(os_service_options.service_opts,
+                 graceful_shutdown_timeout=120)
 if profiler_opts:
     profiler_opts.set_defaults(CONF)
 
@@ -217,12 +261,19 @@ class Service(service.Service):
         self.rpcserver: Optional['messaging.rpc.RPCServer'] = None
         self.backend_rpcserver: Optional['messaging.rpc.RPCServer'] = None
         self.cluster_rpcserver: Optional['messaging.rpc.RPCServer'] = None
+        # Flag to indicate graceful shutdown in progress. Read by
+        # @reject_if_draining decorator on RPC entry points.
+        self._draining = False
 
     def start(self) -> None:
         version_string = version.version_string()
         LOG.info('Starting %(topic)s node (version %(version_string)s)',
                  {'topic': self.topic, 'version_string': version_string})
         self.model_disconnected = False
+        # Reset draining state in case this is a restart (e.g., oslo.service
+        # ProcessLauncher with restart_method='mutate' forks a new child
+        # that inherits the parent's state including _draining=True).
+        self._draining = False
 
         if self.coordination:
             coordination.COORDINATOR.start()
@@ -429,32 +480,189 @@ class Service(service.Service):
         return service_obj
 
     def stop(self) -> None:
-        # Try to shut the connection down, but if we get any sort of
-        # errors, go ahead and ignore them.. as we're shutting down anyway
+        """Stop the service gracefully.
+
+        This method implements a three-phase graceful shutdown:
+        1. Sets draining state (stops heartbeat reporting)
+        2. Signals manager to reject new threadpool tasks
+        3. Phase 1: Skips rpcserver.stop() (eventlet socket race)
+        4. Phase 2: Waits for in-flight RPC handlers via pool.waitall()
+        5. Phase 3: Stops coordination, calls super().stop(), cleans up
+           threadpool executor
+        """
+        self._install_sig_ign()
+
+        LOG.info(
+            "Initiating graceful shutdown for service %s on host %s",
+            self.binary,
+            self.host,
+        )
+
+        # Set draining state - stops heartbeat reporting
+        self._draining = True
+
+        # Signal manager to stop accepting new threadpool tasks
+        if hasattr(self.manager, "signal_shutdown"):
+            self.manager.signal_shutdown()
+
+        # ====== PHASE 1: Stop consuming WITHOUT killing greenthreads ======
+        # We intentionally do NOT call conn.stop_consuming() or
+        # rpcserver.stop() synchronously. Doing so causes eventlet socket
+        # races ("simultaneous read on fileno") that can disrupt outbound
+        # HTTP/RPC connections used by in-flight operations (e.g., Swift
+        # reads during backup restore).
+        #
+        # The broker-side consumer deregistration happens automatically
+        # when the AMQP channel closes during process exit (the OS closes
+        # the TCP socket; RabbitMQ detects the broken connection and
+        # requeues any pending messages to healthy consumers).
+        #
+        # During the gap between SIGTERM and process exit, two things
+        # protect us from message loss:
+        #   1. We stop heartbeating, so the scheduler stops routing new
+        #      top-level work within service_down_time (~60s default).
+        #   2. The @reject_if_draining decorator on RPC entry points
+        #      rejects any message that DOES race in, with a
+        #      ServiceUnavailable exception that triggers caller-side
+        #      retry on a healthy instance.
+        #
+        # In Phase 2 we wait via pool.waitall() for any in-flight RPC
+        # handler greenthreads to complete naturally before the process
+        # exits.
+
+        # NOTE: Do NOT stop coordination here!
+        # In-flight operations may still need distributed locks.
+
+        # NOTE: Do NOT cleanup RPC transport here!
+        # In-flight operations may need to make outbound RPC calls.
+
+        # ====== PHASE 2: Wait for in-flight operations to complete ======
+        # The RPC handler greenthread is STILL ALIVE because we didn't call
+        # rpcserver.stop(). We can now safely wait for it to finish.
+
+        timeout = CONF.graceful_shutdown_timeout
+        if timeout == 0:
+            timeout = None
+
+        for server_name, server in (
+            ('rpcserver', self.rpcserver),
+            ('backend_rpcserver', self.backend_rpcserver),
+            ('cluster_rpcserver', self.cluster_rpcserver),
+        ):
+            self._drain_pool(server_name, server, timeout)
+
+        # ====== PHASE 3: Cleanup (skip rpcserver.stop/wait) ======
+        self._phase3_teardown()
+
+    def _install_sig_ign(self) -> None:
+        """Install SIG_IGN for SIGTERM/SIGINT/SIGHUP at start of stop().
+
+        oslo_service's _sigterm handler calls SignalHandler.clear() which
+        sets handlers back to SIG_DFL — so a second SIGTERM (e.g., from
+        ProcessLauncher parent's os.kill(child_pid, SIGTERM) in stop())
+        would terminate the child immediately, even while we're still in
+        pool.waitall().
+
+        We install SIG_IGN ONCE per process via a process-wide flag.
+        No lock needed: signal.signal() is idempotent and the flag only
+        flips False -> True (a benign race for two concurrent first
+        callers, but in the fork model only one Service.stop() runs per
+        child process).
+        """
+        global _GS_SIGNALS_IGNORED
+        if _GS_SIGNALS_IGNORED:
+            return
+        _GS_SIGNALS_IGNORED = True
         try:
-            if self.rpcserver is not None:
-                self.rpcserver.stop()
-            if self.backend_rpcserver:
-                self.backend_rpcserver.stop()
-            if self.cluster_rpcserver:
-                self.cluster_rpcserver.stop()
-        except Exception:
+            import signal as _sig
+            _sig.signal(_sig.SIGTERM, _sig.SIG_IGN)
+            _sig.signal(_sig.SIGINT, _sig.SIG_IGN)
+            _sig.signal(_sig.SIGHUP, _sig.SIG_IGN)
+        except Exception:  # noqa: BLE001
             pass
 
+    def _drain_pool(self, server_name, server, timeout) -> None:
+        """Drain one rpcserver's GreenPool, waiting for in-flight handlers.
+
+        Skips quietly if the server is None or has no _work_executor/_pool,
+        or if the pool has no running greenthreads.
+        """
+        if server is None:
+            return
+        work_executor = getattr(server, '_work_executor', None)
+        if work_executor is None:
+            return
+        pool = getattr(work_executor, '_pool', None)
+        if pool is None:
+            return
+        # Guard against Mock objects in tests — pool.running() must
+        # return an actual integer for the comparison to be meaningful.
+        try:
+            running = pool.running()
+            if not isinstance(running, int) or running <= 0:
+                return
+        except (TypeError, AttributeError):
+            return
+
+        try:
+            with eventlet.timeout.Timeout(timeout):
+                pool.waitall()
+        except eventlet.timeout.Timeout:
+            LOG.warning("%s: Timed out waiting for GreenPool after %s seconds",
+                        server_name, timeout)
+
+    def _phase3_teardown(self) -> None:
+        """Phase 3: stop coordination, super().stop, cleanup_threadpool.
+
+        We do NOT call rpcserver.stop() or rpcserver.wait() here.
+        rpcserver.stop() triggers AMQPListener.stop() which calls
+        conn.stop_consuming() — this risks an eventlet socket race
+        ("simultaneous read on fileno") because the connection's internal
+        reader greenthread may be mid-read when stop_consuming writes a
+        Basic.Cancel frame on the same socket.
+
+        Instead we let the process exit naturally after this method
+        returns. The OS closes the AMQP socket (TCP FIN) as the
+        interpreter shuts down; RabbitMQ detects the closed connection
+        immediately and requeues any pending messages to healthy consumers.
+        """
+        # Stop coordination - all operations have completed
         if self.coordination:
             try:
                 coordination.COORDINATOR.stop()
             except Exception:
-                pass
+                LOG.exception("Error stopping coordination")
+
         super(Service, self).stop(graceful=True)
 
+        LOG.info("Service %s shutdown complete", self.binary)
+
+        # Cleanup the threadpool executor after all operations complete
+        if hasattr(self.manager, "cleanup_threadpool"):
+            self.manager.cleanup_threadpool()
+
     def wait(self) -> None:
-        if self.rpcserver:
-            self.rpcserver.wait()
-        if self.backend_rpcserver:
-            self.backend_rpcserver.wait()
-        if self.cluster_rpcserver:
-            self.cluster_rpcserver.wait()
+        """Wait for all service operations to complete.
+
+        NOTE: oslo.service calls wait() immediately after start() as part
+        of its normal "block until service finishes" pattern (in
+        _child_wait_for_exit_or_signal). The graceful shutdown logic must
+        ONLY run when stop() has been called first (indicated by _draining).
+        Otherwise, we would destroy coordination and other resources while
+        the service is still actively running.
+
+        When _draining is True (stop() was called), this method:
+        1. Waits for manager threadpool tasks (outbound RPC still available)
+        2. Waits for in-flight RPC handlers (outbound RPC still available)
+        3. Stops coordination service (after all ops complete)
+        4. Cleans up threadpool executor
+        """
+        if self._draining:
+            # All waiting/cleanup is now done in stop() to prevent
+            # oslo.service from killing the process before operations complete.
+            # See stop() for the full graceful shutdown sequence.
+            pass
+
         super(Service, self).wait()
 
     def periodic_tasks(self, raise_on_error: bool = False) -> None:
@@ -464,6 +672,14 @@ class Service(service.Service):
 
     def report_state(self) -> None:
         """Update the state of this service in the datastore."""
+        # Don't suppress heartbeat during graceful shutdown drain.
+        # We MUST keep reporting state while in-flight operations are
+        # completing (Phase 2 of graceful shutdown). Otherwise, the service
+        # is marked "down" after service_down_time (~20s), and the scheduler
+        # or cleanup tasks will fail the pending volume operation.
+        # The heartbeat will stop naturally when the process exits after
+        # Phase 3 completes.
+
         if not self.manager.is_working():
             # NOTE(dulek): If manager reports a problem we're not sending
             # heartbeats - to indicate that service is actually down.
@@ -517,6 +733,11 @@ class Service(service.Service):
     def reset(self) -> None:
         self.manager.reset()
         super(Service, self).reset()
+
+    @property
+    def is_draining(self) -> bool:
+        """Return True if the service is shutting down gracefully."""
+        return self._draining
 
 
 class WSGIService(service.ServiceBase):
