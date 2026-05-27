@@ -39,6 +39,14 @@ class VolumeCleanupTestCase(base.BaseVolumeTestCase):
         self.service_id = 1
         self.mock_object(service.Service, 'service_id', self.service_id)
         self.patch('cinder.volume.volume_utils.clear_volume', autospec=True)
+        # Run threadpool tasks synchronously so cleanup assertions don't
+        # race with the async ThreadPoolExecutor.
+        self.mock_object(self.volume, '_add_to_threadpool',
+                         side_effect=lambda f, *a, **kw: f(*a, **kw))
+        # Disable freshness check so freshly-created test worker entries
+        # are cleaned up (in production, stuck workers are old enough to
+        # pass the service_down_time threshold).
+        self.override_config('service_down_time', 0)
 
     def _assert_workers_are_removed(self):
         workers = db.worker_get_all(self.context, read_deleted='yes')

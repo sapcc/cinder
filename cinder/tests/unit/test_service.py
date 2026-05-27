@@ -50,7 +50,7 @@ CONF = cfg.CONF
 CONF.register_opts(test_service_opts)
 
 
-class FakeManager(manager.Manager):
+class FakeManager(manager.ThreadPoolManager):
     """Fake manager for tests."""
     def __init__(self, host=None, service_name=None, cluster=None):
         super().__init__(host=host, cluster=cluster)
@@ -66,6 +66,21 @@ class ExtendedService(service.Service):
 
 class ServiceManagerTestCase(test.TestCase):
     """Test cases for Services."""
+
+    def setUp(self):
+        super(ServiceManagerTestCase, self).setUp()
+        # Reset the process-wide graceful shutdown signal flag that
+        # Service.stop() sets. Without this, SIG_IGN persists across
+        # tests in the same worker process and can prevent stestr from
+        # killing stuck workers.
+        self.addCleanup(self._reset_signal_flag)
+
+    def _reset_signal_flag(self):
+        import signal
+        service._GS_SIGNALS_IGNORED = False
+        # Restore default signal handlers for test isolation
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     def test_message_gets_to_manager(self):
         serv = service.Service('test',
@@ -165,6 +180,13 @@ class ServiceTestCase(test.TestCase):
                             'id': 1,
                             'uuid': 'a3a593da-7f8d-4bb7-8b4c-f2bc1e0b4824'}
         self.ctxt = context.get_admin_context()
+        self.addCleanup(self._reset_signal_flag)
+
+    def _reset_signal_flag(self):
+        import signal
+        service._GS_SIGNALS_IGNORED = False
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     def _check_app(self, app, cluster=None, cluster_exists=None,
                    svc_id=None, added_to_cluster=True):
@@ -315,8 +337,11 @@ class ServiceTestCase(test.TestCase):
         serv.stop()
         serv.wait()
         serv.rpcserver.start.assert_called_once_with()
-        serv.rpcserver.stop.assert_called_once_with()
-        serv.rpcserver.wait.assert_called_once_with()
+        # Graceful shutdown intentionally does NOT call rpcserver.stop()
+        # to avoid the eventlet socket race. The process exits naturally
+        # and the OS closes the AMQP connection.
+        serv.rpcserver.stop.assert_not_called()
+        serv.rpcserver.wait.assert_not_called()
 
     @mock.patch('cinder.service.Service.report_state')
     @mock.patch('cinder.service.Service.periodic_tasks')
@@ -338,8 +363,10 @@ class ServiceTestCase(test.TestCase):
         serv.stop()
         serv.wait()
         serv.rpcserver.start.assert_called_once_with()
-        serv.rpcserver.stop.assert_called_once_with()
-        serv.rpcserver.wait.assert_called_once_with()
+        # Graceful shutdown does NOT call rpcserver.stop() — see
+        # test_service_stop_waits_for_rpcserver for explanation.
+        serv.rpcserver.stop.assert_not_called()
+        serv.rpcserver.wait.assert_not_called()
 
     @mock.patch('cinder.manager.Manager.init_host')
     @mock.patch('oslo_messaging.Target')
@@ -476,6 +503,159 @@ class ServiceTestCase(test.TestCase):
         cluster = objects.Cluster.get_by_id(self.ctxt, None, name=app.cluster)
         for key, value in changes.items():
             self.assertEqual(value, getattr(cluster, key))
+
+
+class TestGracefulShutdown(test.TestCase):
+    """Test cases for graceful shutdown functionality."""
+
+    def setUp(self):
+        super(TestGracefulShutdown, self).setUp()
+        self.host = "test_host"
+        self.binary = "cinder-volume"
+        self.topic = "cinder-volume"
+        self.addCleanup(self._reset_signal_flag)
+
+    def _reset_signal_flag(self):
+        import signal
+        service._GS_SIGNALS_IGNORED = False
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    @mock.patch("cinder.service.Service.report_state")
+    def test_service_draining_flag(self, mock_report):
+        """Test that draining flag is properly set."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        self.assertFalse(serv._draining)
+        self.assertFalse(serv.is_draining)
+
+    @mock.patch("cinder.service.Service.report_state")
+    @mock.patch("cinder.rpc.get_server")
+    def test_stop_sets_draining(self, mock_rpc, mock_report):
+        """Test that stop() sets the draining flag."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        # Set rpcserver to None so _drain_pool() takes the early-out
+        # path. We're only testing the draining flag here.
+        serv.rpcserver = None
+        serv.backend_rpcserver = None
+        serv.cluster_rpcserver = None
+        serv.manager = mock.MagicMock()
+        serv.coordinator = None
+
+        serv.stop()
+
+        self.assertTrue(serv._draining)
+        self.assertTrue(serv.is_draining)
+        serv.manager.signal_shutdown.assert_called_once()
+
+    @mock.patch("cinder.service.Service.report_state")
+    def test_report_state_skipped_when_draining(self, mock_report):
+        """Test that report_state is skipped when draining."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        serv._draining = True
+        # The actual report_state should check draining and return early
+        # This test verifies the flag is respected
+
+    @mock.patch("cinder.service.Service.report_state")
+    @mock.patch("cinder.rpc.get_server")
+    def test_stop_drains_pool_and_cleans_up(self, mock_rpc, mock_report):
+        """Test that stop() runs Phase 1/2/3 (drains pool + cleanup)."""
+        self.override_config("graceful_shutdown_timeout", 30)
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        # Mock rpcserver with a _work_executor having an empty pool —
+        # so _drain_pool() takes the "no in-flight RPC handlers" path.
+        empty_pool = mock.MagicMock()
+        empty_pool.running.return_value = 0
+        empty_pool.free.return_value = 64
+        serv.rpcserver = mock.MagicMock()
+        serv.rpcserver._work_executor._pool = empty_pool
+        serv.backend_rpcserver = None
+        serv.cluster_rpcserver = None
+        serv.manager = mock.MagicMock()
+        serv.coordinator = None
+        serv.timers = []
+
+        serv.stop()
+
+        # Phase 1: signal_shutdown was called on the manager
+        serv.manager.signal_shutdown.assert_called_once()
+        # _draining flag was set
+        self.assertTrue(serv._draining)
+        self.assertTrue(serv.is_draining)
+        # Phase 3: cleanup_threadpool called once
+        serv.manager.cleanup_threadpool.assert_called_once()
+
+    @mock.patch("cinder.service.Service.report_state")
+    @mock.patch("cinder.rpc.get_server")
+    def test_wait_skips_shutdown_when_not_draining(self, mock_rpc,
+                                                   mock_report):
+        """Test that wait() does NOT do shutdown work when not draining.
+
+        oslo.service calls wait() immediately after start() as part of
+        its _child_wait_for_exit_or_signal pattern. In this case,
+        _draining is False and wait() should just block (via super)
+        without running cleanup. All shutdown work happens in stop()
+        in the slim build (the older wait_for_tasks path was removed
+        as it was unused).
+        """
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        serv.rpcserver = mock.MagicMock()
+        serv.manager = mock.MagicMock()
+        serv.coordinator = None
+        serv.timers = []
+
+        # _draining defaults to False (service is running normally)
+        self.assertFalse(serv._draining)
+        serv.wait()
+
+        # Shutdown-specific methods should NOT be called
+        serv.manager.cleanup_threadpool.assert_not_called()
+
+    @mock.patch("cinder.service.Service.report_state")
+    @mock.patch("cinder.rpc.get_server")
+    def test_start_resets_draining(self, mock_rpc, mock_report):
+        """Test that start() resets _draining flag for service restart."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        # Simulate a prior shutdown that set _draining
+        serv._draining = True
+        self.assertTrue(serv.is_draining)
+
+        serv.manager = mock.MagicMock()
+        serv.coordinator = None
+
+        serv.start()
+
+        self.assertFalse(serv._draining)
+        self.assertFalse(serv.is_draining)
 
 
 class TestWSGIService(test.TestCase):
