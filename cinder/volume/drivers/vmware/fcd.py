@@ -342,7 +342,7 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         for ds in datastores:
             mpath = self.volumeops._get_mount_path(ds)
             if mpath == mount_path:
-                return ds
+                return vim_util.get_moref_value(ds)
         return None
 
     @volume_utils.trace
