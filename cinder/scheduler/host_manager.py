@@ -716,19 +716,15 @@ class HostManager(object):
 
         if service_name == 'backup':
             self.backup_service_states[backend] = capabilities
-            LOG.debug("Received %(service_name)s service update from "
-                      "%(host)s: %(cap)s",
-                      {'service_name': service_name, 'host': host,
-                       'cap': capabilities})
+            LOG.debug("Received %(service_name)s service update from %(host)s",
+                      {'service_name': service_name, 'host': host})
             return
 
         if capabilities.get("has_aggregate_pool", False):
             # This backend has an aggregate pool.
             # We need to update the capabilities of the aggregate pool.
             LOG.debug("Backend %s has an aggregate pool.", backend)
-            LOG.debug("Aggregate pool capabilities: %s", capabilities)
             capab_copy = self._propagate_aggregate_stats(backend, capab_copy)
-            LOG.debug("Updated aggregate stats: %s", capab_copy)
 
         capab_old = self.service_states.get(backend, {"timestamp": 0})
         capab_last_update = self.service_states_last_update.get(
@@ -756,9 +752,8 @@ class HostManager(object):
         cluster_msg = (('Cluster: %s - Host: ' % cluster_name) if cluster_name
                        else '')
         LOG.debug("Received %(service_name)s service update from %(cluster)s "
-                  "%(host)s: %(cap)s%(cluster)s",
+                  "%(host)s",
                   {'service_name': service_name, 'host': host,
-                   'cap': capabilities,
                    'cluster': cluster_msg})
 
         self._no_capabilities_backends.discard(backend)
