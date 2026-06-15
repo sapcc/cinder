@@ -317,6 +317,11 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
         # [SAP] So the filter has the destination host
         request_spec['destination_host'] = backend
 
+        # [SAP] Look up the source volume's aggregate_id so the
+        # CapacityFilter can skip capacity checks for same-aggregate
+        # migrations (no data movement, just logical re-registration).
+        self._set_source_aggregate_id(volume, filter_properties)
+
         def _migrate_volume_set_error(self, context, ex, request_spec):
             if volume.status == 'maintenance':
                 previous_status = (
@@ -348,6 +353,40 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
                                request_spec, filter_properties=None):
         return self.migrate_volume(context, volume, host, force_host_copy,
                                    request_spec, filter_properties)
+
+    def _set_source_aggregate_id(self, volume, filter_properties):
+        """Set the source volume's aggregate_id in filter_properties.
+
+        For cross-vcenter migrations where source and destination pools
+        share the same aggregate_id, no data movement is required (the
+        volume is just logically re-registered). By passing the source
+        aggregate_id to the filters, the CapacityFilter can skip capacity
+        checks for these same-aggregate migrations.
+        """
+        if filter_properties is None:
+            return
+
+        source_host = volume.host
+        if not source_host:
+            return
+
+        source_backend = vol_utils.extract_host(source_host, 'backend')
+        source_pool = vol_utils.extract_host(source_host, 'pool')
+        if not source_backend or not source_pool:
+            return
+
+        host_manager = self.driver.host_manager
+        backend_state = host_manager.backend_state_map.get(source_backend)
+        if not backend_state:
+            return
+
+        pool_state = backend_state.pools.get(source_pool)
+        if not pool_state or not pool_state.capabilities:
+            return
+
+        aggregate_id = pool_state.capabilities.get('aggregate_id')
+        if aggregate_id:
+            filter_properties['source_aggregate_id'] = aggregate_id
 
     @append_operation_type(name='retype_volume')
     def retype(self, context, volume, request_spec, filter_properties=None):
