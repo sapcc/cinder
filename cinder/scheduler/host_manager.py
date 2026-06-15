@@ -412,7 +412,7 @@ class PoolState(BackendState):
                                       capability: dict[str, Any],
                                       service=None) -> None:
         """Update information about a pool from its volume_node info."""
-        LOG.debug("Updating capabilities for %s: %s", self.host, capability)
+        LOG.debug("Updating capabilities for %s", self.host)
         self.update_capabilities(capability, service)
         if capability:
             if self.updated and self.updated > capability['timestamp']:
