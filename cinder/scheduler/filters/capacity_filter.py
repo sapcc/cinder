@@ -38,6 +38,24 @@ class CapacityFilter(filters.BaseBackendFilter):
         if backend_state.backend_id == filter_properties.get('vol_exists_on'):
             return True
 
+        # SAP: If this is a migration and the source and destination share
+        # the same aggregate_id, no data movement is required (it's just a
+        # logical re-registration across vcenters). Skip the capacity check
+        # since the volume already occupies space on this aggregate.
+        source_agg_id = filter_properties.get('source_aggregate_id')
+        if source_agg_id:
+            spec = filter_properties.get('request_spec', {})
+            if spec.get('operation') == 'migrate_volume':
+                dest_agg_id = None
+                if backend_state.capabilities:
+                    dest_agg_id = backend_state.capabilities.get(
+                        'aggregate_id')
+                if dest_agg_id and source_agg_id == dest_agg_id:
+                    LOG.debug("Same aggregate_id %s for migration, "
+                              "skipping capacity check for %s",
+                              source_agg_id, backend_state.backend_id)
+                    return True
+
         spec = filter_properties.get('request_spec')
         if spec:
             volid = spec.get('volume_id')

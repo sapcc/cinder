@@ -596,6 +596,95 @@ class CapacityFilterTestCase(BackendFiltersTestCase):
                                        'service': service})
         self.assertTrue(filt_cls.backend_passes(host, filter_properties))
 
+    def test_filter_passes_same_aggregate_migration(self, _mock_serv_is_up):
+        """Cross-vcenter migration with same aggregate_id should pass.
+
+        When migrating a volume between vcenters where both pools share the
+        same aggregate_id, no data movement occurs (just a logical
+        re-registration). The CapacityFilter should allow this even if the
+        destination pool has insufficient free space for a new volume of that
+        size.
+        """
+        _mock_serv_is_up.return_value = True
+        filt_cls = self.class_map['CapacityFilter']()
+        filter_properties = {
+            'size': 2048,
+            'request_spec': {
+                'volume_id': fake.VOLUME_ID,
+                'operation': 'migrate_volume',
+                'volume_properties': {
+                    'host': 'vc-a-0@vmware_fcd#pool_A',
+                },
+            },
+            'source_aggregate_id': 'agg_123',
+        }
+        service = {'disabled': False}
+        host = fakes.FakeBackendState('vc-b-0@vmware_fcd#pool_B',
+                                      {'total_capacity_gb': 5000,
+                                       'free_capacity_gb': 100,
+                                       'updated_at': None,
+                                       'service': service,
+                                       'capabilities': {
+                                           'aggregate_id': 'agg_123'}})
+        self.assertTrue(filt_cls.backend_passes(host, filter_properties))
+
+    def test_filter_fails_different_aggregate_migration(
+            self, _mock_serv_is_up):
+        """Cross-vcenter migration with different aggregate_id should check.
+
+        When migrating to a pool with a different aggregate_id, actual data
+        movement is required, so the CapacityFilter must enforce its normal
+        capacity checks.
+        """
+        _mock_serv_is_up.return_value = True
+        filt_cls = self.class_map['CapacityFilter']()
+        filter_properties = {
+            'size': 2048,
+            'request_spec': {
+                'volume_id': fake.VOLUME_ID,
+                'operation': 'migrate_volume',
+                'volume_properties': {
+                    'host': 'vc-a-0@vmware_fcd#pool_A',
+                },
+            },
+            'source_aggregate_id': 'agg_123',
+        }
+        service = {'disabled': False}
+        host = fakes.FakeBackendState('vc-b-0@vmware_fcd#pool_B',
+                                      {'total_capacity_gb': 5000,
+                                       'free_capacity_gb': 100,
+                                       'updated_at': None,
+                                       'service': service,
+                                       'capabilities': {
+                                           'aggregate_id': 'agg_456'}})
+        self.assertFalse(filt_cls.backend_passes(host, filter_properties))
+
+    def test_filter_passes_migration_no_aggregate_id(self, _mock_serv_is_up):
+        """Migration without aggregate_id should use normal capacity checks.
+
+        If neither source nor destination has an aggregate_id, the filter
+        should fall through to normal capacity evaluation.
+        """
+        _mock_serv_is_up.return_value = True
+        filt_cls = self.class_map['CapacityFilter']()
+        filter_properties = {
+            'size': 100,
+            'request_spec': {
+                'volume_id': fake.VOLUME_ID,
+                'operation': 'migrate_volume',
+                'volume_properties': {
+                    'host': 'vc-a-0@vmware_fcd#pool_A',
+                },
+            },
+        }
+        service = {'disabled': False}
+        host = fakes.FakeBackendState('vc-b-0@vmware_fcd#pool_B',
+                                      {'total_capacity_gb': 500,
+                                       'free_capacity_gb': 200,
+                                       'updated_at': None,
+                                       'service': service})
+        self.assertTrue(filt_cls.backend_passes(host, filter_properties))
+
 
 class AffinityFilterTestCase(BackendFiltersTestCase):
     @mock.patch('cinder.objects.service.Service.is_up',

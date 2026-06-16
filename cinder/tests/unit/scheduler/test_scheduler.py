@@ -477,6 +477,69 @@ class SchedulerManagerTestCase(test.TestCase):
         _mock_backend_passes.assert_called_once_with(self.context, 'host',
                                                      request_spec, {})
 
+    def test_set_source_aggregate_id_with_aggregate(self):
+        """Test that source aggregate_id is set in filter_properties."""
+        volume = fake_volume.fake_volume_obj(
+            self.context, host='vc-a-0@vmware_fcd#pool_A')
+
+        # Set up mock pool state with aggregate_id in capabilities
+        mock_pool_state = mock.Mock()
+        mock_pool_state.capabilities = {'aggregate_id': 'agg_123'}
+
+        mock_backend_state = mock.Mock()
+        mock_backend_state.pools = {'pool_A': mock_pool_state}
+
+        self.manager.driver.host_manager.backend_state_map = {
+            'vc-a-0@vmware_fcd': mock_backend_state
+        }
+
+        filter_properties = {}
+        self.manager._set_source_aggregate_id(volume, filter_properties)
+
+        self.assertEqual('agg_123',
+                         filter_properties.get('source_aggregate_id'))
+
+    def test_set_source_aggregate_id_without_aggregate(self):
+        """Test that nothing is set when source has no aggregate_id."""
+        volume = fake_volume.fake_volume_obj(
+            self.context, host='vc-a-0@vmware_fcd#pool_A')
+
+        # Pool state without aggregate_id
+        mock_pool_state = mock.Mock()
+        mock_pool_state.capabilities = {}
+
+        mock_backend_state = mock.Mock()
+        mock_backend_state.pools = {'pool_A': mock_pool_state}
+
+        self.manager.driver.host_manager.backend_state_map = {
+            'vc-a-0@vmware_fcd': mock_backend_state
+        }
+
+        filter_properties = {}
+        self.manager._set_source_aggregate_id(volume, filter_properties)
+
+        self.assertNotIn('source_aggregate_id', filter_properties)
+
+    def test_set_source_aggregate_id_backend_not_found(self):
+        """Test graceful handling when source backend is not in state map."""
+        volume = fake_volume.fake_volume_obj(
+            self.context, host='vc-a-0@vmware_fcd#pool_A')
+
+        self.manager.driver.host_manager.backend_state_map = {}
+
+        filter_properties = {}
+        self.manager._set_source_aggregate_id(volume, filter_properties)
+
+        self.assertNotIn('source_aggregate_id', filter_properties)
+
+    def test_set_source_aggregate_id_none_filter_properties(self):
+        """Test graceful handling when filter_properties is None."""
+        volume = fake_volume.fake_volume_obj(
+            self.context, host='vc-a-0@vmware_fcd#pool_A')
+
+        # Should not raise
+        self.manager._set_source_aggregate_id(volume, None)
+
     @mock.patch('cinder.db.volume_update')
     @mock.patch('cinder.db.volume_attachment_get_all_by_volume_id')
     @mock.patch('cinder.quota.QUOTAS.rollback')
