@@ -49,7 +49,7 @@ class SAPPoolDownFilter(filters.BaseBackendFilter):
         if pool_state == 'up':
             return True
         elif spec.get('operation') in valid_ops and backend == 'vmware_fcd':
-            LOG.debug("Allow migration to a down pool for vmware_fcd only")
+            # LOG.debug("Allow migration to a down pool for vmware_fcd only")
             return True
         else:
             LOG.debug("%(id)s pool state is not 'up'. state='%(state)s'",
