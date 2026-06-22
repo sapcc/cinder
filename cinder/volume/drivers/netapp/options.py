@@ -165,7 +165,12 @@ netapp_nfs_extra_opts = [
                       'terminate_connection. This requires the REST client '
                       '(netapp_use_legacy_client = False); if the legacy '
                       'ZAPI client is active this option has no effect.'
-                      'Primary use-case is instance HA failover.')), ]
+                      'Primary use-case is instance HA failover.')),
+    cfg.BoolOpt('netapp_nfs_report_aggr_free_capacity',
+                default=True,
+                help=('When enabled, report the free space from the'
+                      'aggr free capacity instead of calulated vol capacity'
+                      'This avoid unwanted overprovisioning situation')), ]
 netapp_san_opts = [
     cfg.StrOpt('netapp_lun_ostype',
                help=('This option defines the type of operating system that'
