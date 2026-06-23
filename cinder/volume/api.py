@@ -984,7 +984,24 @@ class API(base.Base):
                     'group_id': (None, '')}
 
         expected['host'] = db.Not(dest['host'])
-        filters = [~db.volume_has_snapshots_filter()]
+
+        # SAP: If the backend's snapshots are clones, then we don't
+        # have to filter out volumes that have snapshots.  We can find out
+        # if a backend has clones for snapshots by fetching the backend
+        # capabilities and looking for snapshot_type=='clone'.
+        # This mirrors the operator-driven migrate_volume() path so that
+        # Nova-driven migrate_volume_by_connector retries are not blocked
+        # by snapshot presence when the backend uses independent (clone)
+        # snapshots, e.g. VMware FCD with vmware_snapshot_format != 'COW'.
+        caps = self.volume_rpcapi.get_capabilities(
+            ctxt, volume.service_topic_queue, discover=False)
+
+        if caps.get('snapshot_type') == 'clone':
+            # This has to be (), not [] as the default filters param in the
+            # conditional_update is ()
+            filters = ()
+        else:
+            filters = [~db.volume_has_snapshots_filter()]
 
         updates = {'migration_status': 'starting',
                    'previous_status': volume.model.status}

@@ -1427,3 +1427,153 @@ class AdminActionsAttachDetachTest(BaseAdminTest):
                           None,
                           mountpoint,
                           'ro')
+
+
+class VMwareMigrateByConnectorTest(BaseAdminTest):
+    """Tests for the SAP os-migrate_volume_by_connector extension.
+
+    Mirrors AdminActionsTest setup. Mocks scheduler.find_backend_for_connector
+    and volume_rpcapi.get_capabilities / migrate_volume so the conditional
+    update at cinder/volume/api.py:migrate_volume_by_connector is exercised
+    end-to-end through the WSGI extension layer.
+    """
+
+    def setUp(self):
+        super(VMwareMigrateByConnectorTest, self).setUp()
+
+        self.tempdir = self.useFixture(fixtures.TempDir()).path
+        self.fixture = self.useFixture(config_fixture.Config(lockutils.CONF))
+        self.fixture.config(lock_path=self.tempdir,
+                            group='oslo_concurrency')
+        self.fixture.config(disable_process_locking=True,
+                            group='oslo_concurrency')
+        self.flags(transport_url='fake:/')
+
+        cast_as_call.mock_cast_as_call(self.volume_api.volume_rpcapi.client)
+        cast_as_call.mock_cast_as_call(self.volume_api.scheduler_rpcapi.client)
+
+        self.svc = self.start_service('volume', host='test')
+        self.patch(
+            'cinder.objects.Service.get_minimum_obj_version',
+            return_value=obj_base.OBJ_VERSIONS.get_current())
+
+        def _get_minimum_rpc_version_mock(ctxt, binary):
+            binary_map = {
+                constants.VOLUME_BINARY: rpcapi.VolumeAPI,
+                constants.BACKUP_BINARY: backup_rpcapi.BackupAPI,
+                constants.SCHEDULER_BINARY: scheduler_rpcapi.SchedulerAPI,
+            }
+            return binary_map[binary].RPC_API_VERSION
+
+        self.patch('cinder.objects.Service.get_minimum_rpc_version',
+                   side_effect=_get_minimum_rpc_version_mock)
+
+    def tearDown(self):
+        self.svc.stop()
+        super(VMwareMigrateByConnectorTest, self).tearDown()
+
+    def _prep(self):
+        # Register source and destination volume services. The connector
+        # path uses scheduler.find_backend_for_connector for the destination,
+        # which we mock; we still need the source host's service row in the
+        # DB for objects.Service.get_by_id lookups elsewhere.
+        db.service_create(self.ctx,
+                          {'host': 'test',
+                           'topic': constants.VOLUME_TOPIC,
+                           'binary': constants.VOLUME_BINARY,
+                           'created_at': timeutils.utcnow()})
+        db.service_create(self.ctx,
+                          {'host': 'test2',
+                           'topic': constants.VOLUME_TOPIC,
+                           'binary': constants.VOLUME_BINARY,
+                           'created_at': timeutils.utcnow()})
+        return self._create_volume(self.ctx)
+
+    def _exec(self, ctx, volume, connector, expected_status,
+              lock_volume=False):
+        req = webob.Request.blank('/v3/%s/volumes/%s/action' % (
+            fake.PROJECT_ID, volume['id']))
+        req.method = 'POST'
+        req.headers['content-type'] = 'application/json'
+        body = {'os-migrate_volume_by_connector':
+                {'connector': connector, 'lock_volume': lock_volume}}
+        req.body = jsonutils.dump_as_bytes(body)
+        req.environ['cinder.context'] = ctx
+        resp = req.get_response(app())
+        self.assertEqual(expected_status, resp.status_int)
+        return db.volume_get(self.ctx, volume['id'])
+
+    @mock.patch.object(rpcapi.VolumeAPI, 'migrate_volume')
+    @mock.patch.object(rpcapi.VolumeAPI, 'get_capabilities')
+    @mock.patch.object(scheduler_rpcapi.SchedulerAPI,
+                       'find_backend_for_connector')
+    def test_migrate_by_connector_with_snap_clone_backend_succeeds(
+            self, mock_find, mock_get_caps, mock_migrate):
+        """Volume w/ snapshot on a clone-snapshot backend must migrate."""
+        volume = self._prep()
+        snap = objects.Snapshot(self.ctx, volume_id=volume['id'])
+        snap.create()
+        self.addCleanup(snap.destroy)
+
+        mock_find.return_value = {'host': 'test2',
+                                  'cluster_name': None,
+                                  'capabilities': {}}
+        mock_get_caps.return_value = {'snapshot_type': 'clone'}
+
+        connector = {
+            'connection_capabilities': ['vmware_service_instance_uuid:foo']}
+        volume = self._exec(self.ctx, volume, connector,
+                            HTTPStatus.ACCEPTED)
+        self.assertEqual('starting', volume['migration_status'])
+        mock_migrate.assert_called_once()
+
+    @mock.patch.object(rpcapi.VolumeAPI, 'migrate_volume')
+    @mock.patch.object(rpcapi.VolumeAPI, 'get_capabilities')
+    @mock.patch.object(scheduler_rpcapi.SchedulerAPI,
+                       'find_backend_for_connector')
+    def test_migrate_by_connector_with_snap_cow_backend_fails(
+            self, mock_find, mock_get_caps, mock_migrate):
+        """Volume w/ snapshot on a COW-snapshot backend must be rejected."""
+        volume = self._prep()
+        snap = objects.Snapshot(self.ctx, volume_id=volume['id'])
+        snap.create()
+        self.addCleanup(snap.destroy)
+
+        mock_find.return_value = {'host': 'test2',
+                                  'cluster_name': None,
+                                  'capabilities': {}}
+        mock_get_caps.return_value = {'snapshot_type': 'snapshot'}
+
+        connector = {
+            'connection_capabilities': ['vmware_service_instance_uuid:foo']}
+        self._exec(self.ctx, volume, connector, HTTPStatus.BAD_REQUEST)
+        mock_migrate.assert_not_called()
+
+    @mock.patch.object(rpcapi.VolumeAPI, 'migrate_volume')
+    @mock.patch.object(rpcapi.VolumeAPI, 'get_capabilities')
+    @mock.patch.object(scheduler_rpcapi.SchedulerAPI,
+                       'find_backend_for_connector')
+    def test_migrate_by_connector_no_snap_clone_backend_succeeds(
+            self, mock_find, mock_get_caps, mock_migrate):
+        """Baseline: no snapshot present, clone backend, must succeed."""
+        volume = self._prep()
+
+        mock_find.return_value = {'host': 'test2',
+                                  'cluster_name': None,
+                                  'capabilities': {}}
+        mock_get_caps.return_value = {'snapshot_type': 'clone'}
+
+        connector = {
+            'connection_capabilities': ['vmware_service_instance_uuid:foo']}
+        volume = self._exec(self.ctx, volume, connector,
+                            HTTPStatus.ACCEPTED)
+        self.assertEqual('starting', volume['migration_status'])
+        mock_migrate.assert_called_once()
+
+    def test_migrate_by_connector_empty_connector_fails(self):
+        """Empty connector must keep the existing 400 path."""
+        volume = self._prep()
+        # The action body schema requires `connector` to be a dict; an empty
+        # dict short-circuits in api.migrate_volume_by_connector with
+        # InvalidInput -> HTTP 400.
+        self._exec(self.ctx, volume, {}, HTTPStatus.BAD_REQUEST)
