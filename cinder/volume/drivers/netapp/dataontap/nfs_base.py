@@ -1057,7 +1057,15 @@ class NetAppNfsDriver(driver.ManageableVD,
         export_path = nfs_share.rsplit(':', 1)[1]
         capacity = self.zapi_client.get_flexvol_capacity(
             flexvol_path=export_path)
-        return capacity['size-total'], capacity['size-available']
+        if self.configuration.netapp_nfs_report_aggr_free_capacity:
+            vol = self.zapi_client.get_flexvol(flexvol_path=export_path)
+            aggr = self.zapi_client.get_aggregate_capacities(vol['aggregate'])
+            size_available = 0.0
+            for agg_name in vol['aggregate']:
+                size_available += aggr[agg_name]['size-available']
+            return capacity['size-total'], size_available
+        else:
+            return capacity['size-total'], capacity['size-available']
 
     def _check_volume_type(self, volume, share, file_name, extra_specs):
         """Match volume type for share file."""

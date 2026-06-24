@@ -101,6 +101,7 @@ class NetAppNfsDriverTestCase(test.TestCase):
         expected = fake.CAPACITY_VALUES
         get_capacity = self.driver.zapi_client.get_flexvol_capacity
         get_capacity.return_value = fake.CAPACITIES
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = False
 
         result = self.driver._get_capacity_info(fake.NFS_SHARE_IPV4)
 
@@ -112,6 +113,7 @@ class NetAppNfsDriverTestCase(test.TestCase):
         expected = fake.CAPACITY_VALUES
         get_capacity = self.driver.zapi_client.get_flexvol_capacity
         get_capacity.return_value = fake.CAPACITIES
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = False
 
         result = self.driver._get_capacity_info(fake.NFS_SHARE_IPV6)
 
