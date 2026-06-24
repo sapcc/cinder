@@ -984,7 +984,20 @@ class API(base.Base):
                     'group_id': (None, '')}
 
         expected['host'] = db.Not(dest['host'])
-        filters = [~db.volume_has_snapshots_filter()]
+
+        # SAP: When the backend reports snapshot_type=='clone', snapshots
+        # are independent clones of the source volume and the source can be
+        # relocated without affecting them; skip the snapshot filter in that
+        # case. Mirrors the same exemption in migrate_volume() below.
+        caps = self.volume_rpcapi.get_capabilities(
+            ctxt, volume.service_topic_queue, discover=False)
+
+        if caps.get('snapshot_type') == 'clone':
+            # This has to be (), not [] as the default filters param in the
+            # conditional_update is ()
+            filters = ()
+        else:
+            filters = [~db.volume_has_snapshots_filter()]
 
         updates = {'migration_status': 'starting',
                    'previous_status': volume.model.status}
