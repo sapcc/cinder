@@ -1550,11 +1550,6 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
         self.patch('cinder.objects.Service.get_minimum_rpc_version',
                    side_effect=_get_minimum_rpc_version_mock)
 
-    def tearDown(self):
-        self.svc.stop()
-        super(VMwareMigrateByConnectorTest, self).tearDown()
-
-    def _prep(self):
         # Register source and destination volume services. The connector
         # path uses scheduler.find_backend_for_connector for the destination,
         # which we mock; we still need the source host's service row in the
@@ -1569,7 +1564,11 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
                            'topic': constants.VOLUME_TOPIC,
                            'binary': constants.VOLUME_BINARY,
                            'created_at': timeutils.utcnow()})
-        return self._create_volume(self.ctx)
+        self.volume = self._create_volume(self.ctx)
+
+    def tearDown(self):
+        self.svc.stop()
+        super(VMwareMigrateByConnectorTest, self).tearDown()
 
     def _exec(self, ctx, volume, connector, expected_status,
               lock_volume=False):
@@ -1592,8 +1591,7 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
     def test_migrate_by_connector_with_snap_clone_backend_succeeds(
             self, mock_find, mock_get_caps, mock_migrate):
         """Volume w/ snapshot on a clone-snapshot backend must migrate."""
-        volume = self._prep()
-        snap = objects.Snapshot(self.ctx, volume_id=volume['id'])
+        snap = objects.Snapshot(self.ctx, volume_id=self.volume['id'])
         snap.create()
         self.addCleanup(snap.destroy)
 
@@ -1604,7 +1602,7 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
 
         connector = {
             'connection_capabilities': ['vmware_service_instance_uuid:foo']}
-        volume = self._exec(self.ctx, volume, connector,
+        volume = self._exec(self.ctx, self.volume, connector,
                             HTTPStatus.ACCEPTED)
         self.assertEqual('starting', volume['migration_status'])
         mock_migrate.assert_called_once()
@@ -1616,8 +1614,7 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
     def test_migrate_by_connector_with_snap_cow_backend_fails(
             self, mock_find, mock_get_caps, mock_migrate):
         """Volume w/ snapshot on a COW-snapshot backend must be rejected."""
-        volume = self._prep()
-        snap = objects.Snapshot(self.ctx, volume_id=volume['id'])
+        snap = objects.Snapshot(self.ctx, volume_id=self.volume['id'])
         snap.create()
         self.addCleanup(snap.destroy)
 
@@ -1628,7 +1625,7 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
 
         connector = {
             'connection_capabilities': ['vmware_service_instance_uuid:foo']}
-        self._exec(self.ctx, volume, connector, HTTPStatus.BAD_REQUEST)
+        self._exec(self.ctx, self.volume, connector, HTTPStatus.BAD_REQUEST)
         mock_migrate.assert_not_called()
 
     @mock.patch.object(rpcapi.VolumeAPI, 'migrate_volume')
@@ -1638,8 +1635,6 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
     def test_migrate_by_connector_no_snap_clone_backend_succeeds(
             self, mock_find, mock_get_caps, mock_migrate):
         """Baseline: no snapshot present, clone backend, must succeed."""
-        volume = self._prep()
-
         mock_find.return_value = {'host': 'test2',
                                   'cluster_name': None,
                                   'capabilities': {}}
@@ -1647,15 +1642,33 @@ class VMwareMigrateByConnectorTest(BaseAdminTest):
 
         connector = {
             'connection_capabilities': ['vmware_service_instance_uuid:foo']}
-        volume = self._exec(self.ctx, volume, connector,
+        volume = self._exec(self.ctx, self.volume, connector,
+                            HTTPStatus.ACCEPTED)
+        self.assertEqual('starting', volume['migration_status'])
+        mock_migrate.assert_called_once()
+
+    @mock.patch.object(rpcapi.VolumeAPI, 'migrate_volume')
+    @mock.patch.object(rpcapi.VolumeAPI, 'get_capabilities')
+    @mock.patch.object(scheduler_rpcapi.SchedulerAPI,
+                       'find_backend_for_connector')
+    def test_migrate_by_connector_no_snap_cow_backend_succeeds(
+            self, mock_find, mock_get_caps, mock_migrate):
+        """Baseline: no snapshot present, COW backend, must also succeed."""
+        mock_find.return_value = {'host': 'test2',
+                                  'cluster_name': None,
+                                  'capabilities': {}}
+        mock_get_caps.return_value = {'snapshot_type': 'snapshot'}
+
+        connector = {
+            'connection_capabilities': ['vmware_service_instance_uuid:foo']}
+        volume = self._exec(self.ctx, self.volume, connector,
                             HTTPStatus.ACCEPTED)
         self.assertEqual('starting', volume['migration_status'])
         mock_migrate.assert_called_once()
 
     def test_migrate_by_connector_empty_connector_fails(self):
         """Empty connector must keep the existing 400 path."""
-        volume = self._prep()
         # The action body schema requires `connector` to be a dict; an empty
         # dict short-circuits in api.migrate_volume_by_connector with
         # InvalidInput -> HTTP 400.
-        self._exec(self.ctx, volume, {}, HTTPStatus.BAD_REQUEST)
+        self._exec(self.ctx, self.volume, {}, HTTPStatus.BAD_REQUEST)
