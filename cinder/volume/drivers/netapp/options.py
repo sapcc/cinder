@@ -231,7 +231,12 @@ netapp_nfs_extra_opts = [
                      'cinder-volume process to execute the file.'),
                deprecated_for_removal=True,
                deprecated_reason='The CopyOfflload tool is no longer '
-                                 'available for downloading.'), ]
+                                 'available for downloading.'),
+    cfg.BoolOpt('netapp_nfs_report_aggr_free_capacity',
+                default=True,
+                help=('When enabled, report the free space from the'
+                      'aggr free capacity instead of calulated vol capacity'
+                      'This avoid unwanted overprovisioning situation')), ]
 netapp_san_opts = [
     cfg.StrOpt('netapp_lun_ostype',
                help=('This option defines the type of operating system that'
