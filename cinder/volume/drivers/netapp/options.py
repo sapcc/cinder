@@ -232,6 +232,11 @@ netapp_nfs_extra_opts = [
                deprecated_for_removal=True,
                deprecated_reason='The CopyOfflload tool is no longer '
                                  'available for downloading.'),
+    cfg.BoolOpt('netapp_nfs_report_aggr_free_capacity',
+                default=True,
+                help=('When enabled, report the free space from the'
+                      'aggr free capacity instead of calulated vol capacity'
+                      'This avoid unwanted overprovisioning situation')),
     cfg.BoolOpt('netapp_nfs_break_locks',
                 default=False,
                 help=('When enabled, all NFS locks held by the detaching '
