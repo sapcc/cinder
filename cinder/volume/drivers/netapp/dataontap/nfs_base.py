@@ -1046,9 +1046,12 @@ class NetAppNfsDriver(driver.ManageableVD,
             flexvol_path=export_path)
         if self.configuration.netapp_nfs_report_aggr_free_capacity:
             vol = self.zapi_client.get_flexvol(flexvol_path=export_path)
-            aggr = self.zapi_client.get_aggregate_capacities(vol['aggregate'])
+            aggr_list = vol['aggregate']
+            if isinstance(aggr_list, str):
+                aggr_list = [aggr_list]
+            aggr = self.zapi_client.get_aggregate_capacities(aggr_list)
             size_available = 0.0
-            for agg_name in vol['aggregate']:
+            for agg_name in aggr_list:
                 size_available += aggr[agg_name]['size-available']
             return capacity['size-total'], size_available
         else:
