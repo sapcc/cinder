@@ -377,7 +377,8 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         image_service = mock.Mock()
         image_service.show.return_value = image_meta
 
-        datastore = mock.sentinel.datastore
+        datastore = mock.Mock()
+        datastore.value.return_value = "datastore-1"
         summary = mock.Mock(datastore=datastore)
         summary.name = 'ds1'
         vops.get_datastore.return_value = datastore
@@ -411,6 +412,9 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         vops.register_disk.return_value = fcd_loc
         vops.get_backing_by_uuid.return_value = mock.sentinel.backing
         vops.get_disk_size.return_value = 2 * units.Gi
+        vops.get_disk_device.return_value = {'backing': mock.sentinel.backing,
+                                             'capacityInBytes': 2 * units.Gi,
+                                             'unitNumber': 4}
         provider_loc_to_ds_name_loc.return_value = provider_location
 
         extra_specs = {
