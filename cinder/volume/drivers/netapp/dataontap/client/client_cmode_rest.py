@@ -140,7 +140,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         ontap_9_5 = ontap_version >= (9, 5)
         ontap_9_6 = ontap_version >= (9, 6)
         ontap_9_8 = ontap_version >= (9, 8)
-        ontap_9_9 = ontap_version >= (9, 9)
+        ontap_9_14 = ontap_version >= (9, 14)
 
         nodes_info = self._get_cluster_nodes_info()
         for node in nodes_info:
@@ -175,8 +175,10 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         self.features.add_feature('CLUSTER_PEER_POLICY', supported=ontap_9_0)
         self.features.add_feature('FLEXVOL_ENCRYPTION', supported=ontap_9_0)
         self.features.add_feature('FLEXGROUP', supported=ontap_9_8)
+        # Flex group file clone is supported for ONTAP 9.14 and above versions
+        # so updating this from 9.9 to 9.14.
         self.features.add_feature('FLEXGROUP_CLONE_FILE',
-                                  supported=ontap_9_9)
+                                  supported=ontap_9_14)
 
         self.features.add_feature('ADAPTIVE_QOS', supported=ontap_9_4)
         self.features.add_feature('ADAPTIVE_QOS_BLOCK_SIZE',
@@ -768,6 +770,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
         query = {
             'location.volume.name': volume_name,
+            'svm.name': self.vserver,
             'fields': 'space.size,name'
         }
 
@@ -2801,6 +2804,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
         query = {
             'location.volume.name': volume_name,
+            'svm.name': self.vserver,
             'fields': 'space.size,name'
         }
         response = self.send_request('/storage/namespaces', 'get', query=query)

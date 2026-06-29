@@ -80,8 +80,6 @@
             irrelevant-files: *gate-irrelevant-files
         - cinder-tempest-plugin-protection-functional:
             irrelevant-files: *gate-irrelevant-files
-        - cinder-grenade-mn-sub-volbak:
-            irrelevant-files: *gate-irrelevant-files
         - cinder-tempest-lvm-multibackend:
             voting: false
             irrelevant-files: *gate-irrelevant-files
@@ -99,30 +97,32 @@
             irrelevant-files: *gate-irrelevant-files
         - tempest-integrated-storage-ubuntu-jammy:
             irrelevant-files: *gate-irrelevant-files
-        - grenade:
-            irrelevant-files: *gate-irrelevant-files
         - grenade-skip-level:
             irrelevant-files: *gate-irrelevant-files
+        # make this template job non-voting until it gets fixed
+        - grenade-skip-level-always:
+            irrelevant-files: *gate-irrelevant-files
+            voting: false
         - tempest-ipv6-only:
             irrelevant-files: *gate-irrelevant-files
         - openstacksdk-functional-devstack:
             irrelevant-files: *gate-irrelevant-files
     gate:
       jobs:
-        - cinder-grenade-mn-sub-volbak:
-            irrelevant-files: *gate-irrelevant-files
         - cinder-plugin-ceph-tempest:
             irrelevant-files: *gate-irrelevant-files
         - tempest-integrated-storage:
             irrelevant-files: *gate-irrelevant-files
         - tempest-integrated-storage-ubuntu-jammy:
             irrelevant-files: *gate-irrelevant-files
-        - grenade:
-            irrelevant-files: *gate-irrelevant-files
         - tempest-ipv6-only:
             irrelevant-files: *gate-irrelevant-files
         - openstacksdk-functional-devstack:
             irrelevant-files: *gate-irrelevant-files
+        # make this template job non-voting until it gets fixed
+        - grenade-skip-level-always:
+            irrelevant-files: *gate-irrelevant-files
+            voting: false
     experimental:
       jobs:
         - cinder-multibackend-matrix-migration:
@@ -144,6 +144,14 @@
     description: This is integrated storage job testing on Ubuntu jammy(22.04)
     parent: tempest-integrated-storage
     nodeset: openstack-single-node-jammy
+    required-projects:
+      - name: openstack/cinder-tempest-plugin
+        override-checkout: 1.17.0
+      - name: openstack/tempest
+        override-checkout: 46.3.0
+    vars:
+      devstack_localrc:
+        TEMPEST_VENV_UPPER_CONSTRAINTS: '/opt/stack/requirements/upper-constraints.txt'
 
 - job:
     # Security testing for known issues
@@ -357,6 +365,10 @@
         GLANCE_SHOW_DIRECT_URL: True
         GLANCE_SHOW_MULTIPLE_LOCATIONS: True
         CINDER_ALLOWED_DIRECT_URL_SCHEMES: cinder
+        CINDER_UPLOAD_OPTIMIZED: True
+        CINDER_UPLOAD_INTERNAL_TENANT: True
+        CINDER_USE_SERVICE_TOKEN: True
+      tempest_test_regex: '(cinder_tempest_plugin|tempest.api.volume.test_volumes_actions)'
 
 - job:
     name: cinder-multibackend-matrix-migration

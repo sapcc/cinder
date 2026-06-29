@@ -269,7 +269,7 @@ class AttachmentsController(wsgi.Controller):
                 self.volume_api.attachment_update(context,
                                                   attachment_ref,
                                                   connector))
-        except exception.NotAuthorized:
+        except (exception.NotAuthorized, exception.Invalid):
             raise
         except exception.ConnectorRejected:
             # Don't use err_msg or it will raise the 500
@@ -283,7 +283,7 @@ class AttachmentsController(wsgi.Controller):
             raise webob.exc.HTTPNotAcceptable(explanation=_msg)
         except exception.CinderException as ex:
             err_msg = (
-                _("Unable to update attachment.(%s).") % ex.msg)
+                _("Unable to update attachment (%s).") % ex.msg)
             LOG.exception(err_msg)
             action_track.track(
                 context, action_track.ACTION_VOLUME_ATTACH,

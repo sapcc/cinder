@@ -2822,7 +2822,7 @@ class API(base.Base):
                 ctxt, action_track.ACTION_VOLUME_ATTACH,
                 volume_ref, msg, loglevel=logging.ERROR
             )
-            raise exception.InvalidVolume(reason=msg)
+            raise exception.ResourceConflict(reason=msg)
 
         if (len(volume_ref.volume_attachment) > 1 and
             not (volume_ref.multiattach or
@@ -2847,7 +2847,7 @@ class API(base.Base):
                     ctxt, action_track.ACTION_VOLUME_ATTACH,
                     volume_ref, msg, loglevel=logging.ERROR
                 )
-                raise exception.InvalidVolume(reason=msg)
+                raise exception.ResourceConflict(reason=msg)
 
         action_track.track(
             ctxt, action_track.ACTION_VOLUME_ATTACH,

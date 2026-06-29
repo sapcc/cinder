@@ -181,6 +181,8 @@ MIN_IOPS = 100
 MAX_IOPS = 100000000  # 100M
 MIN_BWS = 1048576  # 1 MB/s
 MAX_BWS = 549755813888  # 512 GB/s
+ONE_HOUR = 3600000
+THIRTY_SEC = 30000
 
 
 class PureDriverException(exception.VolumeDriverException):
@@ -956,8 +958,10 @@ class PureBaseVolumeDriver(san.SanDriver):
         current_array = self._get_current_array()
         # Do a pass over remaining connections on the current array, if
         # we can try and remove any remote connections too.
-        hosts = list(current_array.get_connections(
-            volume_names=[vol_name]).items)
+        hosts = []
+        res = current_array.get_connections(volume_names=[vol_name])
+        if res.status_code == 200:
+            hosts = list(res.items)
         for host_info in range(0, len(hosts)):
             host_name = hosts[host_info].host.name
             self._disconnect_host(current_array, host_name, vol_name)
@@ -966,8 +970,6 @@ class PureBaseVolumeDriver(san.SanDriver):
         res = current_array.patch_volumes(names=[vol_name],
                                           volume=flasharray.VolumePatch(
                                               destroyed=True))
-        if self.configuration.pure_eradicate_on_delete:
-            current_array.delete_volumes(names=[vol_name])
         if res.status_code == 400:
             with excutils.save_and_reraise_exception() as ctxt:
                 if ERR_MSG_NOT_EXIST in res.errors[0].message:
@@ -975,6 +977,8 @@ class PureBaseVolumeDriver(san.SanDriver):
                     ctxt.reraise = False
                     LOG.warning("Volume deletion failed with message: %s",
                                 res.errors[0].message)
+        if self.configuration.pure_eradicate_on_delete:
+            current_array.delete_volumes(names=[vol_name])
         # Now check to see if deleting this volume left an empty volume
         # group. If so, we delete / eradicate the volume group
         if "/" in vol_name:
@@ -1220,11 +1224,29 @@ class PureBaseVolumeDriver(san.SanDriver):
         """Set self._stats with relevant information."""
         current_array = self._get_current_array()
         space_info = list(current_array.get_arrays_space().items)[0]
-        perf_info = list(current_array.get_arrays_performance(
+        perf_data = current_array.get_arrays_performance(
             end_time=int(time.time()) * 1000,
-            start_time=(int(time.time()) * 1000) - 30000,
-            resolution=30000
-        ).items)[0]
+            start_time=(int(time.time()) * 1000) - ONE_HOUR,
+            resolution=THIRTY_SEC,
+            total_item_count=True
+        )
+        if perf_data.total_item_count != 0:
+            perf_info = list(perf_data.items)[0]
+        else:
+            class _ZeroPerf:
+                writes_per_sec = 0
+                reads_per_sec = 0
+                write_bytes_per_sec = 0
+                read_bytes_per_sec = 0
+                usec_per_read_op = 0
+                usec_per_write_op = 0
+                queue_depth = 0
+                queue_usec_per_mirrored_write_op = 0
+                queue_usec_per_read_op = 0
+                queue_usec_per_write_op = 0
+            perf_info = _ZeroPerf()
+            LOG.warning("No performance samples returned from array for the "
+                        "requested interval; reporting zeroed metrics.")
         hosts = list(current_array.get_hosts().items)
         volumes = list(current_array.get_volumes().items)
         snaps = list(current_array.get_volume_snapshots().items)
@@ -1243,7 +1265,13 @@ class PureBaseVolumeDriver(san.SanDriver):
         except AttributeError:
             provisioned_space = float(space_info.space.
                                       used_provisioned) / units.Gi
-        total_reduction = float(space_info.space.total_reduction)
+        # If array uses Evergreen/One model then data reduction values
+        # are not reported so we must force the driver to use the old
+        # cinder non-dynamic oversubscription calculations
+        try:
+            total_reduction = float(space_info.space.total_reduction)
+        except AttributeError:
+            total_reduction = 999
         total_vols = len(volumes)
         total_hosts = len(hosts)
         total_snaps = len(snaps)
@@ -3632,7 +3660,7 @@ class PureISCSIDriver(PureBaseVolumeDriver, san.SanISCSIDriver):
         for array in target_arrays:
             connection = self._connect(array, pure_vol_name, connector,
                                        chap_username, chap_password)
-            if not connection[0].lun:
+            if not connection[0]['lun']:
                 # Swallow any exception, just warn and continue
                 LOG.warning("self._connect failed.")
                 continue
