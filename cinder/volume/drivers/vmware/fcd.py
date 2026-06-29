@@ -119,6 +119,196 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         (host, rp, folder, summary) = self._select_ds_for_volume(volume)
         return summary.datastore
 
+    def _parse_manage_existing_ref(self, existing_ref):
+        """Parse and validate the manage-existing reference.
+
+        :param existing_ref: dict with 'source-name' key containing
+            '[datastore_name] relative/path.vmdk'
+        :returns: tuple (datastore_name, relative_path)
+        :raises ManageExistingInvalidReference: if ref is missing or malformed
+        """
+        source_name = existing_ref.get('source-name')
+        if not source_name:
+            reason = _("manage_existing requires 'source-name'")
+            raise exception.ManageExistingInvalidReference(
+                existing_ref=existing_ref, reason=reason)
+        try:
+            ds_path = datastore.DatastorePath.parse(source_name)
+            if not ds_path.datastore or not ds_path.rel_path:
+                raise ValueError("empty component")
+        except (IndexError, ValueError) as exc:
+            reason = _("source-name must be '[datastore] path.vmdk', "
+                       "got: %s") % source_name
+            raise exception.ManageExistingInvalidReference(
+                existing_ref=existing_ref, reason=reason) from exc
+        return ds_path.datastore, ds_path.rel_path
+
+    def manage_existing_get_size(self, volume, existing_ref):
+        """Return size of volume to be managed by manage_existing.
+
+        :param volume: Cinder volume to manage
+        :param existing_ref: dict with 'size_gb' key
+        :returns: size in GB
+        :raises ManageExistingInvalidReference: if size_gb is missing or
+            not an integer
+        """
+        size_gb = existing_ref.get('size_gb')
+        if size_gb is None:
+            volume.status = 'error'
+            LOG.warning("manage_existing_get_size: missing size_gb in ref. "
+                        "Reference: %(ref)s.",
+                        {'ref': existing_ref})
+            reason = _("manage_existing requires 'size_gb' in the ref")
+            raise exception.ManageExistingInvalidReference(
+                existing_ref=existing_ref, reason=reason)
+        try:
+            return int(size_gb)
+        except (TypeError, ValueError) as exc:
+            volume.status = 'error'
+            LOG.warning("manage_existing_get_size: invalid size_gb in ref. "
+                        "Reference: %(ref)s. Reason: %(reason)s.",
+                        {'ref': existing_ref, 'reason': exc})
+            reason = _("manage_existing requires integer 'size_gb' in the ref")
+            raise exception.ManageExistingInvalidReference(
+                existing_ref=existing_ref, reason=reason)
+
+    def _log_manage_existing_warning(self, message, ds_name=None,
+                                     rel_path=None, fcd_id=None,
+                                     target_ds=None, reason=None,
+                                     ref=None):
+        source = ref
+        if ds_name and rel_path:
+            source = "[%s] %s" % (ds_name, rel_path)
+        LOG.warning("manage_existing: %(message)s. "
+                    "FCD ID: %(fcd_id)s. Source path: %(source)s. "
+                    "Target datastore: %(target_ds)s. Reason: %(reason)s.",
+                    {'message': message,
+                     'fcd_id': fcd_id or 'unknown',
+                     'source': source or 'unknown',
+                     'target_ds': target_ds or 'unknown',
+                     'reason': reason})
+
+    def manage_existing(self, volume, existing_ref):
+        """Adopt a detached VMDK as an FCD-backed Cinder volume.
+
+        Registers the VMDK at 'source-name' as a First Class Disk, then
+        relocates it to the volume's target datastore if necessary.
+        Never cleans up on failure. The source VMDK must survive all
+        error paths.
+
+        Note on failure states: pre-relocate failures mark the in-flight
+        volume as 'error' so the manage_existing flow preserves a Nova-safe
+        abort state. Relocate and post-relocate failures leave flow handling
+        at 'error_managing' because operator recovery is required.
+
+        :param volume: Cinder volume object
+        :param existing_ref: dict with 'source-name' ('[ds] path.vmdk')
+                             and 'size_gb'
+        :returns: dict with 'provider_location'
+        """
+        ds_name = rel_path = target_val = None
+        fcd_id = None
+        try:
+            ds_name, rel_path = self._parse_manage_existing_ref(existing_ref)
+
+            src_ds_ref = self.ds_sel.get_ds_ref_by_name(ds_name)
+            if not src_ds_ref:
+                raise exception.ManageExistingInvalidReference(
+                    existing_ref=existing_ref,
+                    reason=_("Source datastore '%s' not found") % ds_name)
+
+            source_fcd_id = existing_ref.get('source-id')
+            if source_fcd_id:
+                # Nova already knows the FCD id (from VirtualDisk.vDiskId).
+                # Validate its backing path matches source-name, then rename.
+                fcd_id = source_fcd_id
+                src_val = vim_util.get_moref_value(src_ds_ref)
+                fcd_loc = vops.FcdLocation(source_fcd_id, src_val)
+
+                fcd_path = self.volumeops.get_vmdk_path_for_fcd(
+                    fcd_loc=fcd_loc)
+                fcd_ds_path = datastore.DatastorePath.parse(fcd_path)
+                if (fcd_ds_path.datastore != ds_name or
+                        fcd_ds_path.rel_path != rel_path):
+                    reason = (_("source-id %(fcd_id)s points to %(fcd_path)s, "
+                                "not [%(ds)s] %(path)s") %
+                              {'fcd_id': source_fcd_id,
+                               'fcd_path': fcd_path,
+                               'ds': ds_name,
+                               'path': rel_path})
+                    raise exception.ManageExistingInvalidReference(
+                        existing_ref=existing_ref, reason=reason)
+
+                self.volumeops.rename_fcd(fcd_loc, src_ds_ref, volume.name)
+            else:
+                # No pre-existing FCD id: register the raw VMDK as an FCD.
+                dc_ref = self.volumeops.get_dc(src_ds_ref)
+                dc_path = self.volumeops.get_inventory_path(dc_ref)
+                vmdk_url = datastore.DatastoreURL(
+                    'https', self.configuration.vmware_host_ip,
+                    rel_path, dc_path, ds_name)
+
+                try:
+                    fcd_loc = self.volumeops.register_disk(
+                        str(vmdk_url), volume.name, src_ds_ref)
+                except vexc.AlreadyExistsException:
+                    reason = _("VMDK is already registered as FCD; "
+                               "pass source-id")
+                    raise exception.ManageExistingInvalidReference(
+                        existing_ref=existing_ref, reason=reason)
+                fcd_id = fcd_loc.fcd_id
+
+            target_ds_ref = self._select_ds_fcd(volume)
+
+            src_val = fcd_loc.ds_ref_val
+            target_val = vim_util.get_moref_value(target_ds_ref)
+            needs_relocate = src_val != target_val
+        except Exception as exc:
+            # Pre-relocate failure: mark 'error' so the manage_existing flow
+            # preserves it on rollback, letting Nova abort and reattach the
+            # original VMDK. See ManageExistingTask status handling.
+            volume.status = 'error'
+            self._log_manage_existing_warning(
+                "pre-relocate failure",
+                ds_name=ds_name,
+                rel_path=rel_path,
+                fcd_id=fcd_id,
+                target_ds=target_val,
+                reason=exc,
+                ref=existing_ref)
+            raise
+
+        if needs_relocate:
+            try:
+                self.volumeops.relocate_fcd(
+                    fcd_loc, target_ds_ref, volume.name)
+            except Exception as exc:
+                self._log_manage_existing_warning(
+                    "failed to relocate FCD",
+                    ds_name=ds_name,
+                    rel_path=rel_path,
+                    fcd_id=fcd_loc.fcd_id,
+                    target_ds=target_val,
+                    reason=exc)
+                raise
+            fcd_loc = vops.FcdLocation(fcd_loc.fcd_id, target_val)
+
+        try:
+            provider_location = self._provider_location_to_ds_name_location(
+                fcd_loc.provider_location())
+        except Exception as exc:
+            if not needs_relocate:
+                volume.status = 'error'
+            self._log_manage_existing_warning(
+                "failed to finalize provider_location",
+                ds_name=ds_name,
+                rel_path=rel_path,
+                fcd_id=fcd_loc.fcd_id,
+                target_ds=target_val,
+                reason=exc)
+            raise
+        return {'provider_location': provider_location}
+
     def _get_temp_image_folder_from_volume(self, volume):
         (host_ref, _resource_pool,
             folder, summary) = self._select_ds_for_volume(volume)
