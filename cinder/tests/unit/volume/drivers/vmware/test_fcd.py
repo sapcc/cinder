@@ -20,6 +20,7 @@ from unittest import mock
 import ddt
 from oslo_utils import timeutils
 from oslo_utils import units
+from oslo_vmware import exceptions as vexc
 from oslo_vmware import image_transfer
 from oslo_vmware.objects import datastore
 from oslo_vmware import vim_util
@@ -853,3 +854,729 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
                     ds_sel.get_profile_id.assert_called_once_with(new_profile)
                     vops.update_fcd_policy.assert_called_once_with(
                         fcd_loc, new_profile_id.uniqueId)
+
+    def test_manage_existing_get_size(self):
+        ref = {'source-name': '[ds1] vm-uuid/vm-uuid.vmdk', 'size_gb': 64}
+        size = self._driver.manage_existing_get_size(
+            mock.sentinel.volume, ref)
+        self.assertEqual(64, size)
+
+    def test_manage_existing_get_size_string_coercion(self):
+        """size_gb as string is coerced to int."""
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': '128'}
+        size = self._driver.manage_existing_get_size(
+            mock.sentinel.volume, ref)
+        self.assertEqual(128, size)
+
+    def test_manage_existing_get_size_missing_size_gb(self):
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm-uuid/vm-uuid.vmdk'}
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver.manage_existing_get_size,
+            volume, ref)
+        self.assertEqual('error', volume.status)
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    def test_manage_existing_get_size_invalid_size_gb(self, mock_log):
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm-uuid/vm-uuid.vmdk',
+               'size_gb': 'not-an-int'}
+
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver.manage_existing_get_size,
+            volume, ref)
+
+        self.assertEqual('error', volume.status)
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('not-an-int', warning_args)
+
+    def test_parse_manage_existing_ref_valid(self):
+        ref = {'source-name': '[eph_ds02] uuid/uuid.vmdk', 'size_gb': 64}
+        ds_name, rel_path = self._driver._parse_manage_existing_ref(ref)
+        self.assertEqual('eph_ds02', ds_name)
+        self.assertEqual('uuid/uuid.vmdk', rel_path)
+
+    def test_parse_manage_existing_ref_missing_source_name(self):
+        ref = {'size_gb': 64}
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver._parse_manage_existing_ref, ref)
+
+    def test_parse_manage_existing_ref_invalid_format(self):
+        ref = {'source-name': 'no-brackets-path.vmdk', 'size_gb': 64}
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver._parse_manage_existing_ref, ref)
+
+    @mock.patch.object(FCD_DRIVER,
+                       '_provider_location_to_ds_name_location')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_same_datastore(
+            self, ds_sel, vops, select_ds_fcd, prov_loc_to_name):
+        """Same-datastore: no relocate, provider_location from source."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm-uuid/vm-uuid.vmdk', 'size_gb': 64}
+
+        # Source datastore lookup
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        # DC and inventory path
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        # register_disk returns FcdLocation
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-id-123'
+        fcd_loc.ds_ref_val = 'datastore-101'
+        fcd_loc.provider_location.return_value = (
+            'fcd-id-123@datastore-101')
+        vops.register_disk.return_value = fcd_loc
+
+        # Target datastore is same as source
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-101'
+        select_ds_fcd.return_value = target_ds_ref
+
+        prov_loc_to_name.return_value = 'fcd-id-123@ds1'
+
+        result = self._driver.manage_existing(volume, ref)
+
+        # Verify datastore lookup
+        ds_sel.get_ds_ref_by_name.assert_called_once_with('ds1')
+        vops.get_dc.assert_called_once_with(src_ds_ref)
+        vops.get_inventory_path.assert_called_once_with(dc_ref)
+        # Verify register_disk call with exact URL
+        vops.register_disk.assert_called_once()
+        reg_args = vops.register_disk.call_args
+        self.assertIn('vm-uuid/vm-uuid.vmdk', reg_args[0][0])
+        self.assertEqual(volume.name, reg_args[0][1])
+        self.assertEqual(src_ds_ref, reg_args[0][2])
+        # Same datastore: no relocate
+        vops.relocate_fcd.assert_not_called()
+        # provider_location converted from source fcd_loc
+        prov_loc_to_name.assert_called_once_with(
+            'fcd-id-123@datastore-101')
+        self.assertEqual({'provider_location': 'fcd-id-123@ds1'}, result)
+
+    @mock.patch.object(FCD_DRIVER,
+                       '_provider_location_to_ds_name_location')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_different_datastore_relocates(
+            self, ds_sel, vops, select_ds_fcd, prov_loc_to_name):
+        """Cross-datastore: relocate called, provider_location uses target."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[src_ds] vm-uuid/vm-uuid.vmdk', 'size_gb': 64}
+
+        # Source datastore
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        # DC
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        # register_disk
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-123'
+        fcd_loc.provider_location.return_value = 'fcd-123@datastore-101'
+        vops.register_disk.return_value = fcd_loc
+
+        # Target datastore is DIFFERENT
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-202'
+        select_ds_fcd.return_value = target_ds_ref
+
+        prov_loc_to_name.return_value = 'fcd-123@nfs_target'
+
+        result = self._driver.manage_existing(volume, ref)
+
+        vops.relocate_fcd.assert_called_once_with(
+            fcd_loc, target_ds_ref, volume.name)
+        # provider_location must use TARGET moref, not source
+        prov_loc_to_name.assert_called_once_with(
+            'fcd-123@datastore-202')
+        self.assertEqual({'provider_location': 'fcd-123@nfs_target'}, result)
+
+    @mock.patch.object(FCD_DRIVER,
+                       '_provider_location_to_ds_name_location')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_nfs_different_datastore_relocates(
+            self, ds_sel, vops, select_ds_fcd, prov_loc_to_name):
+        """NFS source on different datastore still triggers relocate."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[nfs_ds] vm-uuid/vm-uuid.vmdk', 'size_gb': 32}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-nfs-1'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-456'
+        fcd_loc.provider_location.return_value = 'fcd-456@datastore-nfs-1'
+        vops.register_disk.return_value = fcd_loc
+
+        # Different target
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-789'
+        select_ds_fcd.return_value = target_ds_ref
+
+        prov_loc_to_name.return_value = 'fcd-456@nfs_target'
+
+        result = self._driver.manage_existing(volume, ref)
+
+        vops.relocate_fcd.assert_called_once_with(
+            fcd_loc, target_ds_ref, volume.name)
+        # provider_location must use TARGET moref
+        prov_loc_to_name.assert_called_once_with(
+            'fcd-456@datastore-789')
+        self.assertEqual({'provider_location': 'fcd-456@nfs_target'}, result)
+
+    @mock.patch.object(FCD_DRIVER,
+                       '_provider_location_to_ds_name_location')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_id_same_datastore_reuses_fcd(
+            self, ds_sel, vops, select_ds_fcd, prov_loc_to_name):
+        """source-id means the VMDK is already an FCD."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm-uuid/vm-uuid.vmdk',
+               'source-id': 'existing-fcd-123',
+               'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+        vops.get_vmdk_path_for_fcd.return_value = (
+            '[ds1] vm-uuid/vm-uuid.vmdk')
+
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-101'
+        select_ds_fcd.return_value = target_ds_ref
+
+        prov_loc_to_name.return_value = 'existing-fcd-123@ds1'
+
+        result = self._driver.manage_existing(volume, ref)
+
+        vops.get_dc.assert_not_called()
+        vops.get_inventory_path.assert_not_called()
+        vops.register_disk.assert_not_called()
+        vops.rename_fcd.assert_called_once()
+        rename_args = vops.rename_fcd.call_args[0]
+        self.assertEqual('existing-fcd-123', rename_args[0].fcd_id)
+        self.assertEqual('datastore-101', rename_args[0].ds_ref_val)
+        self.assertEqual(src_ds_ref, rename_args[1])
+        self.assertEqual(volume.name, rename_args[2])
+        vops.relocate_fcd.assert_not_called()
+        prov_loc_to_name.assert_called_once_with(
+            'existing-fcd-123@datastore-101')
+        self.assertEqual({'provider_location': 'existing-fcd-123@ds1'},
+                         result)
+
+    @mock.patch.object(FCD_DRIVER,
+                       '_provider_location_to_ds_name_location')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_id_different_datastore_relocates(
+            self, ds_sel, vops, select_ds_fcd, prov_loc_to_name):
+        """Existing FCDs are relocated like newly-registered FCDs."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm-uuid/vm-uuid.vmdk',
+               'source-id': 'existing-fcd-456',
+               'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+        vops.get_vmdk_path_for_fcd.return_value = (
+            '[ds1] vm-uuid/vm-uuid.vmdk')
+
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-202'
+        select_ds_fcd.return_value = target_ds_ref
+
+        prov_loc_to_name.return_value = 'existing-fcd-456@nfs_target'
+
+        result = self._driver.manage_existing(volume, ref)
+
+        vops.register_disk.assert_not_called()
+        vops.rename_fcd.assert_called_once()
+        renamed_loc = vops.rename_fcd.call_args[0][0]
+        self.assertEqual('existing-fcd-456', renamed_loc.fcd_id)
+        self.assertEqual('datastore-101', renamed_loc.ds_ref_val)
+        vops.relocate_fcd.assert_called_once()
+        relocate_args = vops.relocate_fcd.call_args[0]
+        self.assertEqual('existing-fcd-456', relocate_args[0].fcd_id)
+        self.assertEqual('datastore-101', relocate_args[0].ds_ref_val)
+        self.assertEqual(target_ds_ref, relocate_args[1])
+        self.assertEqual(volume.name, relocate_args[2])
+        prov_loc_to_name.assert_called_once_with(
+            'existing-fcd-456@datastore-202')
+        self.assertEqual({'provider_location': 'existing-fcd-456@nfs_target'},
+                         result)
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_id_rename_failure_no_cleanup(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """rename_fcd failure must not register, relocate, or delete."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk',
+               'source-id': 'existing-fcd-789',
+               'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+        vops.get_vmdk_path_for_fcd.return_value = '[ds1] vm/vm.vmdk'
+        vops.rename_fcd.side_effect = vexc.VimException('rename failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        vops.register_disk.assert_not_called()
+        vops.relocate_fcd.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+        select_ds_fcd.assert_not_called()
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('existing-fcd-789', warning_args)
+        self.assertIn('vm/vm.vmdk', warning_args)
+        self.assertIn('rename failed', warning_args)
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_id_path_mismatch_no_cleanup(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """source-id must refer to the source-name VMDK."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk',
+               'source-id': 'wrong-fcd-id',
+               'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+        vops.get_vmdk_path_for_fcd.return_value = '[ds1] other/other.vmdk'
+
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        vops.rename_fcd.assert_not_called()
+        vops.register_disk.assert_not_called()
+        vops.relocate_fcd.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+        select_ds_fcd.assert_not_called()
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('wrong-fcd-id', warning_args)
+        self.assertIn('vm/vm.vmdk', warning_args)
+        self.assertIn('other/other.vmdk', warning_args)
+
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_register_failure_no_cleanup(
+            self, ds_sel, vops, select_ds_fcd):
+        """register_disk failure must not call delete_fcd or unregister."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        vops.register_disk.side_effect = vexc.VimException(
+            'RegisterDisk failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        vops.delete_fcd.assert_not_called()
+        select_ds_fcd.assert_not_called()
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_already_registered_requires_source_id(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """Already-registered VMDKs need source-id from Nova."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        vops.register_disk.side_effect = vexc.AlreadyExistsException(
+            'Already exists')
+
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        select_ds_fcd.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('source-id', warning_args)
+        self.assertIn('vm/vm.vmdk', warning_args)
+
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_relocate_failure_preserves_fcd(
+            self, ds_sel, vops, select_ds_fcd):
+        """relocate_fcd failure must not delete the registered FCD."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.provider_location.return_value = 'fcd-123@datastore-101'
+        fcd_loc.fcd_id = 'fcd-123'
+        vops.register_disk.return_value = fcd_loc
+
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-202'
+        select_ds_fcd.return_value = target_ds_ref
+
+        vops.relocate_fcd.side_effect = vexc.VimException('Relocate failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_ds_not_found_exception(
+            self, ds_sel, vops, select_ds_fcd):
+        """Backend exception from datastore lookup stays retryable."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[unknown_ds] vm/vm.vmdk', 'size_gb': 64}
+
+        ds_sel.get_ds_ref_by_name.side_effect = vexc.VimException(
+            'vCenter unavailable')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        vops.register_disk.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_ds_returns_none(
+            self, ds_sel, vops, select_ds_fcd):
+        """get_ds_ref_by_name returning None raises InvalidReference."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[gone_ds] vm/vm.vmdk', 'size_gb': 64}
+
+        ds_sel.get_ds_ref_by_name.return_value = None
+
+        self.assertRaises(
+            cinder_exceptions.ManageExistingInvalidReference,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        vops.register_disk.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_source_url_failure_logs_warning(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """Failure before RegisterDisk logs and marks volume error."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+        vops.get_dc.side_effect = vexc.VimException('dc lookup failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('vm/vm.vmdk', warning_args)
+        self.assertIn('dc lookup failed', warning_args)
+        vops.register_disk.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_select_ds_failure_after_register(
+            self, ds_sel, vops, select_ds_fcd):
+        """_select_ds_fcd failure after register must not cleanup FCD."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-888'
+        fcd_loc.provider_location.return_value = 'fcd-888@datastore-101'
+        vops.register_disk.return_value = fcd_loc
+
+        select_ds_fcd.side_effect = vexc.VimException(
+            'No suitable datastore')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        vops.register_disk.assert_called_once()
+        vops.delete_fcd.assert_not_called()
+        vops.relocate_fcd.assert_not_called()
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch('cinder.volume.drivers.vmware.fcd.vim_util.get_moref_value')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_moref_compare_failure_logs_warning(
+            self, ds_sel, vops, select_ds_fcd, get_moref_value, mock_log):
+        """Moref comparison failure after register logs and keeps FCD."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-333'
+        fcd_loc.provider_location.return_value = 'fcd-333@datastore-101'
+        vops.register_disk.return_value = fcd_loc
+
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-202'
+        select_ds_fcd.return_value = target_ds_ref
+        get_moref_value.side_effect = vexc.VimException('moref failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('error', volume.status)
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('fcd-333', warning_args)
+        self.assertIn('moref failed', warning_args)
+        vops.delete_fcd.assert_not_called()
+        vops.relocate_fcd.assert_not_called()
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER,
+                       '_provider_location_to_ds_name_location')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_post_relocate_provider_update_failure(
+            self, ds_sel, vops, select_ds_fcd, prov_loc_to_name, mock_log):
+        """Post-relocate provider update failure must log and preserve FCD."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-777'
+        fcd_loc.provider_location.return_value = 'fcd-777@datastore-101'
+        vops.register_disk.return_value = fcd_loc
+
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-202'
+        select_ds_fcd.return_value = target_ds_ref
+
+        prov_loc_to_name.side_effect = vexc.VimException(
+            'summary lookup failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        self.assertEqual('available', volume.status)
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('fcd-777', warning_args)
+        self.assertIn('datastore-202', warning_args)
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_register_failure_logs_warning(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """Register failure logs warning with source path and reason."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        vops.register_disk.side_effect = vexc.VimException(
+            'RegisterDisk failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('vm/vm.vmdk', warning_args)
+        self.assertIn('ds1', warning_args)
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_relocate_failure_logs_warning(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """Relocate failure logs warning with FCD ID, target, and reason."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.provider_location.return_value = 'fcd-123@datastore-101'
+        fcd_loc.fcd_id = 'fcd-123'
+        vops.register_disk.return_value = fcd_loc
+
+        target_ds_ref = mock.Mock()
+        target_ds_ref.value = 'datastore-202'
+        select_ds_fcd.return_value = target_ds_ref
+
+        vops.relocate_fcd.side_effect = vexc.VimException('Relocate failed')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('fcd-123', warning_args)
+        self.assertIn('datastore-202', warning_args)
+
+    @mock.patch('cinder.volume.drivers.vmware.fcd.LOG')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_fcd')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    @mock.patch.object(FCD_DRIVER, 'ds_sel')
+    def test_manage_existing_select_ds_failure_logs_warning(
+            self, ds_sel, vops, select_ds_fcd, mock_log):
+        """Target datastore selection failure logs warning with FCD ID."""
+        volume = self._create_volume_obj()
+        ref = {'source-name': '[ds1] vm/vm.vmdk', 'size_gb': 64}
+
+        src_ds_ref = mock.Mock()
+        src_ds_ref.value = 'datastore-101'
+        ds_sel.get_ds_ref_by_name.return_value = src_ds_ref
+
+        dc_ref = mock.Mock()
+        vops.get_dc.return_value = dc_ref
+        vops.get_inventory_path.return_value = '/dc1'
+
+        fcd_loc = mock.Mock()
+        fcd_loc.fcd_id = 'fcd-999'
+        fcd_loc.provider_location.return_value = 'fcd-999@datastore-101'
+        vops.register_disk.return_value = fcd_loc
+
+        select_ds_fcd.side_effect = vexc.VimException(
+            'No suitable datastore')
+
+        self.assertRaises(
+            vexc.VimException,
+            self._driver.manage_existing, volume, ref)
+
+        mock_log.warning.assert_called_once()
+        warning_args = str(mock_log.warning.call_args)
+        self.assertIn('fcd-999', warning_args)
+        self.assertIn('vm/vm.vmdk', warning_args)
