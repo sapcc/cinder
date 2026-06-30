@@ -543,6 +543,15 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         ds_ref = self.volumeops.get_datastore(backing)
         dc_ref = self.volumeops.get_dc(ds_ref)
         vmdk_path = self.volumeops.get_vmdk_path(backing)
+        device = self.volumeops.get_disk_device(backing, vmdk_path)
+        fcd_id_imp = None
+        if hasattr(device, 'vDiskId'):
+            fcd_id_imp = device.vDiskId.id
+            fcd_loc = vops.FcdLocation.from_provider_location("%s@%s" %
+                                                              (fcd_id_imp,
+                                                               ds_ref.value))
+            self.volumeops.rename_fcd(fcd_loc, ds_ref, volume.name)
+
         self._destroy_backing(backing)
         ds_path = datastore.DatastorePath.parse(vmdk_path)
         dc_path = self.volumeops.get_inventory_path(dc_ref)
@@ -550,9 +559,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         vmdk_url = datastore.DatastoreURL(
             'https', self.configuration.vmware_host_ip, ds_path.rel_path,
             dc_path, ds_path.datastore)
-
-        fcd_loc = self.volumeops.register_disk(
-            str(vmdk_url), volume.name, ds_ref)
+        if not fcd_id_imp:
+            fcd_loc = self.volumeops.register_disk(
+                str(vmdk_url), volume.name, ds_ref)
 
         profile_id = self._get_storage_profile_id(volume)
         if profile_id:
