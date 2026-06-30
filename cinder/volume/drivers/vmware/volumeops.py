@@ -2204,6 +2204,19 @@ class VMwareVolumeOps(object):
         size_mb = fcd_obj.config.capacityInMB
         return size_mb
 
+    def rename_fcd(self, fcd_loc, ds_ref, name):
+        cf = self._session.vim.client.factory
+        disk_id = fcd_loc.id(cf)
+        vstorage_mgr = self._session.vim.service_content.vStorageObjectManager
+        self._session.invoke_api(
+            self._session.vim,
+            'RenameVStorageObject',
+            vstorage_mgr,
+            id=disk_id,
+            datastore=ds_ref,
+            name=name)
+        return
+
     @volume_utils.trace
     def update_fcd_vmdk_uuid(self, ds_ref, vmdk_path, cinder_uuid):
         def cinder_uuid_to_vmwhex(cinder_uuid):
