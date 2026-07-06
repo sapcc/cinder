@@ -261,6 +261,7 @@ class RequestContext(context.RequestContext):
         policy = super(RequestContext, self).to_policy_values()
 
         policy['is_admin'] = self.is_admin
+        policy['service_roles'] = self.service_roles
 
         return policy
 
