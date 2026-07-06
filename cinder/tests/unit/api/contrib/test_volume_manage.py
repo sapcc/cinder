@@ -640,3 +640,127 @@ class VolumeManageTest(test.TestCase):
                          called_with['volume_type']['name'])
         self.assertEqual(default_vt['id'],
                          called_with['volume_type']['id'])
+
+    @mock.patch('cinder.volume.api.API.manage_existing', wraps=api_manage)
+    def test_manage_volume_service_token_bypasses_policy(self,
+                                                         mock_api_manage):
+        """A valid service token allows non-admin users to manage volumes.
+
+        When another service (e.g. Nova) calls manage_existing on behalf of a
+        user, the request carries a service token.  The manage policy
+        (admin-only) should be bypassed in this case, following the same
+        pattern as attachment_deletion_allowed.
+        """
+        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
+                                      is_admin=False)
+        ctxt.service_roles = ['service']
+
+        body = {'volume': {'host': 'host_ok',
+                           'ref': 'fake_ref'}}
+        req = webob.Request.blank('/v3/%s/os-volume-manage' % fake.PROJECT_ID)
+        req.method = 'POST'
+        req.headers['Content-Type'] = 'application/json'
+        req.environ['cinder.context'] = ctxt
+        req.headers["OpenStack-API-Version"] = "volume 3.11"
+        req.api_version_request = api_version.APIVersionRequest('3.11')
+        req.body = jsonutils.dump_as_bytes(body)
+        res = req.get_response(app())
+        self.assertEqual(HTTPStatus.ACCEPTED, res.status_int)
+        self.assertEqual(1, mock_api_manage.call_count)
+
+    def test_manage_volume_non_admin_without_service_token_rejected(self):
+        """Non-admin users without a service token are still rejected.
+
+        The admin-only policy must still be enforced when there is no service
+        token on the request.
+        """
+        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
+                                      is_admin=False)
+        # No service_roles set (or empty)
+        ctxt.service_roles = []
+
+        body = {'volume': {'host': 'host_ok',
+                           'ref': 'fake_ref'}}
+        req = webob.Request.blank('/v3/%s/os-volume-manage' % fake.PROJECT_ID)
+        req.method = 'POST'
+        req.headers['Content-Type'] = 'application/json'
+        req.environ['cinder.context'] = ctxt
+        req.headers["OpenStack-API-Version"] = "volume 3.11"
+        req.api_version_request = api_version.APIVersionRequest('3.11')
+        req.body = jsonutils.dump_as_bytes(body)
+        res = req.get_response(app())
+        self.assertEqual(HTTPStatus.FORBIDDEN, res.status_int)
+
+    @mock.patch('cinder.volume.api.API.manage_existing', wraps=api_manage)
+    def test_manage_volume_admin_without_service_token_still_works(
+            self, mock_api_manage):
+        """Admin users can still manage volumes without a service token.
+
+        The existing admin path must remain unchanged.
+        """
+        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
+                                      is_admin=True)
+
+        body = {'volume': {'host': 'host_ok',
+                           'ref': 'fake_ref'}}
+        req = webob.Request.blank('/v3/%s/os-volume-manage' % fake.PROJECT_ID)
+        req.method = 'POST'
+        req.headers['Content-Type'] = 'application/json'
+        req.environ['cinder.context'] = ctxt
+        req.headers["OpenStack-API-Version"] = "volume 3.11"
+        req.api_version_request = api_version.APIVersionRequest('3.11')
+        req.body = jsonutils.dump_as_bytes(body)
+        res = req.get_response(app())
+        self.assertEqual(HTTPStatus.ACCEPTED, res.status_int)
+        self.assertEqual(1, mock_api_manage.call_count)
+
+    @mock.patch('cinder.volume.api.API.manage_existing', wraps=api_manage)
+    def test_manage_volume_custom_service_role(self, mock_api_manage):
+        """Custom service_token_roles config is respected.
+
+        If the operator configures a custom role name for service tokens,
+        the manage API should accept requests with that role.
+        """
+        self.override_config('service_token_roles',
+                             ['service', 'nova_service'],
+                             group='keystone_authtoken')
+
+        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
+                                      is_admin=False)
+        ctxt.service_roles = ['nova_service']
+
+        body = {'volume': {'host': 'host_ok',
+                           'ref': 'fake_ref'}}
+        req = webob.Request.blank('/v3/%s/os-volume-manage' % fake.PROJECT_ID)
+        req.method = 'POST'
+        req.headers['Content-Type'] = 'application/json'
+        req.environ['cinder.context'] = ctxt
+        req.headers["OpenStack-API-Version"] = "volume 3.11"
+        req.api_version_request = api_version.APIVersionRequest('3.11')
+        req.body = jsonutils.dump_as_bytes(body)
+        res = req.get_response(app())
+        self.assertEqual(HTTPStatus.ACCEPTED, res.status_int)
+        self.assertEqual(1, mock_api_manage.call_count)
+
+    def test_manage_volume_unconfigured_service_role_rejected(self):
+        """A service token with an unconfigured role is still rejected.
+
+        Only roles listed in [keystone_authtoken]/service_token_roles
+        should be accepted.  An arbitrary role on the service token does
+        not grant manage access.
+        """
+        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
+                                      is_admin=False)
+        ctxt.service_roles = ['not_a_configured_service_role']
+
+        body = {'volume': {'host': 'host_ok',
+                           'ref': 'fake_ref'}}
+        req = webob.Request.blank('/v3/%s/os-volume-manage' % fake.PROJECT_ID)
+        req.method = 'POST'
+        req.headers['Content-Type'] = 'application/json'
+        req.environ['cinder.context'] = ctxt
+        req.headers["OpenStack-API-Version"] = "volume 3.11"
+        req.api_version_request = api_version.APIVersionRequest('3.11')
+        req.body = jsonutils.dump_as_bytes(body)
+        res = req.get_response(app())
+        self.assertEqual(HTTPStatus.FORBIDDEN, res.status_int)
