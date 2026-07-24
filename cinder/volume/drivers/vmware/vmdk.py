@@ -2092,7 +2092,20 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 context, volume, image_service, image_id, metadata)
 
         if img_backing:
-            self._create_volume_from_cached_image(volume, img_backing)
+            try:
+                self._create_volume_from_cached_image(volume, img_backing)
+            except exceptions.VimFaultException as e:
+                LOG.warning("Failed to clone from cached image backing for "
+                            "image %(image_id)s: %(error)s. Deleting stale "
+                            "cache entry and retrying without cache.",
+                            {'image_id': image_id, 'error': e})
+                try:
+                    self.volumeops.delete_backing(img_backing)
+                except exceptions.VimException:
+                    LOG.warning("Failed to delete stale cached image "
+                                "backing for image %s.", image_id)
+                self._do_copy_image_to_volume(
+                    context, volume, image_service, image_id, metadata)
         else:
             self._do_copy_image_to_volume(
                 context, volume, image_service, image_id, metadata)
