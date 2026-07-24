@@ -952,6 +952,105 @@ class VMwareVcVmdkDriverTestCase(test.TestCase):
                 mock.sentinel.context, volume,
                 image_service, self.IMAGE_ID, image_meta)
 
+    @mock.patch.object(VMDK_DRIVER, '_do_copy_image_to_volume')
+    @mock.patch.object(VMDK_DRIVER, 'volumeops')
+    @mock.patch.object(VMDK_DRIVER, '_extend_backing')
+    @mock.patch.object(VMDK_DRIVER, '_create_volume_from_cached_image')
+    @mock.patch.object(VMDK_DRIVER,
+                       '_get_or_create_cached_image_backing')
+    def test_copy_image_to_volume_stale_cache_fallback(
+            self, mock_get_cached_backing, mock_create_from_cached,
+            mock_extend_backing, mock_volumeops, mock_do_copy_image):
+        """Test fallback when cached image backing has missing files."""
+        self._config.enable_image_cache = True
+        self._config.image_cache_max_size_gb = 2
+
+        volume = self._create_volume_dict()
+        volume['metadata']['use_image_cache'] = 'true'
+
+        backing = mock.sentinel.backing
+        mock_volumeops.get_backing.return_value = backing
+        mock_volumeops.get_disk_size.return_value = self.VOL_SIZE * units.Gi
+
+        # Simulate finding a cached backing
+        cached_backing = mock.sentinel.cached_backing
+        mock_get_cached_backing.return_value = cached_backing
+
+        # Simulate VimFaultException when cloning from stale cache
+        mock_create_from_cached.side_effect = exceptions.VimFaultException(
+            ['CannotAccessVmConfig'],
+            'Unable to access the virtual machine configuration: '
+            'Unable to access file [datastore] image_id/image_id.vmtx')
+
+        image_service = mock.Mock()
+        image_meta = self._create_image_meta(
+            size=1 * units.Gi)
+        image_service.show.return_value = image_meta
+
+        self._driver.copy_image_to_volume(
+            mock.sentinel.context, volume, image_service, self.IMAGE_ID)
+
+        # Should have tried the cache first
+        mock_get_cached_backing.assert_called_once_with(
+            mock.sentinel.context, volume,
+            image_service, self.IMAGE_ID, image_meta)
+        mock_create_from_cached.assert_called_once_with(
+            volume, cached_backing)
+
+        # Should have attempted to delete the stale cache entry
+        mock_volumeops.delete_backing.assert_called_once_with(cached_backing)
+
+        # Should have fallen back to direct image copy
+        mock_do_copy_image.assert_called_once_with(
+            mock.sentinel.context, volume,
+            image_service, self.IMAGE_ID, image_meta)
+
+    @mock.patch.object(VMDK_DRIVER, '_do_copy_image_to_volume')
+    @mock.patch.object(VMDK_DRIVER, 'volumeops')
+    @mock.patch.object(VMDK_DRIVER, '_extend_backing')
+    @mock.patch.object(VMDK_DRIVER, '_create_volume_from_cached_image')
+    @mock.patch.object(VMDK_DRIVER,
+                       '_get_or_create_cached_image_backing')
+    def test_copy_image_to_volume_stale_cache_delete_fails(
+            self, mock_get_cached_backing, mock_create_from_cached,
+            mock_extend_backing, mock_volumeops, mock_do_copy_image):
+        """Test fallback works even when stale cache deletion fails."""
+        self._config.enable_image_cache = True
+        self._config.image_cache_max_size_gb = 2
+
+        volume = self._create_volume_dict()
+        volume['metadata']['use_image_cache'] = 'true'
+
+        backing = mock.sentinel.backing
+        mock_volumeops.get_backing.return_value = backing
+        mock_volumeops.get_disk_size.return_value = self.VOL_SIZE * units.Gi
+
+        cached_backing = mock.sentinel.cached_backing
+        mock_get_cached_backing.return_value = cached_backing
+
+        # Clone fails with VimFaultException
+        mock_create_from_cached.side_effect = exceptions.VimFaultException(
+            ['CannotAccessVmConfig'],
+            'Unable to access file [ds] img/img.vmtx')
+
+        # Deletion of stale cache also fails
+        mock_volumeops.delete_backing.side_effect = \
+            exceptions.VimException('Cannot delete')
+
+        image_service = mock.Mock()
+        image_meta = self._create_image_meta(
+            size=1 * units.Gi)
+        image_service.show.return_value = image_meta
+
+        # Should still succeed via fallback despite delete failure
+        self._driver.copy_image_to_volume(
+            mock.sentinel.context, volume, image_service, self.IMAGE_ID)
+
+        # Should have fallen back to direct image copy
+        mock_do_copy_image.assert_called_once_with(
+            mock.sentinel.context, volume,
+            image_service, self.IMAGE_ID, image_meta)
+
     @mock.patch('cinder.volume.drivers.vmware.vmdk.VMwareVcVmdkDriver.'
                 '_get_disk_type')
     @mock.patch.object(VMDK_DRIVER, '_check_disk_conversion')
