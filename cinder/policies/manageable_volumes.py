@@ -41,7 +41,7 @@ manageable_volumes_policies = [
         ]),
     policy.DocumentedRuleDefault(
         name=MANAGE_POLICY,
-        check_str=base.RULE_ADMIN_API,
+        check_str=base.RULE_ADMIN_OR_SERVICE_API,
         description="Manage existing volumes.",
         operations=[
             {
