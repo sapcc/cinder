@@ -282,6 +282,7 @@ def list_opts():
                 cinder_scheduler_weights_volumenumber.
                 volume_number_weight_opts,
                 cinder_service.service_opts,
+                cinder_service.os_service_options.service_opts,
                 cinder_sshutils.ssh_opts,
                 cinder_transfer_api.volume_transfer_opts,
                 [cinder_volume_api.allow_force_upload_opt],

@@ -114,6 +114,14 @@ class AdminActionsTest(BaseAdminTest):
 
     def tearDown(self):
         self.svc.stop()
+        # Deregister RPC endpoints from fake transport so subsequent
+        # tests don't dispatch to this (now draining) service instance.
+        if self.svc.rpcserver:
+            self.svc.rpcserver.stop()
+            self.svc.rpcserver.wait()
+        if self.svc.backend_rpcserver:
+            self.svc.backend_rpcserver.stop()
+            self.svc.backend_rpcserver.wait()
         super(AdminActionsTest, self).tearDown()
 
     def _issue_resource_reset(self, ctx, name, id, status):
@@ -1042,6 +1050,14 @@ class AdminActionsAttachDetachTest(BaseAdminTest):
 
     def tearDown(self):
         self.svc.stop()
+        # Deregister RPC endpoints from fake transport so subsequent
+        # tests don't dispatch to this (now draining) service instance.
+        if self.svc.rpcserver:
+            self.svc.rpcserver.stop()
+            self.svc.rpcserver.wait()
+        if self.svc.backend_rpcserver:
+            self.svc.backend_rpcserver.stop()
+            self.svc.backend_rpcserver.wait()
         super(AdminActionsAttachDetachTest, self).tearDown()
 
     def test_force_detach_instance_attached_volume(self):
