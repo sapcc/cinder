@@ -2932,13 +2932,20 @@ class VolumeManager(manager.CleanableManager,
                  resource=volume)
         return volume.id
 
-    def _sap_can_use_driver_migration(self, diff, force_host_copy):
+    def _sap_can_use_driver_migration(
+            self, diff, force_host_copy, new_type_id=None):
         # Hack to allow migration to a different host if the storage
         # protocol is vmdk -> vstorageobject.
         # We know the vmdk driver can migrate to an fcd.
-        if diff and not force_host_copy:
-            # now check to see if the storage protocols between
-            # source and destination can tolerate the migration.
+        if force_host_copy:
+            return False
+        if not diff and not new_type_id:
+            # No retype — plain relocation (e.g. migrate_volume_by_connector).
+            # Allow driver-assisted migration regardless of attachments;
+            # the FCD driver handles reserved/in-use volumes natively.
+            return True
+        if diff:
+            # Retype case: check if storage protocols allow migration.
             extra_specs = diff.get('extra_specs', {})
             (src_protocol, dest_protocol) = extra_specs.get(
                 'storage_protocol', (None, None))
@@ -3000,7 +3007,8 @@ class VolumeManager(manager.CleanableManager,
         # Do not attempt driver assisted migration when the volume has
         # attachments. Nova must be involved when migrating an attached
         # volume, and that's handled by the generic migration code.
-        if self._sap_can_use_driver_migration(diff, force_host_copy) or \
+        if self._sap_can_use_driver_migration(diff, force_host_copy,
+                                              new_type_id) or \
                 (len(volume.volume_attachment) == 0 and
                  not force_host_copy and
                  self._can_use_driver_migration(diff)):
