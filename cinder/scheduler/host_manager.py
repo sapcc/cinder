@@ -251,6 +251,25 @@ class BackendState(object):
                 cur_pool.update_from_volume_capability(pool_cap, service)
 
                 active_pools.add(pool_name)
+        elif isinstance(pools, list) and len(pools) == 0:
+            # Driver supports pools but reported none (e.g. vCenter
+            # connectivity issue). Preserve existing pools but mark
+            # them down so the scheduler won't place volumes on them.
+            # Without this branch, an empty list [] evaluates to False
+            # and skips the first branch, but is not None so skips
+            # the legacy branch too -- leaving active_pools empty and
+            # wiping all cached pools. On the next stats report, if
+            # pools is still empty or None, the legacy path creates a
+            # single synthetic pool named after volume_backend_name
+            # (e.g. #vmware). Volumes scheduled to this synthetic
+            # pool can never be created because it does not correspond
+            # to any real datastore.
+            LOG.warning("Backend %(host)s reported an empty pools list. "
+                        "Marking all pools as down.",
+                        {'host': self.host})
+            for pool_name, pool in self.pools.items():
+                pool.pool_state = 'down'
+                active_pools.add(pool_name)
         elif pools is None:
             # To handle legacy driver that doesn't report pool
             # information in the capability, we have to prepare
