@@ -3654,15 +3654,26 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 context.get_admin_context())
         return self._all_pools_cache
 
+    @volume_utils.trace
     def get_netapp_cinder_host(self, netapp_fqdn):
         # Example netapp host cinder-volume-netapp-b-0@stnpca2_st051_nfs
         # Example vmware host cinder-volume-vmware-vc-b-0@vmware_fcd
-        pools = [pool for pool in self._get_all_pools()
+        sched_pools = self._get_all_pools()
+        if not sched_pools:
+            LOG.error("No pools found in scheduler.")
+            return None
+
+        pools = [pool for pool in sched_pools
                  if pool['capabilities'].get('netapp_server_hostname')
                  == netapp_fqdn]
 
         if not pools:
+            LOG.warning("No pools found for netapp server %s.", netapp_fqdn)
+            LOG.debug("Available pools: %s",
+                      [p['name'] for p in sched_pools])
             return None
+
+        LOG.debug("Found pools for netapp server %s: %s.", netapp_fqdn, pools)
 
         return volume_utils.extract_host(pools[0]['name'], 'backend')
 
