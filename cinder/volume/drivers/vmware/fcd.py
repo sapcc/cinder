@@ -444,10 +444,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 # still contains the old size, so to refresh geometry we call
                 # VslmExtendDisk_Task to fix it
                 fcd_loc = vops.FcdLocation.from_provider_location(
-                            self._provider_location_to_moref_location(
-                                volume.provider_location
-                            )
-                        )
+                    self._provider_location_to_moref_location(
+                        volume.provider_location
+                    )
+                )
                 self.volumeops.extend_fcd(fcd_loc, volume.size * units.Ki)
             except Exception:
                 pass
