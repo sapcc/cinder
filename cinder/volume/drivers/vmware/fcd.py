@@ -438,6 +438,14 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
     @volume_utils.trace
     def terminate_connection(self, volume, connector, force=False, **kwargs):
+        if (connector and ('connection_capabilities' not in connector)):
+            try:
+                # If the volume was extended on KVM host, the VMware VMDK file
+                # still contains the old size, so to refresh geometry we call
+                # VslmExtendDisk_Task to fix it
+                self.extend_volume(volume, volume.size)
+            except Exception:
+                pass
         # Checking if the connection was used to restore from a backup. In
         # that case, the VMDK connector in os-brick created a new backing
         # which will replace the initial one. Here we set the proper name
