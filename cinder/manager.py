@@ -51,6 +51,9 @@ This module provides Manager, a base class for managers.
 
 """
 
+import threading
+from typing import Callable
+
 from eventlet import greenpool
 from eventlet import tpool
 from oslo_config import cfg
@@ -161,12 +164,85 @@ class Manager(base.Base, PeriodicTasks):
 
 
 class ThreadPoolManager(Manager):
+    """Manager class that provides a managed thread pool.
+
+    Tasks spawned via _add_to_threadpool() will be waited on during
+    graceful shutdown, ensuring in-flight operations complete before
+    the service terminates.
+
+    This implementation uses native Python threads via ThreadPoolExecutor
+    instead of eventlet green threads, as eventlet is being deprecated
+    and will be removed in a future OpenStack release.
+    """
+
+    # Maximum number of worker threads for async operations
+    # This replaces the eventlet GreenPool which had unlimited concurrency
+    DEFAULT_THREADPOOL_SIZE = 10
+
     def __init__(self, *args, **kwargs):
+        # Use eventlet GreenPool for async task dispatch. Green threads
+        # are cooperative (same OS process/thread) so they don't block
+        # process exit and don't require thread-safe DB access patterns.
+        # The graceful shutdown drain (pool.waitall in Service._drain_pool)
+        # waits for all spawned greenthreads to complete.
         self._tp = greenpool.GreenPool()
+        self._shutdown_event = threading.Event()
         super(ThreadPoolManager, self).__init__(*args, **kwargs)
 
-    def _add_to_threadpool(self, func, *args, **kwargs):
+    @staticmethod
+    def _set_thread_daemon():
+        pass  # Not used with GreenPool, kept for interface compatibility
+
+    def _add_to_threadpool(self, func: Callable, *args, **kwargs):
+        """Spawn a task in the green thread pool.
+
+        Tasks spawned here will be waited on during graceful shutdown
+        via pool.waitall() in Service._drain_pool().
+
+        :param func: The function to execute
+        :param args: Positional arguments to pass to the function
+        :param kwargs: Keyword arguments to pass to the function
+        :returns: True if spawned, None if rejected (shutdown in progress)
+        """
+        if self._shutdown_event.is_set():
+            LOG.warning(
+                "Rejecting threadpool task during shutdown: %s",
+                func.__name__)
+            return None
+
         self._tp.spawn_n(func, *args, **kwargs)
+        return True
+
+    def signal_shutdown(self) -> None:
+        """Signal that shutdown is in progress.
+
+        After this is called, new tasks submitted via _add_to_threadpool()
+        will be rejected. Existing tasks will continue to run.
+        """
+        LOG.info("Shutdown signaled, rejecting new threadpool tasks")
+        self._shutdown_event.set()
+
+    def cleanup_threadpool(self) -> None:
+        """Cleanup the green thread pool and prepare for potential restart.
+
+        Should be called during service shutdown after pool.waitall() has
+        drained in-flight RPC handlers. Waits for any remaining spawned
+        greenthreads and resets the pool.
+
+        After cleanup, a fresh pool is created so the manager is ready
+        for reuse if the service is restarted (e.g., oslo.service
+        ProcessLauncher with restart_method='mutate' will fork a new child
+        that inherits this object and calls start() again).
+        """
+        LOG.info("Waiting for green thread pool to drain")
+        self._tp.waitall()
+        LOG.info("Green thread pool drained")
+
+        # Re-create the pool and reset shutdown state so the manager
+        # is ready if the service is restarted.
+        self._tp = greenpool.GreenPool()
+        self._shutdown_event.clear()
+        LOG.info("Green thread pool re-initialized for potential restart")
 
 
 class SchedulerDependentManager(ThreadPoolManager):
@@ -199,8 +275,7 @@ class SchedulerDependentManager(ThreadPoolManager):
     def _publish_service_capabilities(self, context):
         """Pass data back to the scheduler at a periodic interval."""
         if self.last_capabilities:
-            LOG.debug('Notifying Schedulers of capabilities for %(host)s...',
-                      {'host': self.host})
+            LOG.debug('Notifying Schedulers of capabilities ...')
             self.scheduler_rpcapi.update_service_capabilities(
                 context,
                 self.service_name,
@@ -230,7 +305,8 @@ class SchedulerDependentManager(ThreadPoolManager):
 class CleanableManager(object):
     def do_cleanup(self,
                    context: context.RequestContext,
-                   cleanup_request: objects.CleanupRequest) -> None:
+                   cleanup_request: objects.CleanupRequest,
+                   skip_fresh: bool = False) -> None:
         LOG.info('Initiating service %s cleanup',
                  cleanup_request.service_id)
 
@@ -247,6 +323,19 @@ class CleanableManager(object):
             until=until)
 
         for clean in to_clean:
+            # Skip worker entries that are being actively heartbeated.
+            # During graceful shutdown, the set_workers decorator keeps
+            # touching updated_at every 10s. If the entry is fresh
+            # (< service_down_time), the operation is still in progress
+            # on the draining pod — don't reset it.
+            # Only applied during init_host startup (skip_fresh=True) to
+            # avoid interfering with a draining pod's in-flight operations.
+            if skip_fresh:
+                age = (timeutils.utcnow()
+                       - clean.updated_at).total_seconds()
+                if age < CONF.service_down_time:
+                    continue
+
             original_service_id = clean.service_id
             original_time = clean.updated_at
             # Try to do a soft delete to mark the entry as being cleaned up
@@ -320,4 +409,4 @@ class CleanableManager(object):
         ctxt = context.get_admin_context()
         self.service_id = service_id
         cleanup_request = objects.CleanupRequest(service_id=service_id)
-        self.do_cleanup(ctxt, cleanup_request)
+        self.do_cleanup(ctxt, cleanup_request, skip_fresh=True)
