@@ -27,6 +27,7 @@ from oslo_utils import units
 from cinder import context
 from cinder import exception
 from cinder.objects import fields
+from cinder.image import image_utils
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import test
@@ -550,11 +551,125 @@ class NetAppNfsDriverTestCase(test.TestCase):
         self.assertRaises(NotImplementedError,
                           self.driver._update_volume_stats)
 
+    @mock.patch.object(image_utils, 'resize_image')
+    @mock.patch.object(image_utils, 'qemu_img_info')
+    @mock.patch.object(image_utils, 'fetch_to_raw')
+    def test_copy_image_to_volume_cache_uses_image_size(
+            self,
+            mock_fetch_to_raw,
+            mock_qemu_img_info,
+            mock_resize_image):
+
+        volume = fake_volume.fake_volume_obj(
+            self.ctxt,
+            id=fake.VOLUME_ID,
+            size=10,
+            host='fake-host')
+
+        image_id = 'image-1'
+        image_size = 10 * units.Gi
+
+        mock_qemu_img_info.return_value.virtual_size = image_size
+
+        self.mock_object(
+            self.driver,
+            '_is_flexgroup',
+            return_value=False)
+
+        mock_register = self.mock_object(
+            self.driver,
+            '_register_image_in_cache')
+
+        self.mock_object(
+            self.driver,
+            'local_path',
+            return_value=f'/tmp/{volume.id}')
+
+        self.driver.copy_image_to_volume(
+            mock.sentinel.context,
+            volume,
+            mock.sentinel.image_service,
+            image_id)
+
+        mock_fetch_to_raw.assert_called_once_with(
+            mock.sentinel.context,
+            mock.sentinel.image_service,
+            image_id,
+            f'/tmp/{volume.id}',
+            self.driver.configuration.volume_dd_blocksize,
+            size=volume.size,
+            run_as_root=self.driver._execute_as_root,
+            disable_sparse=False)
+
+        mock_qemu_img_info.assert_called_once_with(
+            f'/tmp/{volume.id}',
+            run_as_root=self.driver._execute_as_root)
+
+        mock_resize_image.assert_called_once_with(
+            f'/tmp/{volume.id}',
+            image_size,
+            run_as_root=self.driver._execute_as_root)
+
+        mock_register.assert_called_once_with(
+            volume, image_id)
+
+    @mock.patch.object(image_utils, 'resize_image')
+    @mock.patch.object(image_utils, 'qemu_img_info')
+    @mock.patch.object(image_utils, 'fetch_to_raw')
+    def test_copy_image_to_volume_image_size_mismatch(
+            self,
+            mock_fetch_to_raw,
+            mock_qemu_img_info,
+            mock_resize_image):
+
+        volume = fake_volume.fake_volume_obj(
+            self.ctxt,
+            id=fake.VOLUME_ID,
+            size=30,
+            host='fake-host')
+
+        image_id = 'image-1'
+
+        self.mock_object(
+            self.driver,
+            '_is_flexgroup',
+            return_value=False)
+
+        mock_register = self.mock_object(
+            self.driver,
+            '_register_image_in_cache')
+
+        self.mock_object(
+            self.driver,
+            'local_path',
+            return_value=f'/tmp/{volume.id}')
+
+        mock_qemu_img_info.return_value.virtual_size = 10 * units.Gi
+
+        self.assertRaises(
+            exception.ImageUnacceptable,
+            self.driver.copy_image_to_volume,
+            mock.sentinel.context,
+            volume,
+            mock.sentinel.image_service,
+            image_id)
+
+        mock_fetch_to_raw.assert_called_once()
+        mock_qemu_img_info.assert_called_once_with(
+            f'/tmp/{volume.id}',
+            run_as_root=self.driver._execute_as_root)
+        mock_resize_image.assert_called_once_with(
+            f'/tmp/{volume.id}',
+            10 * units.Gi,
+            run_as_root=self.driver._execute_as_root)
+
+        mock_register.assert_not_called()
+
     def test_copy_image_to_volume_base_exception(self):
         mock_info_log = self.mock_object(nfs_base.LOG, 'info')
         self.mock_object(self.driver, '_ensure_flexgroup_not_in_cg')
-        self.mock_object(remotefs.RemoteFSDriver, 'copy_image_to_volume',
-                         side_effect=exception.NfsException)
+        self.mock_object(self.driver, 'local_path',
+                 mock.Mock(side_effect=exception.NfsException))
 
         self.assertRaises(exception.NfsException,
                           self.driver.copy_image_to_volume,
@@ -562,29 +677,43 @@ class NetAppNfsDriverTestCase(test.TestCase):
                           'fake_img_service', fake.IMAGE_FILE_ID)
         mock_info_log.assert_not_called()
 
-    def test_copy_image_to_volume(self):
+    @mock.patch.object(image_utils, 'resize_image')
+    @mock.patch.object(image_utils, 'qemu_img_info')
+    @mock.patch.object(image_utils, 'fetch_to_raw')
+    def test_copy_image_to_volume(self,
+                                  mock_fetch_to_raw,
+                                  mock_qemu_img_info,
+                                  mock_resize_image):
+        volume = fake_volume.fake_volume_obj(self.ctxt, **fake.NFS_VOLUME)
+        mock_qemu_img_info.return_value.virtual_size = (
+            volume.size * units.Gi)
+        
         mock_log = self.mock_object(nfs_base, 'LOG')
         self.mock_object(self.driver, '_is_flexgroup',
                          return_value=False)
         self.mock_object(self.driver, '_is_flexgroup_clone_file_supported',
                          return_value=True)
         self.mock_object(self.driver, '_ensure_flexgroup_not_in_cg')
-        mock_copy_image = self.mock_object(
-            remotefs.RemoteFSDriver, 'copy_image_to_volume')
+        mock_local_path = self.mock_object(self.driver, 'local_path')
         mock_register_image = self.mock_object(
             self.driver, '_register_image_in_cache')
 
+        image_service = mock.Mock()
+        image_service.show.return_value = {
+            'disk_format': 'raw',
+            'container_format': 'bare',
+        }
         self.driver.copy_image_to_volume('fake_context',
-                                         fake.NFS_VOLUME,
-                                         'fake_img_service',
+                                         volume,
+                                         image_service,
                                          fake.IMAGE_FILE_ID)
 
-        mock_copy_image.assert_called_once_with(
-            'fake_context', fake.NFS_VOLUME, 'fake_img_service',
-            fake.IMAGE_FILE_ID, disable_sparse=False)
+        self.assertEqual(1, mock_fetch_to_raw.call_count)
+        self.assertEqual(1, mock_qemu_img_info.call_count)
+        self.assertEqual(1, mock_resize_image.call_count)
         self.assertEqual(1, mock_log.info.call_count)
         mock_register_image.assert_called_once_with(
-            fake.NFS_VOLUME, fake.IMAGE_FILE_ID)
+            volume, fake.IMAGE_FILE_ID)
 
     @ddt.data(None, Exception)
     def test__register_image_in_cache(self, exc):
