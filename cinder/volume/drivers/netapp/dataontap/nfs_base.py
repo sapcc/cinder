@@ -511,9 +511,30 @@ class NetAppNfsDriver(driver.ManageableVD,
                              disable_sparse=False):
         """Fetch the image from image_service and write it to the volume."""
         self._ensure_flexgroup_not_in_cg(volume)
-        super(NetAppNfsDriver, self).copy_image_to_volume(
-            context, volume, image_service, image_id,
-            disable_sparse=disable_sparse)
+        # next lines are modified behaviour for cinder/volume/drivers/remotefs.py +530
+        image_utils.fetch_to_raw(context,
+                                 image_service,
+                                 image_id,
+                                 self.local_path(volume),
+                                 self.configuration.volume_dd_blocksize,
+                                 size=volume.size,
+                                 run_as_root=self._execute_as_root,
+                                 disable_sparse=disable_sparse)
+
+        data = image_utils.qemu_img_info(self.local_path(volume),
+                                         run_as_root=self._execute_as_root)
+        virt_size = data.virtual_size // units.Gi
+
+        image_utils.resize_image(self.local_path(volume), virt_size,
+                                 run_as_root=self._execute_as_root)
+
+        if virt_size != volume.size:
+            raise exception.ImageUnacceptable(
+                image_id=image_id,
+                reason=(_("Expected volume size was %d") % volume.size)
+                + (_(" but size is now %d") % virt_size))
+        # end of cinder/volume/drivers/remotefs.py +530
+
         LOG.info('Copied image to volume %s using regular download.',
                  volume['id'])
 

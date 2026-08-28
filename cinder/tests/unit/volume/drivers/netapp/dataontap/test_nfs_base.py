@@ -550,6 +550,38 @@ class NetAppNfsDriverTestCase(test.TestCase):
         self.assertRaises(NotImplementedError,
                           self.driver._update_volume_stats)
 
+    @mock.patch.object(image_utils, 'resize_image')
+    @mock.patch.object(image_utils, 'qemu_img_info')
+    @mock.patch.object(image_utils, 'fetch_to_raw')
+    def test_copy_image_to_volume_cache_uses_image_size(
+            self,
+            mock_fetch_to_raw,
+            mock_qemu_img_info,
+            mock_resize_image):
+
+        volume = fake.CinderVolume(
+            id='vol-1',
+            size=10,  # volume size must match image size to pass validation
+            host='fake-host'
+        )
+
+        image_id = 'image-1'
+
+        mock_qemu_img_info.return_value.virtual_size = 10 * units.Gi
+
+        self._driver._is_flexgroup = mock.Mock(return_value=False)
+        self._driver._register_image_in_cache = mock.Mock()
+
+        self._driver.copy_image_to_volume(
+            mock.sentinel.context,
+            volume,
+            mock.sentinel.image_service,
+            image_id
+        )
+
+        self._driver._register_image_in_cache.assert_called_once_with(
+            volume, image_id)
+
     def test_copy_image_to_volume_base_exception(self):
         mock_info_log = self.mock_object(nfs_base.LOG, 'info')
         self.mock_object(self.driver, '_ensure_flexgroup_not_in_cg')
