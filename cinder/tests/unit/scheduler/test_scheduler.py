@@ -756,7 +756,7 @@ class SchedulerManagerTestCase(test.TestCase):
     @mock.patch('cinder.scheduler.driver.Scheduler.find_backend_for_connector')
     def test_find_backend_for_connector(self, _mock_find_backend_for_conector):
         connector = mock.Mock()
-        request_spec = mock.Mock()
+        request_spec = {}
         volume_size = mock.Mock()
         backend_ret = mock.Mock(host='fake-host',
                                 cluster_name='fake-cluster', capabilities=[])
@@ -771,6 +771,30 @@ class SchedulerManagerTestCase(test.TestCase):
             'cluster_name': backend_ret.cluster_name,
             'capabilities': backend_ret.capabilities
         })
+
+    @mock.patch('cinder.scheduler.driver.Scheduler.find_backend_for_connector')
+    def test_find_backend_for_connector_sets_source_aggregate_id(
+            self, _mock_find_backend_for_connector):
+        volume = fake_volume.fake_volume_obj(
+            self.context, host='vc-a-0@vmware_fcd#pool_A')
+        pool_state = mock.Mock(capabilities={'aggregate_id': 'agg_123'})
+        backend_state = mock.Mock(pools={'pool_A': pool_state})
+        self.manager.driver.host_manager.backend_state_map = {
+            'vc-a-0@vmware_fcd': backend_state}
+        backend = mock.Mock(host='fake-host', cluster_name=None,
+                            capabilities={})
+        _mock_find_backend_for_connector.return_value = backend
+        connector = mock.Mock()
+        request_spec = {'volume_properties': volume}
+        filter_properties = {}
+
+        self.manager.find_backend_for_connector(
+            self.context, connector, request_spec, 1, filter_properties)
+
+        self.assertEqual('agg_123',
+                         filter_properties.get('source_aggregate_id'))
+        _mock_find_backend_for_connector.assert_called_once_with(
+            self.context, connector, request_spec, filter_properties)
 
 
 class SchedulerTestCase(test.TestCase):
