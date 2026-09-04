@@ -447,6 +447,9 @@ class SchedulerManager(manager.CleanableManager, manager.Manager):
     def find_backend_for_connector(self, context, connector, request_spec,
                                    volume_size, filter_properties=None):
         self._wait_for_scheduler()
+        volume = request_spec.get('volume_properties')
+        if volume:
+            self._set_source_aggregate_id(volume, filter_properties)
         backend = self.driver.find_backend_for_connector(context,
                                                          connector,
                                                          request_spec,

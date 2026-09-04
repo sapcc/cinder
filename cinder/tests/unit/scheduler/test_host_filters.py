@@ -594,7 +594,9 @@ class CapacityFilterTestCase(BackendFiltersTestCase):
                                        'service': service})
         self.assertTrue(filt_cls.backend_passes(host, filter_properties))
 
-    def test_filter_passes_same_aggregate_migration(self, _mock_serv_is_up):
+    @ddt.data('migrate_volume', 'find_backend_for_connector')
+    def test_filter_passes_same_aggregate_migration(
+            self, _mock_serv_is_up, operation):
         """Cross-vcenter migration with same aggregate_id should pass.
 
         When migrating a volume between vcenters where both pools share the
@@ -609,7 +611,7 @@ class CapacityFilterTestCase(BackendFiltersTestCase):
             'size': 2048,
             'request_spec': {
                 'volume_id': fake.VOLUME_ID,
-                'operation': 'migrate_volume',
+                'operation': operation,
                 'volume_properties': {
                     'host': 'vc-a-0@vmware_fcd#pool_A',
                 },
@@ -654,7 +656,29 @@ class CapacityFilterTestCase(BackendFiltersTestCase):
                                        'updated_at': None,
                                        'service': service,
                                        'capabilities': {
-                                           'aggregate_id': 'agg_456'}})
+                                        'aggregate_id': 'agg_456'}})
+        self.assertFalse(filt_cls.backend_passes(host, filter_properties))
+
+    def test_filter_fails_same_aggregate_non_migration_operation(
+            self, _mock_serv_is_up):
+        _mock_serv_is_up.return_value = True
+        filt_cls = self.class_map['CapacityFilter']()
+        filter_properties = {
+            'size': 2048,
+            'request_spec': {
+                'volume_id': fake.VOLUME_ID,
+                'operation': 'create_volume',
+            },
+            'source_aggregate_id': 'agg_123',
+        }
+        service = {'disabled': False}
+        host = fakes.FakeBackendState('vc-b-0@vmware_fcd#pool_B',
+                                      {'total_capacity_gb': 5000,
+                                       'free_capacity_gb': 100,
+                                       'updated_at': None,
+                                       'service': service,
+                                       'capabilities': {
+                                           'aggregate_id': 'agg_123'}})
         self.assertFalse(filt_cls.backend_passes(host, filter_properties))
 
     def test_filter_passes_migration_no_aggregate_id(self, _mock_serv_is_up):

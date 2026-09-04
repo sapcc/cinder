@@ -25,6 +25,11 @@ from cinder import utils
 
 LOG = logging.getLogger(__name__)
 
+_SAME_AGGREGATE_MIGRATION_OPERATIONS = (
+    'migrate_volume',
+    'find_backend_for_connector',
+)
+
 
 class CapacityFilter(filters.BaseBackendFilter):
     """Capacity filters based on volume backend's capacity utilization."""
@@ -45,7 +50,8 @@ class CapacityFilter(filters.BaseBackendFilter):
         source_agg_id = filter_properties.get('source_aggregate_id')
         if source_agg_id:
             spec = filter_properties.get('request_spec', {})
-            if spec.get('operation') == 'migrate_volume':
+            if (spec.get('operation') in
+                    _SAME_AGGREGATE_MIGRATION_OPERATIONS):
                 dest_agg_id = None
                 if backend_state.capabilities:
                     dest_agg_id = backend_state.capabilities.get(
