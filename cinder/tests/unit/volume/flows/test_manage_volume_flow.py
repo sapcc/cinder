@@ -166,6 +166,21 @@ class ManageVolumeFlowTestCase(test.TestCase):
                                                reason='Volume manage failed.',
                                                status='error_managing')
 
+    def test_prepare_for_quota_reservation_task_revert_preserves_error(self):
+        mock_db = mock.MagicMock()
+        mock_driver = mock.MagicMock()
+        mock_result = mock.MagicMock()
+        mock_flow_failures = mock.MagicMock()
+        mock_error_out = self.mock_object(flow_common, 'error_out')
+        volume_ref = self._stub_volume_object_get(self)
+        volume_ref.status = 'error'
+        task = manager.PrepareForQuotaReservationTask(mock_db, mock_driver)
+
+        task.revert(self.ctxt, mock_result, mock_flow_failures, volume_ref)
+        mock_error_out.assert_called_once_with(volume_ref,
+                                               reason='Volume manage failed.',
+                                               status='error')
+
     def test_prepare_for_quota_reservation_with_wrong_volume(self):
         """Test the class PrepareForQuotaReservationTas with wrong vol."""
         mock_db = mock.MagicMock()
@@ -181,6 +196,27 @@ class ManageVolumeFlowTestCase(test.TestCase):
                           self.ctxt,
                           wrong_volume,
                           mock_manage_existing_ref)
+
+    def test_prepare_for_quota_reservation_execute_preserves_error(self):
+        mock_db = mock.MagicMock()
+        mock_driver = mock.MagicMock()
+        mock_manage_existing_ref = mock.MagicMock()
+        mock_error_out = self.mock_object(flow_common, 'error_out')
+        volume_ref = self._stub_volume_object_get(self)
+        volume_ref.status = 'error'
+        mock_driver.manage_existing_get_size.side_effect = (
+            exception.CinderException)
+        task = manager.PrepareForQuotaReservationTask(mock_db, mock_driver)
+
+        self.assertRaises(exception.CinderException,
+                          task.execute,
+                          self.ctxt,
+                          volume_ref,
+                          mock_manage_existing_ref)
+        mock_error_out.assert_called_once_with(
+            volume_ref,
+            'Volume driver MagicMock get exception.',
+            status='error')
 
     def test_manage_existing_task(self):
         """Test the class ManageExistingTask."""
