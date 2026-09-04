@@ -133,6 +133,18 @@ class ContextTestCase(test.TestCase):
                                       roles=roles)
         self.assertEqual(roles, ctxt.roles)
 
+    def test_to_policy_values_includes_service_roles(self):
+        ctxt = context.RequestContext('111', '222')
+        ctxt.service_roles = ['service']
+        values = ctxt.to_policy_values()
+        self.assertEqual(['service'], values['service_roles'])
+
+    def test_to_policy_values_empty_service_roles(self):
+        ctxt = context.RequestContext('111', '222')
+        ctxt.service_roles = []
+        values = ctxt.to_policy_values()
+        self.assertEqual([], values['service_roles'])
+
 
 @ddt.ddt
 class ContextAuthorizeTestCase(test.TestCase):

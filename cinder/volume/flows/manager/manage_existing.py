@@ -57,8 +57,13 @@ class PrepareForQuotaReservationTask(flow_utils.CinderTask):
         except Exception:
             with excutils.save_and_reraise_exception():
                 reason = _("Volume driver %s get exception.") % driver_name
+                # Drivers may set 'error' before raising when the backend
+                # object is still safe to recover outside Cinder. Otherwise
+                # keep the normal manage failure state, 'error_managing'.
+                status = ('error' if volume.status == 'error'
+                          else 'error_managing')
                 flow_common.error_out(volume, reason,
-                                      status='error_managing')
+                                      status=status)
 
         return {'size': size,
                 'volume_type_id': volume.volume_type_id,
@@ -69,8 +74,12 @@ class PrepareForQuotaReservationTask(flow_utils.CinderTask):
 
     def revert(self, context, result, flow_failures, volume, **kwargs):
         reason = _('Volume manage failed.')
+        # Preserve an explicit driver-set 'error' for safe pre-relocate
+        # failures. Once the backend object may need operator recovery,
+        # drivers leave the status for the flow to set error_managing.
+        status = 'error' if volume.status == 'error' else 'error_managing'
         flow_common.error_out(volume, reason=reason,
-                              status='error_managing')
+                              status=status)
         LOG.error("Volume %s: manage failed.", volume.id)
 
 

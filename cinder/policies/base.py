@@ -15,8 +15,11 @@
 
 from typing import Optional
 
+from oslo_config import cfg
 from oslo_log import versionutils
 from oslo_policy import policy
+
+CONF = cfg.CONF
 
 # General observations
 # --------------------
@@ -145,6 +148,7 @@ XENA_SYSTEM_ADMIN_OR_PROJECT_MEMBER = (
 # as RULE_ADMIN_API in Xena and won't be deprecated until Yoga development.
 # XENA_SYSTEM_ADMIN_ONLY = "rule:xena_system_admin_only"
 RULE_ADMIN_API = "rule:admin_api"
+RULE_ADMIN_OR_SERVICE_API = "rule:admin_api or is_service_request:True"
 
 # TODO: xena rules to be removed in AA
 xena_rule_defaults = [
@@ -277,6 +281,32 @@ class CinderDeprecatedRule(policy.DeprecatedRule):
             name, check_str, deprecated_reason=deprecated_reason,
             deprecated_since=deprecated_since
         )
+
+
+@policy.register('is_service_request')
+class IsServiceRequestCheck(policy.Check):
+    """oslo.policy check: `is_service_request:True`.
+
+    Evaluates to True when the request context carries a service token
+    with at least one role listed in
+    `[keystone_authtoken]/service_token_roles`.
+
+    Usage in policy rules::
+
+        "volume_extension:volume_manage":
+            "rule:admin_api or is_service_request:True"
+    """
+
+    def __init__(self, kind, match):
+        self.expected = match.lower() == 'true'
+        super(IsServiceRequestCheck, self).__init__(kind, str(self.expected))
+
+    def __call__(self, target, creds, enforcer):
+        service_roles = creds.get('service_roles') or []
+        configured = set(CONF.keystone_authtoken.service_token_roles)
+        is_service = bool(service_roles and configured.intersection(
+            service_roles))
+        return is_service == self.expected
 
 
 # This is used by the deprecated rules in the individual policy files

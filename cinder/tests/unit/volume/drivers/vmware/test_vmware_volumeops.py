@@ -2173,6 +2173,23 @@ class VolumeOpsTestCase(test.TestCase):
             path=vmdk_url,
             name=name)
 
+    def test_rename_fcd(self):
+        fcd_location = mock.Mock()
+        fcd_id = mock.sentinel.fcd_id
+        fcd_location.id.return_value = fcd_id
+        ds_ref = mock.sentinel.ds_ref
+        name = mock.sentinel.name
+
+        self.vops.rename_fcd(fcd_location, ds_ref, name)
+
+        self.session.invoke_api.assert_called_once_with(
+            self.session.vim,
+            'RenameVStorageObject',
+            self.session.vim.service_content.vStorageObjectManager,
+            id=fcd_id,
+            datastore=ds_ref,
+            name=name)
+
     @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
                 '_create_controller_config_spec')
     @mock.patch('cinder.volume.drivers.vmware.volumeops.VMwareVolumeOps.'
