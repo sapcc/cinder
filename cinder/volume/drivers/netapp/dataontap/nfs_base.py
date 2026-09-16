@@ -540,7 +540,6 @@ class NetAppNfsDriver(driver.ManageableVD,
                 reason=(_("Expected volume size was %d") % volume.size)
                 + (_(" but size is now %d") % virt_size))
 
-
     def _register_image_in_cache(self, volume, image_id):
         """Stores image in the cache."""
         file_name = 'img-cache-%s' % image_id

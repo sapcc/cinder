@@ -26,8 +26,8 @@ from oslo_utils import units
 
 from cinder import context
 from cinder import exception
-from cinder.objects import fields
 from cinder.image import image_utils
+from cinder.objects import fields
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import test
@@ -567,7 +567,7 @@ class NetAppNfsDriverTestCase(test.TestCase):
             host='fake-host')
 
         image_id = 'image-1'
-        image_size = 10 
+        image_size = 10
 
         mock_qemu_img_info.return_value.virtual_size = image_size * units.Gi
 
@@ -669,7 +669,7 @@ class NetAppNfsDriverTestCase(test.TestCase):
         mock_info_log = self.mock_object(nfs_base.LOG, 'info')
         self.mock_object(self.driver, '_ensure_flexgroup_not_in_cg')
         self.mock_object(self.driver, 'local_path',
-                 mock.Mock(side_effect=exception.NfsException))
+                         mock.Mock(side_effect=exception.NfsException))
 
         self.assertRaises(exception.NfsException,
                           self.driver.copy_image_to_volume,
@@ -687,14 +687,14 @@ class NetAppNfsDriverTestCase(test.TestCase):
         volume = fake_volume.fake_volume_obj(self.ctxt, **fake.NFS_VOLUME)
         mock_qemu_img_info.return_value.virtual_size = (
             volume.size * units.Gi)
-        
+
         mock_log = self.mock_object(nfs_base, 'LOG')
         self.mock_object(self.driver, '_is_flexgroup',
                          return_value=False)
         self.mock_object(self.driver, '_is_flexgroup_clone_file_supported',
                          return_value=True)
         self.mock_object(self.driver, '_ensure_flexgroup_not_in_cg')
-        mock_local_path = self.mock_object(self.driver, 'local_path')
+        self.mock_object(self.driver, 'local_path')
         mock_register_image = self.mock_object(
             self.driver, '_register_image_in_cache')
 
