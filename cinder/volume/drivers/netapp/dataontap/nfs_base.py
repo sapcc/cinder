@@ -520,30 +520,26 @@ class NetAppNfsDriver(driver.ManageableVD,
                                  size=volume.size,
                                  run_as_root=self._execute_as_root,
                                  disable_sparse=disable_sparse)
-
-        data = image_utils.qemu_img_info(self.local_path(volume),
-                                         run_as_root=self._execute_as_root)
-        virt_size = int(data.virtual_size // units.Gi)
-
-        image_utils.resize_image(self.local_path(volume), data.virtual_size,
-                                 run_as_root=self._execute_as_root)
-
-        if virt_size != volume.size:
-            raise exception.ImageUnacceptable(
-                image_id=image_id,
-                reason=(_("Expected volume size was %d") % volume.size)
-                + (_(" but size is now %d") % virt_size))
-        # end of cinder/volume/drivers/remotefs.py +530
-
         LOG.info('Copied image to volume %s using regular download.',
                  volume['id'])
-
         if (not self._is_flexgroup(host=volume['host']) or
                 self._is_flexgroup_clone_file_supported()):
             # NOTE(felipe_rodrigues): NetApp image cache relies on the
             # FlexClone file, which is only available for the earliest
             # versions of FlexGroup.
             self._register_image_in_cache(volume, image_id)
+
+        image_utils.resize_image(self.local_path(volume), volume.size,
+                                 run_as_root=self._execute_as_root)
+        data = image_utils.qemu_img_info(self.local_path(volume),
+                                         run_as_root=self._execute_as_root)
+        virt_size = int(data.virtual_size // units.Gi)
+        if virt_size != volume.size:
+            raise exception.ImageUnacceptable(
+                image_id=image_id,
+                reason=(_("Expected volume size was %d") % volume.size)
+                + (_(" but size is now %d") % virt_size))
+
 
     def _register_image_in_cache(self, volume, image_id):
         """Stores image in the cache."""

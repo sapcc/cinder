@@ -567,9 +567,9 @@ class NetAppNfsDriverTestCase(test.TestCase):
             host='fake-host')
 
         image_id = 'image-1'
-        image_size = 10 * units.Gi
+        image_size = 10 
 
-        mock_qemu_img_info.return_value.virtual_size = image_size
+        mock_qemu_img_info.return_value.virtual_size = image_size * units.Gi
 
         self.mock_object(
             self.driver,
@@ -660,10 +660,10 @@ class NetAppNfsDriverTestCase(test.TestCase):
             run_as_root=self.driver._execute_as_root)
         mock_resize_image.assert_called_once_with(
             f'/tmp/{volume.id}',
-            10 * units.Gi,
+            30,
             run_as_root=self.driver._execute_as_root)
 
-        mock_register.assert_not_called()
+        mock_register.assert_called_once()
 
     def test_copy_image_to_volume_base_exception(self):
         mock_info_log = self.mock_object(nfs_base.LOG, 'info')
