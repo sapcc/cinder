@@ -20,6 +20,8 @@
 from unittest import mock
 
 import ddt
+import eventlet
+from eventlet import greenpool
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_db import exception as db_exc
@@ -656,6 +658,80 @@ class TestGracefulShutdown(test.TestCase):
 
         self.assertFalse(serv._draining)
         self.assertFalse(serv.is_draining)
+
+    def _make_draining_service(self):
+        """Build a Service whose rpcserver pool is a real GreenPool."""
+        serv = service.Service(
+            self.host,
+            self.binary,
+            self.topic,
+            "cinder.tests.unit.test_service.FakeManager",
+        )
+        pool = greenpool.GreenPool()
+        serv.rpcserver = mock.MagicMock()
+        serv.rpcserver._work_executor._pool = pool
+        serv.backend_rpcserver = None
+        serv.cluster_rpcserver = None
+        serv.manager = mock.MagicMock()
+        serv.coordinator = None
+        serv.timers = []
+        return serv, pool
+
+    @mock.patch("cinder.service.Service.report_state")
+    @mock.patch("cinder.rpc.get_server")
+    def test_stop_drains_inflight_handler(self, mock_rpc, mock_report):
+        """A real in-flight RPC handler completes before teardown."""
+        serv, pool = self._make_draining_service()
+        completed = []
+        started = eventlet.event.Event()
+
+        def handler():
+            started.send()
+            eventlet.sleep(0.2)
+            completed.append("done")
+
+        pool.spawn_n(handler)
+        started.wait()
+        self.assertEqual(1, pool.running())
+
+        serv.stop()
+
+        self.assertEqual(["done"], completed)
+        self.assertTrue(serv._drain_completed)
+        self.assertTrue(serv.is_draining)
+        serv.manager.cleanup_threadpool.assert_called_once()
+
+    @mock.patch("cinder.service.Service.report_state")
+    @mock.patch("cinder.rpc.get_server")
+    def test_stop_timeout_marks_drain_incomplete(self, mock_rpc,
+                                                 mock_report):
+        """When the drain deadline expires the drain is marked incomplete.
+
+        The service keeps waiting for the handler to finish instead of
+        tearing down underneath it.
+        """
+        self.override_config("graceful_shutdown_timeout", 1)
+        serv, pool = self._make_draining_service()
+        completed = []
+        started = eventlet.event.Event()
+
+        def handler():
+            started.send()
+            eventlet.sleep(2)
+            completed.append("done")
+
+        pool.spawn_n(handler)
+        started.wait()
+        self.assertEqual(1, pool.running())
+
+        serv.stop()
+
+        # The handler outlived the drain budget, but stop() kept waiting for
+        # it to complete.
+        self.assertEqual(["done"], completed)
+        self.assertFalse(serv._drain_completed)
+        self.assertTrue(serv.is_draining)
+        serv.manager.cleanup_threadpool.assert_called_once()
 
 
 class TestWSGIService(test.TestCase):

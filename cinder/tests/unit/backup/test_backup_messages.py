@@ -556,9 +556,62 @@ class BackupUserMessagesTest(test.TestCase):
         mock_detach.side_effect = exception.InvalidBackup(
             reason="test reason")
 
-        # [GS] _detach_device errors are now caught and logged (no-reraise)
-        # during graceful shutdown support. The DETACH_ERROR message is still
-        # created, but the exception no longer propagates.
+        # Outside of graceful shutdown a detach failure must still fail the
+        # restore so the caller is told the target volume may be attached.
+        self.assertRaises(
+            exception.InvalidBackup, manager.restore_backup,
+            fake_context, fake_backup, fake.VOLUME_ID, False)
+        self.assertEqual(message_field.Action.BACKUP_RESTORE,
+                         fake_context.message_action)
+        self.assertEqual(message_field.Resource.VOLUME_BACKUP,
+                         fake_context.message_resource_type)
+        self.assertEqual(fake_backup.id,
+                         fake_context.message_resource_id)
+        mock_msg_create.assert_called_with(
+            fake_context,
+            detail=message_field.Detail.DETACH_ERROR)
+
+    @mock.patch('cinder.db.volume_update')
+    @mock.patch('cinder.objects.volume.Volume.get_by_id')
+    @mock.patch('cinder.message.api.API.create_from_request_context')
+    @mock.patch('cinder.backup.manager.BackupManager._is_our_backup')
+    @mock.patch('cinder.backup.manager.BackupManager.is_working')
+    @mock.patch('cinder.backup.manager.BackupManager.'
+                '_notify_about_backup_usage')
+    @mock.patch(
+        'cinder.backup.manager.volume_utils.brick_get_connector_properties')
+    @mock.patch(
+        'cinder.volume.rpcapi.VolumeAPI.secure_file_operations_enabled')
+    @mock.patch('cinder.backup.manager.BackupManager._attach_device')
+    @mock.patch('cinder.backup.manager.open')
+    @mock.patch(
+        'cinder.tests.unit.backup.fake_service.FakeBackupService.restore')
+    @mock.patch('cinder.backup.manager.BackupManager._detach_device')
+    def test_backup_restore_detach_error_draining(
+            self, mock_detach, mock_restore, mock_open, mock_attach,
+            mock_sec_opts, mock_get_conn, mock_notify, mock_working,
+            mock_our_back, mock_msg_create, mock_get_vol, mock_vol_update):
+        manager = backup_manager.BackupManager()
+        # Simulate the service draining during graceful shutdown.
+        manager._shutdown_event.set()
+        fake_context = mock.MagicMock()
+        fake_backup = mock.MagicMock(
+            id=fake.BACKUP_ID, status='creating', volume_id=fake.VOLUME_ID,
+            snapshot_id=None)
+        fake_backup.__getitem__.side_effect = (
+            {'status': 'restoring', 'size': 1}.__getitem__)
+        mock_vol = mock.MagicMock()
+        mock_vol.__getitem__.side_effect = (
+            {'status': 'restoring-backup', 'size': 1}.__getitem__)
+        mock_get_vol.return_value = mock_vol
+        mock_working.return_value = True
+        mock_our_back.return_value = True
+        mock_attach.return_value = {'device': {'path': '/dev/sdb'}}
+        mock_detach.side_effect = exception.InvalidBackup(
+            reason="test reason")
+
+        # While draining, a detach failure is logged + messaged but does not
+        # abort the restore (which would abandon every other in-flight op).
         manager.restore_backup(
             fake_context, fake_backup, fake.VOLUME_ID, False)
         self.assertEqual(message_field.Action.BACKUP_RESTORE,
