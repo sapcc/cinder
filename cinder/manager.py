@@ -170,14 +170,11 @@ class ThreadPoolManager(Manager):
     graceful shutdown, ensuring in-flight operations complete before
     the service terminates.
 
-    This implementation uses native Python threads via ThreadPoolExecutor
-    instead of eventlet green threads, as eventlet is being deprecated
-    and will be removed in a future OpenStack release.
+    Task dispatch uses an eventlet GreenPool (cooperative greenthreads in a
+    single OS thread).  New tasks are rejected once shutdown has been
+    signaled, and cleanup_threadpool() drains the pool before the process
+    exits.
     """
-
-    # Maximum number of worker threads for async operations
-    # This replaces the eventlet GreenPool which had unlimited concurrency
-    DEFAULT_THREADPOOL_SIZE = 10
 
     def __init__(self, *args, **kwargs):
         # Use eventlet GreenPool for async task dispatch. Green threads
@@ -199,6 +196,14 @@ class ThreadPoolManager(Manager):
         Tasks spawned here will be waited on during graceful shutdown
         via pool.waitall() in Service._drain_pool().
 
+        Shutdown coordination: the shutdown flag is checked before and after
+        spawning.  The check and spawn are not atomic in the cooperative
+        scheduler when the pool is saturated (spawn_n yields inside its
+        semaphore acquire), so the post-spawn check makes a task that slips
+        in after shutdown is signaled visible rather than silent.  A task
+        that slips in is still waited on by cleanup_threadpool(), so no work
+        is lost.
+
         :param func: The function to execute
         :param args: Positional arguments to pass to the function
         :param kwargs: Keyword arguments to pass to the function
@@ -211,6 +216,13 @@ class ThreadPoolManager(Manager):
             return None
 
         self._tp.spawn_n(func, *args, **kwargs)
+
+        if self._shutdown_event.is_set():
+            LOG.warning(
+                "Threadpool task %s was spawned while shutdown was "
+                "signaled; it will still be waited on during drain.",
+                func.__name__)
+
         return True
 
     def signal_shutdown(self) -> None:
