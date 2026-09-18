@@ -15,9 +15,11 @@
 
 import collections.abc as collections
 import inspect
+import time
 
 import decorator
 import eventlet
+from oslo_log import log as logging
 from oslo_utils import versionutils
 
 from cinder import db
@@ -25,6 +27,9 @@ from cinder import exception
 from cinder.objects import base
 from cinder import service
 from cinder.volume import rpcapi as vol_rpcapi
+
+
+LOG = logging.getLogger(__name__)
 
 
 class CinderCleanableObject(base.CinderPersistentObject):
@@ -212,6 +217,7 @@ class CinderCleanableObject(base.CinderPersistentObject):
                     # init_host -> _do_cleanup from resetting resources that
                     # are actively being processed during graceful shutdown.
                     def _worker_heartbeat():
+                        last_failure_log = 0.0
                         while not stop_heartbeat.ready():
                             for cleanable in cleanables:
                                 if cleanable.worker:
@@ -220,7 +226,21 @@ class CinderCleanableObject(base.CinderPersistentObject):
                                             cleanable._context,
                                             cleanable.worker.id)
                                     except Exception:
-                                        pass
+                                        # Rate-limit: this loop runs roughly
+                                        # every 0.1s, so do not log every
+                                        # failure.  A silent heartbeat means
+                                        # the worker entry goes stale and the
+                                        # new pod may reset the in-flight
+                                        # operation, so surface it.
+                                        now = time.monotonic()
+                                        if now - last_failure_log >= 1.0:
+                                            last_failure_log = now
+                                            LOG.warning(
+                                                "Failed to heartbeat worker "
+                                                "%s for %s; entry may go "
+                                                "stale and be reset",
+                                                cleanable.worker.id,
+                                                cleanable.obj_name())
                             # Use event.ready() + sleep instead of a long
                             # uninterruptible sleep. Short sleeps allow the
                             # loop to notice stop_heartbeat quickly.

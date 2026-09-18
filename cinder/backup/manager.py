@@ -796,8 +796,17 @@ class BackupManager(manager.SchedulerDependentManager):
                 try:
                     backup.save()
                 except Exception:
-                    pass
-                eventlet.sleep(10)
+                    # A silent heartbeat means the backup goes stale and the
+                    # new pod may reset it mid-restore, so surface the failure.
+                    LOG.warning(
+                        "Failed to heartbeat backup %s during restore; it "
+                        "may be reset as stale", backup.id)
+                # Sleep in short increments so the stop event is noticed
+                # promptly; backup.save() still only runs ~every 10s.
+                for _i in range(100):
+                    if _hb_stop.ready():
+                        return
+                    eventlet.sleep(0.1)
 
         hb_thread = eventlet.spawn(_backup_restore_heartbeat)
         try:
@@ -938,6 +947,14 @@ class BackupManager(manager.SchedulerDependentManager):
                     self.message_api.create_from_request_context(
                         context,
                         detail=message_field.Detail.DETACH_ERROR)
+                # During graceful shutdown we deliberately do not re-raise:
+                # aborting the drain because a detach failed would abandon
+                # every other in-flight operation.  The dangling export is
+                # cleaned up on the next startup.  Outside of shutdown the
+                # detach failure must still fail the restore so the caller
+                # is told the target volume may still be attached.
+                if not self._shutdown_event.is_set():
+                    raise
 
         # Regardless of whether the restore was successful, do some
         # housekeeping to ensure the restored volume's encryption key ID is

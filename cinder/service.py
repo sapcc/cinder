@@ -264,6 +264,9 @@ class Service(service.Service):
         # Flag to indicate graceful shutdown in progress. Read by
         # @reject_if_draining decorator on RPC entry points.
         self._draining = False
+        # Whether the last graceful shutdown drain completed within the
+        # configured graceful_shutdown_timeout budget.
+        self._drain_completed = True
 
     def start(self) -> None:
         version_string = version.version_string()
@@ -274,6 +277,7 @@ class Service(service.Service):
         # ProcessLauncher with restart_method='mutate' forks a new child
         # that inherits the parent's state including _draining=True).
         self._draining = False
+        self._drain_completed = True
 
         if self.coordination:
             coordination.COORDINATOR.start()
@@ -486,7 +490,12 @@ class Service(service.Service):
         1. Sets draining state (stops heartbeat reporting)
         2. Signals manager to reject new threadpool tasks
         3. Phase 1: Skips rpcserver.stop() (eventlet socket race)
-        4. Phase 2: Waits for in-flight RPC handlers via pool.waitall()
+        4. Phase 2: Waits for in-flight RPC handlers via pool.waitall(),
+           bounded by a single graceful_shutdown_timeout deadline across
+           all RPC pools. If the deadline expires with handlers still
+           running, the service keeps waiting (drain_completed=False);
+           the orchestrator terminates the process when the pod grace
+           period is exceeded.
         5. Phase 3: Stops coordination, calls super().stop(), cleans up
            threadpool executor
         """
@@ -544,12 +553,48 @@ class Service(service.Service):
         if timeout == 0:
             timeout = None
 
-        for server_name, server in (
+        servers = (
             ('rpcserver', self.rpcserver),
             ('backend_rpcserver', self.backend_rpcserver),
             ('cluster_rpcserver', self.cluster_rpcserver),
-        ):
-            self._drain_pool(server_name, server, timeout)
+        )
+
+        # Apply graceful_shutdown_timeout as a single total budget for the
+        # drain phase, not once per RPC pool.  Each pool gets only the
+        # remaining time, so the configured timeout is the whole drain
+        # deadline rather than N times the timeout.
+        drained = True
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+            for server_name, server in servers:
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining == 0:
+                    LOG.error("%s: drain deadline expired before %s could "
+                              "be drained", self.binary, server_name)
+                    drained = False
+                    continue
+                if not self._drain_pool(server_name, server, remaining):
+                    drained = False
+        else:
+            # graceful_shutdown_timeout == 0 means "no budget": wait
+            # indefinitely for every pool to drain.
+            for server_name, server in servers:
+                self._drain_pool(server_name, server, None)
+
+        self._drain_completed = drained
+        if not drained:
+            # The drain budget was exhausted while in-flight RPC handlers
+            # are still running.  Do not tear down underneath them: keep
+            # waiting so the operations can complete.  The orchestrator
+            # (Kubernetes) sends SIGKILL when the pod's termination grace
+            # period expires, so this wait is bounded externally.
+            LOG.error("Graceful shutdown: in-flight operations did not "
+                      "complete within graceful_shutdown_timeout (%s). "
+                      "Keeping the service alive so they can finish; the "
+                      "orchestrator will terminate the process when the "
+                      "pod grace period is exceeded.", timeout)
+            for server_name, server in servers:
+                self._drain_pool(server_name, server, None)
 
         # ====== PHASE 3: Cleanup (skip rpcserver.stop/wait) ======
         self._phase3_teardown()
@@ -581,35 +626,40 @@ class Service(service.Service):
         except Exception:  # noqa: BLE001
             pass
 
-    def _drain_pool(self, server_name, server, timeout) -> None:
+    def _drain_pool(self, server_name, server, timeout) -> bool:
         """Drain one rpcserver's GreenPool, waiting for in-flight handlers.
+
+        Returns True if the pool drained (or had nothing running), and
+        False if the wait timed out with handlers still running.
 
         Skips quietly if the server is None or has no _work_executor/_pool,
         or if the pool has no running greenthreads.
         """
         if server is None:
-            return
+            return True
         work_executor = getattr(server, '_work_executor', None)
         if work_executor is None:
-            return
+            return True
         pool = getattr(work_executor, '_pool', None)
         if pool is None:
-            return
+            return True
         # Guard against Mock objects in tests — pool.running() must
         # return an actual integer for the comparison to be meaningful.
         try:
             running = pool.running()
             if not isinstance(running, int) or running <= 0:
-                return
+                return True
         except (TypeError, AttributeError):
-            return
+            return True
 
         try:
             with eventlet.timeout.Timeout(timeout):
                 pool.waitall()
+            return True
         except eventlet.timeout.Timeout:
             LOG.warning("%s: Timed out waiting for GreenPool after %s seconds",
                         server_name, timeout)
+            return False
 
     def _phase3_teardown(self) -> None:
         """Phase 3: stop coordination, super().stop, cleanup_threadpool.
