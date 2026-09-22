@@ -339,10 +339,13 @@ class ServiceTestCase(test.TestCase):
         serv.stop()
         serv.wait()
         serv.rpcserver.start.assert_called_once_with()
-        # Graceful shutdown intentionally does NOT call rpcserver.stop()
-        # to avoid the eventlet socket race. The process exits naturally
-        # and the OS closes the AMQP connection.
-        serv.rpcserver.stop.assert_not_called()
+        # Graceful shutdown deregisters the RPC consumer via
+        # rpcserver.stop() so new casts stay queued for the replacement
+        # pod instead of being acked-and-lost. stop() does not shut down
+        # the work executor, so in-flight handlers keep running.
+        serv.rpcserver.stop.assert_called_once()
+        # wait() is not called: the executor was drained via pool.waitall()
+        # and the process exits naturally.
         serv.rpcserver.wait.assert_not_called()
 
     @mock.patch('cinder.service.Service.report_state')
@@ -365,9 +368,10 @@ class ServiceTestCase(test.TestCase):
         serv.stop()
         serv.wait()
         serv.rpcserver.start.assert_called_once_with()
-        # Graceful shutdown does NOT call rpcserver.stop() — see
-        # test_service_stop_waits_for_rpcserver for explanation.
-        serv.rpcserver.stop.assert_not_called()
+        # rpcserver.stop() is called to deregister the consumer (see
+        # test_service_stop_waits_for_rpcserver for details); wait() is
+        # not (the drain happens in stop() via pool.waitall()).
+        serv.rpcserver.stop.assert_called_once()
         serv.rpcserver.wait.assert_not_called()
 
     @mock.patch('cinder.manager.Manager.init_host')

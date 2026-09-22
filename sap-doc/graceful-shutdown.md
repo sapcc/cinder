@@ -41,6 +41,12 @@ While the service is draining, the following mechanisms keep in-flight work safe
 
 The drain wait is configured with `graceful_shutdown_timeout`. The default of 120 seconds is set in `cinder/service.py`; the option itself is provided by oslo.service.
 
+## Eventlet dependency
+
+This graceful shutdown implementation targets SAP's Epoxy release, which still runs cinder under eventlet (all cinder binaries call `eventlet.monkey_patch()`). The drain therefore relies on the eventlet executor's GreenPool (`pool.waitall()`), and the heartbeats run as eventlet greenthreads.
+
+Upstream has deprecated the eventlet executor and plans to remove it in favor of the threading executor. The threading migration for graceful shutdown will be handled in the upstream effort, not in this Epoxy-targeted change.
+
 ## Deployment Requirements
 
 In the SAP deployment model these services run as Kubernetes containers. Cinder itself has no knowledge of Kubernetes; the graceful shutdown mechanism relies only on receiving a termination signal. The following deployment settings are required for the mechanism to work:

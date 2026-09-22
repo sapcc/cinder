@@ -788,6 +788,11 @@ class BackupManager(manager.SchedulerDependentManager):
         # [GS] Spawn a heartbeat greenthread that periodically touches the
         # backup's updated_at field. This prevents the new pod's init_host
         # from resetting the backup while the old pod is still draining.
+        #
+        # NOTE(epoxy): the heartbeat is an eventlet greenthread because
+        # Epoxy still runs cinder under eventlet. When cinder migrates off
+        # eventlet (upstream), this should become a threading.Thread with
+        # an Event.wait() timeout.
         import eventlet
         _hb_stop = eventlet.event.Event()
 
