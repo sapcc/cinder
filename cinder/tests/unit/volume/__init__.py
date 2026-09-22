@@ -49,6 +49,7 @@ class BaseVolumeTestCase(test.TestCase):
         self.flags(volumes_dir=vol_tmpdir)
         self.addCleanup(self._cleanup)
         self.volume = importutils.import_object(CONF.volume_manager)
+        self.addCleanup(self._cleanup_threadpool)
         self.mock_object(self.volume, '_driver_shares_targets',
                          return_value=False)
         self.volume.message_api = mock.Mock()
@@ -87,6 +88,15 @@ class BaseVolumeTestCase(test.TestCase):
             shutil.rmtree(CONF.volumes_dir)
         except OSError:
             pass
+
+    def _cleanup_threadpool(self):
+        """Ensure the manager's GreenPool is drained after each test.
+
+        With eventlet GreenPool (cooperative greenthreads), this is
+        mostly a no-op — greenthreads don't block process exit.
+        """
+        if hasattr(self.volume, '_tp') and hasattr(self.volume._tp, 'waitall'):
+            self.volume._tp.waitall()
 
     def fake_get_all_volume_groups(obj, vg_name=None, no_suffix=True):
         return [{'name': 'cinder-volumes',

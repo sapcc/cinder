@@ -33,6 +33,10 @@ FIXED_KEY_ID = '00000000-0000-0000-0000-000000000000'
 class KeyMigrationTestCase(base.BaseVolumeTestCase):
     def setUp(self):
         super(KeyMigrationTestCase, self).setUp()
+        # Run threadpool tasks synchronously to avoid threading issues
+        # with the in-memory sqlite DB used by tests.
+        self.mock_object(self.volume, '_add_to_threadpool',
+                         side_effect=lambda f, *a, **kw: f(*a, **kw))
         self.conf = CONF
         self.fixed_key = '1' * 64
         try:
