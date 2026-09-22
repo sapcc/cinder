@@ -174,6 +174,11 @@ class ThreadPoolManager(Manager):
     single OS thread).  New tasks are rejected once shutdown has been
     signaled, and cleanup_threadpool() drains the pool before the process
     exits.
+
+    NOTE(epoxy): SAP's Epoxy release still runs cinder under eventlet, so
+    async task dispatch deliberately uses an eventlet GreenPool. Upstream
+    has deprecated the eventlet executor and plans to remove it in favor
+    of the threading executor; that migration will be handled upstream.
     """
 
     def __init__(self, *args, **kwargs):

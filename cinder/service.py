@@ -109,15 +109,7 @@ service_opts = [
     cfg.BoolOpt('osapi_volume_use_ssl',
                 default=False,
                 help='Wraps the socket in a SSL context if True is set. '
-                     'A certificate file and key file must be specified.'),
-    cfg.IntOpt('threadpool_size',
-               default=10,
-               min=1,
-               max=100,
-               help='Number of native Python threads in the threadpool '
-                    'for async volume operations. This replaces the previous '
-                    'eventlet GreenPool. Adjust based on workload and '
-                    'available system resources. Default: 10.'), ]
+                     'A certificate file and key file must be specified.'), ]
 
 
 CONF = cfg.CONF
@@ -489,7 +481,8 @@ class Service(service.Service):
         This method implements a three-phase graceful shutdown:
         1. Sets draining state (stops heartbeat reporting)
         2. Signals manager to reject new threadpool tasks
-        3. Phase 1: Skips rpcserver.stop() (eventlet socket race)
+        3. Phase 1: Stops consuming (rpcserver.stop()) so no new RPC
+           messages are delivered to this service
         4. Phase 2: Waits for in-flight RPC handlers via pool.waitall(),
            bounded by a single graceful_shutdown_timeout deadline across
            all RPC pools. If the deadline expires with handlers still
@@ -514,30 +507,34 @@ class Service(service.Service):
         if hasattr(self.manager, "signal_shutdown"):
             self.manager.signal_shutdown()
 
-        # ====== PHASE 1: Stop consuming WITHOUT killing greenthreads ======
-        # We intentionally do NOT call conn.stop_consuming() or
-        # rpcserver.stop() synchronously. Doing so causes eventlet socket
-        # races ("simultaneous read on fileno") that can disrupt outbound
-        # HTTP/RPC connections used by in-flight operations (e.g., Swift
-        # reads during backup restore).
+        servers = (
+            ('rpcserver', self.rpcserver),
+            ('backend_rpcserver', self.backend_rpcserver),
+            ('cluster_rpcserver', self.cluster_rpcserver),
+        )
+
+        # ====== PHASE 1: Stop consuming (deregister) WITHOUT killing
+        # in-flight handlers ======
         #
-        # The broker-side consumer deregistration happens automatically
-        # when the AMQP channel closes during process exit (the OS closes
-        # the TCP socket; RabbitMQ detects the broken connection and
-        # requeues any pending messages to healthy consumers).
+        # We call rpcserver.stop() on every RPC server to stop consuming
+        # new messages. In oslo.messaging (>= 14), MessageHandlingServer
+        # .stop() only stops the listener/consumer and joins its listen
+        # thread; it does NOT touch the work executor, so in-flight RPC
+        # handler greenthreads keep running and are drained in Phase 2.
         #
-        # During the gap between SIGTERM and process exit, two things
-        # protect us from message loss:
-        #   1. We stop heartbeating, so the scheduler stops routing new
-        #      top-level work within service_down_time (~60s default).
-        #   2. The @reject_if_draining decorator on RPC entry points
-        #      rejects any message that DOES race in, with a
-        #      ServiceUnavailable exception that triggers caller-side
-        #      retry on a healthy instance.
+        # Why this matters: if we keep consuming while draining, every new
+        # cast routed to this still-heartbeating service is acknowledged
+        # (oslo.messaging acknowledges messages before dispatching them)
+        # and then dropped by @reject_if_draining — the message is lost
+        # and the volume/snapshot is left stuck in an intermediate state.
+        # By deregistering, new casts stay queued and are picked up by the
+        # replacement pod once this process exits.
         #
-        # In Phase 2 we wait via pool.waitall() for any in-flight RPC
-        # handler greenthreads to complete naturally before the process
-        # exits.
+        # NOTE: outbound RPC/HTTP from in-flight operations is unaffected:
+        # client sends use separate pooled connections, not this consumer.
+        for server_name, server in servers:
+            if server is not None:
+                server.stop()
 
         # NOTE: Do NOT stop coordination here!
         # In-flight operations may still need distributed locks.
@@ -546,18 +543,13 @@ class Service(service.Service):
         # In-flight operations may need to make outbound RPC calls.
 
         # ====== PHASE 2: Wait for in-flight operations to complete ======
-        # The RPC handler greenthread is STILL ALIVE because we didn't call
-        # rpcserver.stop(). We can now safely wait for it to finish.
+        # The RPC handler greenthreads are STILL ALIVE because
+        # rpcserver.stop() does not shut down the work executor. We can
+        # now safely wait for them to finish.
 
         timeout = CONF.graceful_shutdown_timeout
         if timeout == 0:
             timeout = None
-
-        servers = (
-            ('rpcserver', self.rpcserver),
-            ('backend_rpcserver', self.backend_rpcserver),
-            ('cluster_rpcserver', self.cluster_rpcserver),
-        )
 
         # Apply graceful_shutdown_timeout as a single total budget for the
         # drain phase, not once per RPC pool.  Each pool gets only the
@@ -634,6 +626,15 @@ class Service(service.Service):
 
         Skips quietly if the server is None or has no _work_executor/_pool,
         or if the pool has no running greenthreads.
+
+        NOTE(epoxy): This change targets SAP's Epoxy release, which still
+        runs cinder under eventlet (all cinder binaries call
+        eventlet.monkey_patch()). The drain therefore relies on the
+        eventlet executor's GreenPool (server._work_executor._pool) and
+        pool.waitall(). Upstream has deprecated the eventlet executor and
+        plans to remove it in favor of the threading executor; the
+        threading migration for graceful shutdown will be handled in the
+        upstream effort, not here.
         """
         if server is None:
             return True
@@ -664,17 +665,17 @@ class Service(service.Service):
     def _phase3_teardown(self) -> None:
         """Phase 3: stop coordination, super().stop, cleanup_threadpool.
 
-        We do NOT call rpcserver.stop() or rpcserver.wait() here.
-        rpcserver.stop() triggers AMQPListener.stop() which calls
-        conn.stop_consuming() — this risks an eventlet socket race
-        ("simultaneous read on fileno") because the connection's internal
-        reader greenthread may be mid-read when stop_consuming writes a
-        Basic.Cancel frame on the same socket.
+        rpcserver.stop() was already called in Phase 1 to deregister the
+        consumers; the work executor (and its in-flight handlers) was NOT
+        shut down then, and the pools were drained in Phase 2.
 
-        Instead we let the process exit naturally after this method
-        returns. The OS closes the AMQP socket (TCP FIN) as the
-        interpreter shuts down; RabbitMQ detects the closed connection
-        immediately and requeues any pending messages to healthy consumers.
+        We deliberately do NOT call rpcserver.wait() here — wait() would
+        shut down the work executor (which is already drained) and clean
+        up the listener connection. Instead we let the process exit
+        naturally after this method returns. The OS closes the AMQP
+        socket (TCP FIN) as the interpreter shuts down; RabbitMQ detects
+        the closed connection immediately and requeues any pending
+        messages to healthy consumers.
         """
         # Stop coordination - all operations have completed
         if self.coordination:

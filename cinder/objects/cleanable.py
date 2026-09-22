@@ -216,6 +216,11 @@ class CinderCleanableObject(base.CinderPersistentObject):
                     # entries to keep them fresh. This prevents a new pod's
                     # init_host -> _do_cleanup from resetting resources that
                     # are actively being processed during graceful shutdown.
+                    #
+                    # NOTE(epoxy): the heartbeat is an eventlet greenthread
+                    # because Epoxy still runs cinder under eventlet. When
+                    # cinder migrates off eventlet (upstream), this should
+                    # become a threading.Thread with an Event.wait() timeout.
                     def _worker_heartbeat():
                         last_failure_log = 0.0
                         while not stop_heartbeat.ready():
