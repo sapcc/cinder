@@ -294,6 +294,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             fcd_loc = vops.FcdLocation(fcd_loc.fcd_id, target_val)
 
         try:
+            vmdk_path = self.volumeops.get_vmdk_path_for_fcd(fcd_loc=fcd_loc)
+            self.volumeops.update_fcd_vmdk_uuid(
+                fcd_loc.ds_ref(), vmdk_path, volume.id)
             provider_location = self._provider_location_to_ds_name_location(
                 fcd_loc.provider_location())
         except Exception as exc:
