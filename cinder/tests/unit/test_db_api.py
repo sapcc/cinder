@@ -748,8 +748,94 @@ class DBAPIVolumeTestCase(BaseTest):
     def test_volume_destroy_deletes_dependent_data(self, mock_model_query):
         """Addresses LP Bug #1542169."""
         db.volume_destroy(self.ctxt, fake.VOLUME_ID)
-        expected_call_count = 1 + len(sqlalchemy_api.VOLUME_DEPENDENT_MODELS)
+        expected_call_count = (1 + len(sqlalchemy_api.VOLUME_DEPENDENT_MODELS)
+                               + 1)
+        # The extra +1 is the SnapshotMetadata query, which is not in
+        # VOLUME_DEPENDENT_MODELS (it references snapshots, not volumes).
         self.assertEqual(expected_call_count, mock_model_query.call_count)
+
+    def test_volume_destroy_deletes_snapshot_metadata(self):
+        """Cascade volume destroy must soft-delete snapshot_metadata rows.
+
+        SnapshotMetadata references snapshots, not volumes, so it is not
+        covered by VOLUME_DEPENDENT_MODELS. Leaving it live wedges
+        `cinder-manage db purge` on the snapshot_metadata_ibfk_1 FK.
+        """
+        db.volume_create(self.ctxt, {'id': 1,
+                                     'volume_type_id': fake.VOLUME_TYPE_ID})
+        db.snapshot_create(self.ctxt,
+                           {'id': 1, 'volume_id': 1,
+                            'metadata': {'a': 'b'},
+                            'volume_type_id': fake.VOLUME_TYPE_ID})
+
+        db.volume_destroy(self.ctxt, 1)
+
+        with sqlalchemy_api.main_context_manager.reader.using(self.ctxt):
+            metadata = sqlalchemy_api.model_query(
+                self.ctxt, models.SnapshotMetadata,
+                read_deleted='yes').filter_by(snapshot_id=1).all()
+        self.assertEqual(1, len(metadata))
+        self.assertTrue(metadata[0]['deleted'])
+        self.assertIsNotNone(metadata[0]['deleted_at'])
+
+    def test_volume_destroy_deletes_all_snapshots_metadata_only_own(self):
+        """Destroying a volume soft-deletes only its own snapshots' metadata.
+
+        The snapshot_id subquery must be scoped to the volume: metadata of
+        snapshots belonging to other volumes stays live.
+        """
+        db.volume_create(self.ctxt, {'id': 1,
+                                     'volume_type_id': fake.VOLUME_TYPE_ID})
+        db.snapshot_create(self.ctxt,
+                           {'id': 1, 'volume_id': 1,
+                            'metadata': {'a': 'b'},
+                            'volume_type_id': fake.VOLUME_TYPE_ID})
+        db.snapshot_create(self.ctxt,
+                           {'id': 2, 'volume_id': 1,
+                            'metadata': {'c': 'd'},
+                            'volume_type_id': fake.VOLUME_TYPE_ID})
+        db.volume_create(self.ctxt, {'id': 3,
+                                     'volume_type_id': fake.VOLUME_TYPE_ID})
+        db.snapshot_create(self.ctxt,
+                           {'id': 3, 'volume_id': 3,
+                            'metadata': {'e': 'f'},
+                            'volume_type_id': fake.VOLUME_TYPE_ID})
+
+        db.volume_destroy(self.ctxt, 1)
+
+        with sqlalchemy_api.main_context_manager.reader.using(self.ctxt):
+            deleted = sqlalchemy_api.model_query(
+                self.ctxt, models.SnapshotMetadata,
+                read_deleted='yes').filter(
+                models.SnapshotMetadata.snapshot_id.in_(['1', '2'])).all()
+            live = sqlalchemy_api.model_query(
+                self.ctxt, models.SnapshotMetadata,
+                read_deleted='no').filter_by(snapshot_id=3).all()
+        self.assertEqual(2, len(deleted))
+        self.assertTrue(all(m['deleted'] for m in deleted))
+        self.assertEqual(1, len(live))
+        self.assertFalse(live[0]['deleted'])
+
+    def test_volume_destroy_snapshot_without_metadata(self):
+        """Destroying a volume with a metadata-less snapshot must not fail."""
+        db.volume_create(self.ctxt, {'id': 1,
+                                     'volume_type_id': fake.VOLUME_TYPE_ID})
+        db.snapshot_create(self.ctxt,
+                           {'id': 1, 'volume_id': 1,
+                            'volume_type_id': fake.VOLUME_TYPE_ID})
+
+        db.volume_destroy(self.ctxt, 1)
+
+        with sqlalchemy_api.main_context_manager.reader.using(self.ctxt):
+            snap = sqlalchemy_api.model_query(
+                self.ctxt, models.Snapshot,
+                read_deleted='yes').filter_by(id=1).all()
+            metadata = sqlalchemy_api.model_query(
+                self.ctxt, models.SnapshotMetadata,
+                read_deleted='yes').filter_by(snapshot_id=1).all()
+        self.assertEqual(1, len(snap))
+        self.assertTrue(snap[0]['deleted'])
+        self.assertEqual(0, len(metadata))
 
     def test_volume_get_all(self):
         volumes = [db.volume_create(self.ctxt,
