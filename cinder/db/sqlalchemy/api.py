@@ -2144,6 +2144,26 @@ def volume_destroy(context, volume_id):
                 'updated_at': entity.updated_at,
             }
         )
+
+    # SnapshotMetadata references snapshots (not volumes), so it is not
+    # covered by the VOLUME_DEPENDENT_MODELS loop above. Leaving its rows live
+    # after a cascade delete wedges `cinder-manage db purge` on the
+    # snapshot_metadata_ibfk_1 foreign key two weeks later.
+    query = model_query(context, models.SnapshotMetadata).filter(
+        models.SnapshotMetadata.snapshot_id.in_(
+            sql.select(models.Snapshot.id).where(
+                models.Snapshot.volume_id == volume_id
+            )
+        )
+    )
+    entity = query.column_descriptions[0]['entity']
+    query.update(
+        {
+            'deleted': True,
+            'deleted_at': now,
+            'updated_at': entity.updated_at,
+        }
+    )
     del updated_values['updated_at']
 
     return updated_values
