@@ -65,6 +65,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
     # flag this driver as not supporting independent snapshots
     has_independent_snapshots = False
 
+    # flag for netapp clone offloading
+    netapp_clones = False
+
     # FCD Cross vcenter migration is available in 8.0.3
     FCD_CROSS_VC_MIGRATION_VC_VERSION = '8.0.3'
 
@@ -102,6 +105,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             # If we setup cinder to allow independent snapshots, we can
             # use them.  This means snapshots will be clones.
             self.has_independent_snapshots = True
+
+        if self.configuration.enable_netapp_clone:
+            # Offload clones on the NetApp pod
+            self.netapp_clones = True
 
     def get_volume_stats(self, refresh=False):
         """Collects volume backend stats.
@@ -1055,6 +1062,11 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         :param snapshot: Information for the snapshot to be created.
         """
+
+        if self.netapp_clones:
+            p_location = self._create_snap_kvm_fcd(snapshot)
+            return {'provider_location': p_location}
+
         if snapshot.volume['attach_status'] == 'attached':
             attachments = snapshot.volume.volume_attachment
             connector = None
@@ -1170,6 +1182,10 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         :param snapshot: The snapshot from which to create the volume.
         :returns: A dict of database updates for the new volume.
         """
+
+        if self.netapp_clones:
+            return self._create_volume_from_fcd_kvm(volume, snapshot)
+
         # First convert the datastore provider location to a moref format
         snap_location = self._snap_provider_location_to_moref_location(
             snapshot.provider_location
@@ -1201,6 +1217,8 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         :param src_vref: Source Volume object
         """
 
+        if self.netapp_clones:
+            return self._create_volume_from_fcd_kvm(volume, src_vref)
         if src_vref['attach_status'] == 'attached':
             attachments = src_vref.volume_attachment
             connector = None
