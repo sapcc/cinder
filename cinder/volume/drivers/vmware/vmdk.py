@@ -247,6 +247,10 @@ vmdk_opts = [
     cfg.IntOpt('image_cache_age_seconds', default=3600 * 24,
                help='Minimum number of seconds after which a cached image '
                     'has to be deleted.'),
+    cfg.BoolOpt('enable_netapp_clone',
+                default=False,
+                help='This enables the driver to offload clone ops'
+                     'via the netapp'),
     cfg.MultiOpt(
         'sap_netapp_credentials',
         item_type=types.Dict(
