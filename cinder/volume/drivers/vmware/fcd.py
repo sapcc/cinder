@@ -956,36 +956,40 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             fcd_loc=new_fcd_loc)
         vmdk_path_src = self.volumeops.get_vmdk_path_for_fcd(
             fcd_loc=fcd_loc)
-        netapp_api = self._remote_netapp_api
-        netapp_fqdn = self.volumeops.get_netapp_for_ds(fcd_loc.ds_ref())
-        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
-        src_mpath = self.volumeops._get_mount_path(fcd_loc.ds_ref())
-        src_ds_mpath = src_mpath.split(':')[1]
-        src_lif_ip = src_mpath.split(':')[0]
-        netapp_vol = src_ds_mpath.split('/')[1]
-        ds_split = vops.split_datastore_path
-        vserver = netapp_api.get_vserver_for_ip(self._admin_context,
-                                                host=netapp_host,
-                                                lif_ip=src_lif_ip)
-        _, folder_path, src_vmdk_file = ds_split(vmdk_path_src)
-        _, new_folder_path, dst_vmdk_file = ds_split(vmdk_path_new)
-        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
-        dst_flat_file = dst_vmdk_file.replace('.vmdk', '-flat.vmdk')
-        if len(src_ds_mpath.split('/')) == 3:
-            # This case if we have qtree DS
-            src_qtree = src_ds_mpath.split('/')[2]
-            src_path = "%s/%s%s" % (src_qtree, folder_path,
-                                    src_flat_file)
-            dest_path = "%s/%s%s" % (src_qtree, new_folder_path,
-                                     dst_flat_file)
-        else:
-            # Normal DS expected that the vol_name=DS_NAME
-            src_path = "%s%s" % (folder_path, src_flat_file)
-            dest_path = "%s%s" % (new_folder_path, dst_flat_file)
-        netapp_api.clone_file(self._admin_context, host=netapp_host,
-                              flex_vol=netapp_vol, src_path=src_path,
-                              dest_path=dest_path, vserver=vserver,
-                              dest_exists=True, is_snapshot=True)
+        try:
+            netapp_api = self._remote_netapp_api
+            netapp_fqdn = self.volumeops.get_netapp_for_ds(fcd_loc.ds_ref())
+            netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+            src_mpath = self.volumeops._get_mount_path(fcd_loc.ds_ref())
+            src_ds_mpath = src_mpath.split(':')[1]
+            src_lif_ip = src_mpath.split(':')[0]
+            netapp_vol = src_ds_mpath.split('/')[1]
+            ds_split = vops.split_datastore_path
+            vserver = netapp_api.get_vserver_for_ip(self._admin_context,
+                                                    host=netapp_host,
+                                                    lif_ip=src_lif_ip)
+            _, folder_path, src_vmdk_file = ds_split(vmdk_path_src)
+            _, new_folder_path, dst_vmdk_file = ds_split(vmdk_path_new)
+            src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+            dst_flat_file = dst_vmdk_file.replace('.vmdk', '-flat.vmdk')
+            if len(src_ds_mpath.split('/')) == 3:
+                # This case if we have qtree DS
+                src_qtree = src_ds_mpath.split('/')[2]
+                src_path = "%s/%s%s" % (src_qtree, folder_path,
+                                        src_flat_file)
+                dest_path = "%s/%s%s" % (src_qtree, new_folder_path,
+                                         dst_flat_file)
+            else:
+                # Normal DS expected that the vol_name=DS_NAME
+                src_path = "%s%s" % (folder_path, src_flat_file)
+                dest_path = "%s%s" % (new_folder_path, dst_flat_file)
+            netapp_api.clone_file(self._admin_context, host=netapp_host,
+                                  flex_vol=netapp_vol, src_path=src_path,
+                                  dest_path=dest_path, vserver=vserver,
+                                  dest_exists=True, is_snapshot=True)
+        except Exception:
+            self.volumeops.delete_fcd(new_fcd_loc)
+            raise
 
         cur_size = src_vref.size
         self._extend_if_needed(new_fcd_loc, cur_size, volume.size)
@@ -1019,36 +1023,40 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             fcd_loc=fcd_loc_snap)
         vmdk_path_vol = self.volumeops.get_vmdk_path_for_fcd(
             fcd_loc=fcd_loc)
-        netapp_api = self._remote_netapp_api
-        netapp_fqdn = self.volumeops.get_netapp_for_ds(fcd_loc.ds_ref())
-        netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
-        src_mpath = self.volumeops._get_mount_path(fcd_loc.ds_ref())
-        src_ds_mpath = src_mpath.split(':')[1]
-        src_lif_ip = src_mpath.split(':')[0]
-        netapp_vol = src_ds_mpath.split('/')[1]
-        ds_split = vops.split_datastore_path
-        vserver = netapp_api.get_vserver_for_ip(self._admin_context,
-                                                host=netapp_host,
-                                                lif_ip=src_lif_ip)
-        _, folder_path, src_vmdk_file = ds_split(vmdk_path_vol)
-        _, snap_folder_path, dst_vmdk_file = ds_split(vmdk_path_snap)
-        src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
-        dst_flat_file = dst_vmdk_file.replace('.vmdk', '-flat.vmdk')
-        if len(src_ds_mpath.split('/')) == 3:
-            # This case if we have qtree DS
-            src_qtree = src_ds_mpath.split('/')[2]
-            src_path = "%s/%s%s" % (src_qtree, folder_path,
-                                    src_flat_file)
-            dest_path = "%s/%s%s" % (src_qtree, snap_folder_path,
-                                     dst_flat_file)
-        else:
-            # Normal DS expected that the vol_name=DS_NAME
-            src_path = "%s%s" % (folder_path, src_flat_file)
-            dest_path = "%s%s" % (snap_folder_path, dst_flat_file)
-        netapp_api.clone_file(self._admin_context, host=netapp_host,
-                              flex_vol=netapp_vol, src_path=src_path,
-                              dest_path=dest_path, vserver=vserver,
-                              dest_exists=True, is_snapshot=True)
+        try:
+            netapp_api = self._remote_netapp_api
+            netapp_fqdn = self.volumeops.get_netapp_for_ds(fcd_loc.ds_ref())
+            netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
+            src_mpath = self.volumeops._get_mount_path(fcd_loc.ds_ref())
+            src_ds_mpath = src_mpath.split(':')[1]
+            src_lif_ip = src_mpath.split(':')[0]
+            netapp_vol = src_ds_mpath.split('/')[1]
+            ds_split = vops.split_datastore_path
+            vserver = netapp_api.get_vserver_for_ip(self._admin_context,
+                                                    host=netapp_host,
+                                                    lif_ip=src_lif_ip)
+            _, folder_path, src_vmdk_file = ds_split(vmdk_path_vol)
+            _, snap_folder_path, dst_vmdk_file = ds_split(vmdk_path_snap)
+            src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
+            dst_flat_file = dst_vmdk_file.replace('.vmdk', '-flat.vmdk')
+            if len(src_ds_mpath.split('/')) == 3:
+                # This case if we have qtree DS
+                src_qtree = src_ds_mpath.split('/')[2]
+                src_path = "%s/%s%s" % (src_qtree, folder_path,
+                                        src_flat_file)
+                dest_path = "%s/%s%s" % (src_qtree, snap_folder_path,
+                                         dst_flat_file)
+            else:
+                # Normal DS expected that the vol_name=DS_NAME
+                src_path = "%s%s" % (folder_path, src_flat_file)
+                dest_path = "%s%s" % (snap_folder_path, dst_flat_file)
+                netapp_api.clone_file(self._admin_context, host=netapp_host,
+                                      flex_vol=netapp_vol, src_path=src_path,
+                                      dest_path=dest_path, vserver=vserver,
+                                      dest_exists=True, is_snapshot=True)
+        except Exception:
+            self.volumeops.delete_fcd(fcd_loc_snap)
+            raise
 
         p_location = self._provider_location_to_ds_name_location(
             fcd_loc_snap.provider_location()
@@ -1062,9 +1070,25 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
 
         :param snapshot: Information for the snapshot to be created.
         """
-
+        vol = snapshot.volume
+        create_snap = self.volumeops.create_fcd_snapshot
         if self.netapp_clones:
+            connector = None
+            fcd_snap_loc = None
+            attachments = snapshot.volume.volume_attachment
+            if vol['attach_status'] == 'attached':
+                for attach in attachments:
+                    connector = attach.connector
+                if 'connection_capabilities' in connector:
+                    provider_loc = self._provider_location_to_moref_location(
+                        vol.provider_location)
+                    fcd_loc = vops.FcdLocation.from_provider_location(
+                        provider_loc)
+                    fcd_snap_loc = create_snap(fcd_loc, "Temporary snapshot"
+                                               " for %s" % vol.id)
             p_location = self._create_snap_kvm_fcd(snapshot)
+            if fcd_snap_loc:
+                self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
             return {'provider_location': p_location}
 
         if snapshot.volume['attach_status'] == 'attached':
@@ -1218,7 +1242,25 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         """
 
         if self.netapp_clones:
-            return self._create_volume_from_fcd_kvm(volume, src_vref)
+            create_snap = self.volumeops.create_fcd_snapshot
+            if src_vref['attach_status'] == 'attached':
+                attachments = src_vref.volume_attachment
+                connector = None
+                for attach in attachments:
+                    connector = attach.connector
+                if 'connection_capabilities' in connector:
+                    provider_loc = self._provider_location_to_moref_location(
+                        src_vref.provider_location)
+                    fcd_loc = vops.FcdLocation.from_provider_location(
+                        provider_loc)
+                    fcd_snap_loc = create_snap(fcd_loc, "Temporary snapshot"
+                                                        " for %s" % volume.id)
+                    ret = self._create_volume_from_fcd_kvm(volume, src_vref)
+                    self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
+                    return ret
+            else:
+                return self._create_volume_from_fcd_kvm(volume, src_vref)
+
         if src_vref['attach_status'] == 'attached':
             attachments = src_vref.volume_attachment
             connector = None
