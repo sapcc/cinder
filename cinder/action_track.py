@@ -58,11 +58,11 @@ VALID_CONTEXT_NAMES = [
 ]
 
 log_level_map = {
-    logging.CRITICAL: LOG.error,
-    logging.ERROR: LOG.error,
-    logging.WARNING: LOG.warning,
-    logging.INFO: LOG.info,
-    logging.DEBUG: LOG.debug,
+    logging.CRITICAL: 'error',
+    logging.ERROR: 'error',
+    logging.WARNING: 'warning',
+    logging.INFO: 'info',
+    logging.DEBUG: 'debug',
 }
 
 
@@ -109,21 +109,35 @@ class LogActionTrack(ActionTrack):
             f"FILE:{filename}:{line_number}:{function} "
             f"RSC:{resource} "
         )
-        log_func = log_level_map[loglevel]
-        log_func(entry, resource=resource)
+        log_func = getattr(LOG, log_level_map[loglevel])
+        try:
+            log_func(entry, resource=resource)
+        except Exception:
+            # Tracking is best-effort and must never alter the operation
+            # being observed.  If emitting fails for any reason, log a
+            # diagnostic and carry on without raising.
+            LOG.debug("action_track failed to emit entry for action '%s'",
+                      action, exc_info=True)
 
     @staticmethod
     def track(context, action, resource, message, loglevel=logging.INFO):
         # Do not call this directly.   Call action_track.track() instead.
 
-        # We only want the frame of the caller
-        # we should always be called from the trace() method in this module
-        # not called directly in this static method
-        info = list(traceback.walk_stack(None))[1][0]
+        # We want the frame of the actual caller of action_track.track().
+        # Walk the stack to find the first frame outside of this module.
+        filename = "unknown"
+        lineno = 0
+        funcname = "unknown"
+        for frame_info, frame_lineno in traceback.walk_stack(None):
+            if frame_info.f_code.co_filename != __file__:
+                filename = frame_info.f_code.co_filename
+                lineno = frame_lineno
+                funcname = frame_info.f_code.co_name
+                break
         LogActionTrack._track_with_info(context, action, resource, message,
-                                        info.f_code.co_filename,
-                                        info.f_lineno,
-                                        info.f_code.co_name,
+                                        filename,
+                                        lineno,
+                                        funcname,
                                         loglevel=loglevel)
 
     @staticmethod
@@ -187,7 +201,16 @@ def track_decorator(action):
                     isinstance(call_args[key], cinder_context.RequestContext)):
                 context = call_args[key]
 
-        track(context, action, resource, "called")
+        # Use deterministic metadata from the decorated function rather
+        # than walking the stack.  When called through decorator's
+        # trampoline the first frame outside action_track.py would be the
+        # decorator module, not the Cinder call site.
+        track_with_info(
+            context, action, resource, "called",
+            func.__code__.co_filename,
+            func.__code__.co_firstlineno,
+            func.__qualname__,
+        )
 
         try:
             return func(*args, **kwargs)
@@ -195,11 +218,21 @@ def track_decorator(action):
             with excutils.save_and_reraise_exception() as exc:
                 # We only want the frame of the caller
                 tl = traceback.extract_tb(exc.tb)
-                i = tl[1]
+                if len(tl) > 1:
+                    i = tl[1]
+                else:
+                    i = tl[0] if tl else None
                 message = str(exc.value)
-                track_with_info(
-                    context, action, resource, message,
-                    i.filename, i.lineno, i.name,
-                    loglevel=logging.ERROR
-                )
+                if i:
+                    track_with_info(
+                        context, action, resource, message,
+                        i.filename, i.lineno, i.name,
+                        loglevel=logging.ERROR
+                    )
+                else:
+                    track_with_info(
+                        context, action, resource, message,
+                        "unknown", 0, "unknown",
+                        loglevel=logging.ERROR
+                    )
     return inner
