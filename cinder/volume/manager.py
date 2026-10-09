@@ -3024,7 +3024,7 @@ class VolumeManager(manager.CleanableManager,
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
                                                        host=host['host'])
                 action_track.track(
-                    context, action_track.ACTION_VOLUME_MIGRATE,
+                    ctxt, action_track.ACTION_VOLUME_MIGRATE,
                     volume, "calling driver migrate_volume"
                 )
                 moved, model_update = self.driver.migrate_volume(ctxt,
@@ -3077,7 +3077,7 @@ class VolumeManager(manager.CleanableManager,
                 rpcapi.update_migrated_volume_capacity(ctxt, volume,
                                                        host=host['host'])
                 action_track.track(
-                    context, action_track.ACTION_VOLUME_MIGRATE,
+                    ctxt, action_track.ACTION_VOLUME_MIGRATE,
                     volume, "Call Generic migrate volume"
                 )
                 self._migrate_volume_generic(ctxt, volume, host, new_type_id)
@@ -3093,7 +3093,7 @@ class VolumeManager(manager.CleanableManager,
                                                        decrement=True)
                 with excutils.save_and_reraise_exception():
                     action_track.track(
-                        context, action_track.ACTION_VOLUME_MIGRATE,
+                        ctxt, action_track.ACTION_VOLUME_MIGRATE,
                         volume, "Failed generic migration",
                         loglevel=logging.ERROR
                     )
@@ -3103,7 +3103,7 @@ class VolumeManager(manager.CleanableManager,
                     volume.update(updates)
                     volume.save()
         action_track.track(
-            context, action_track.ACTION_VOLUME_MIGRATE,
+            ctxt, action_track.ACTION_VOLUME_MIGRATE,
             volume, "Migrate volume completed successfully."
         )
 
@@ -5302,7 +5302,7 @@ class VolumeManager(manager.CleanableManager,
             self.driver.validate_connector(connector)
         except exception.InvalidConnectorException as err:
             action_track.track(
-                context, action_track.ACTION_VOLUME_ATTACH,
+                ctxt, action_track.ACTION_VOLUME_ATTACH,
                 volume, str(err), loglevel=logging.ERROR
             )
             raise exception.InvalidInput(reason=str(err))
