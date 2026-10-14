@@ -101,7 +101,7 @@ class SAPNetappDriverRemoteService(object):
                    dest_exists, is_snapshot):
         # Clones a file on ONTAP, retrying on "device busy" (13565952)
         _CLONE_DEVICE_BUSY = '13565952'
-        retries = 5
+        retries = 10
         for attempt in range(1, retries + 1):
             try:
                 self._driver.zapi_client.clone_file(
@@ -116,8 +116,8 @@ class SAPNetappDriverRemoteService(object):
                 if (str(e.code) == _CLONE_DEVICE_BUSY
                         and attempt < retries):
                     LOG.debug('clone_file device busy (attempt %d/%d), '
-                              'retrying in 2s.', attempt, retries)
-                    time.sleep(2)
+                              'retrying in 10s.', attempt, retries)
+                    time.sleep(10)
                     dest_exists = True
                 else:
                     raise
