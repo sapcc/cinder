@@ -18,10 +18,10 @@ RPC server and client for communicating with other netapp drivers directly.
 This allows remote calls to be made to a running netapp driver to do work on
 volumes.
 """
+import time
+
 from oslo_log import log as logging
 import oslo_messaging as messaging
-
-import time
 
 from cinder import rpc
 from cinder.volume.drivers.netapp.dataontap.client import api as netapp_api
