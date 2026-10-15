@@ -1755,6 +1755,37 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
         return file_found
 
+    def clone_file_ssh(self, flex_vol, src_path, dest_path, vserver,
+                       dest_exists=False, source_snapshot=None,
+                       is_snapshot=False):
+
+        command_template = ('volume file clone create '
+                            '-vserver %(vserver)s '
+                            '-source-path '
+                            '/vol/%(flex_vol_name)s/%(src_path)s '
+                            '-destination-path '
+                            '/vol/%(flex_vol_name)s/%(dest_path)s '
+                            '-overwrite-destination -ignore-locks')
+
+        volume = self._get_volume_by_args(flex_vol)
+        command = command_template % {
+            'vserver': vserver,
+            'flex_vol_name': volume['name'],
+            'src_path': src_path,
+            'dest_path': dest_path,
+        }
+        try:
+            with self.ssh_client.ssh_connect_semaphore:
+                ssh_pool = self.ssh_client.ssh_pool
+                with ssh_pool.item() as ssh:
+                    self.ssh_client.execute_command(ssh, command)
+
+        except Exception as e:
+            msg = _('Failed to clone file'
+                    ' Details: %(ex)s') % {'ex': e}
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
     def clone_file(self, flex_vol, src_path, dest_path, vserver,
                    dest_exists=False, source_snapshot=None, is_snapshot=False):
         """Clones file on vserver."""
