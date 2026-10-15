@@ -1159,14 +1159,6 @@ class Client(client_base.Client, metaclass=volume_utils.TraceWrapperMetaclass):
                                    "%(vserver)s and junction path "
                                    "%(junction)s ") % msg_fmt)
 
-    def clone_file_zapi(self, flex_vol, src_path, dest_path, vserver,
-                        dest_exists=False, source_snapshot=None,
-                        is_snapshot=False):
-        return self.clone_file(flex_vol, src_path, dest_path, vserver,
-                               dest_exists=dest_exists,
-                               source_snapshot=source_snapshot,
-                               is_snapshot=is_snapshot)
-
     def clone_file(self, flex_vol, src_path, dest_path, vserver,
                    dest_exists=False, source_snapshot=None,
                    is_snapshot=False):
