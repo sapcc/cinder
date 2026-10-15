@@ -104,7 +104,7 @@ class SAPNetappDriverRemoteService(object):
         retries = 10
         for attempt in range(1, retries + 1):
             try:
-                self._driver.zapi_client.clone_file(
+                self._driver.zapi_client.clone_file_zapi(
                     flex_vol=flex_vol,
                     src_path=src_path,
                     dest_path=dest_path,
