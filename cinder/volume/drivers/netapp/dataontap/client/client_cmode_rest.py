@@ -1765,7 +1765,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                             '/vol/%(flex_vol_name)s/%(src_path)s '
                             '-destination-path '
                             '/vol/%(flex_vol_name)s/%(dest_path)s '
-                            '-overwrite-destination -ignore-locks')
+                            '-overwrite-destination True -ignore-locks True')
 
         volume = self._get_volume_by_args(flex_vol)
         command = command_template % {
@@ -1774,11 +1774,13 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
             'src_path': src_path,
             'dest_path': dest_path,
         }
+        prompt = "Do you want to continue? {y|n}:"
         try:
             with self.ssh_client.ssh_connect_semaphore:
                 ssh_pool = self.ssh_client.ssh_pool
                 with ssh_pool.item() as ssh:
-                    self.ssh_client.execute_command(ssh, command)
+                    self.ssh_client.execute_command_with_prompt(ssh, command,
+                                                                prompt, "y")
 
         except Exception as e:
             msg = _('Failed to clone file'
