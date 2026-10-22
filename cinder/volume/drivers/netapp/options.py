@@ -244,7 +244,14 @@ netapp_nfs_extra_opts = [
                       'terminate_connection. This requires the REST client '
                       '(netapp_use_legacy_client = False); if the legacy '
                       'ZAPI client is active this option has no effect.'
-                      'Primary use-case is instance HA failover.')), ]
+                      'Primary use-case is instance HA failover.')),
+    # SAP: pool_drain_list is only honored by the cDOT NFS driver.
+    cfg.ListOpt('pool_drain_list',
+                default=[],
+                help=('Comma-separated list of pool names (NFS share paths) '
+                      'to force into drain (down) mode on every volume stats '
+                      'update, unless a user has manually set the pool up via '
+                      'the set_pool_state API.')), ]
 netapp_san_opts = [
     cfg.StrOpt('netapp_lun_ostype',
                help=('This option defines the type of operating system that'

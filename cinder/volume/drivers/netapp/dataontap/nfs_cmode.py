@@ -582,6 +582,17 @@ class NetAppCmodeNfsDriver(
             LOG.info('Pool state for volume %s: %s',
                      ssc_vol_name, pool['pool_state'])
 
+            # SAP: config-driven drain. Any pool listed in pool_drain_list is
+            # forced down on every stats update, unless a user has manually
+            # flipped it to 'up' (pool_state stored in the flexvol comment by
+            # the set_pool_state API).
+            if nfs_share in (self.configuration.pool_drain_list or []):
+                manually_up = bool(pool_info) and (
+                    pool_info.get('pool_state') == 'up')
+                if not manually_up:
+                    pool['pool_state'] = 'down'
+                    pool['pool_down_reason'] = 'pool marked as draining'
+
             # Add replication capabilities/stats
             pool.update(
                 self.get_replication_backend_stats(self.configuration))
