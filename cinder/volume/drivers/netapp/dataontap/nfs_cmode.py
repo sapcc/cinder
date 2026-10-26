@@ -586,7 +586,7 @@ class NetAppCmodeNfsDriver(
             # forced down on every stats update, unless a user has manually
             # flipped it to 'up' (pool_state stored in the flexvol comment by
             # the set_pool_state API).
-            if nfs_share in (self.configuration.pool_drain_list or []):
+            if nfs_share in self.configuration.pool_drain_list:
                 manually_up = bool(pool_info) and (
                     pool_info.get('pool_state') == 'up')
                 if not manually_up:
