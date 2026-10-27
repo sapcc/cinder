@@ -596,7 +596,7 @@ class CapacityFilterTestCase(BackendFiltersTestCase):
 
     @ddt.data('migrate_volume', 'find_backend_for_connector')
     def test_filter_passes_same_aggregate_migration(
-            self, _mock_serv_is_up, operation):
+            self, operation, _mock_serv_is_up):
         """Cross-vcenter migration with same aggregate_id should pass.
 
         When migrating a volume between vcenters where both pools share the
@@ -656,7 +656,7 @@ class CapacityFilterTestCase(BackendFiltersTestCase):
                                        'updated_at': None,
                                        'service': service,
                                        'capabilities': {
-                                        'aggregate_id': 'agg_456'}})
+                                           'aggregate_id': 'agg_456'}})
         self.assertFalse(filt_cls.backend_passes(host, filter_properties))
 
     def test_filter_fails_same_aggregate_non_migration_operation(

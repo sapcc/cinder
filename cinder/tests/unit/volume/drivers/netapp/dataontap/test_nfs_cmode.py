@@ -377,6 +377,87 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
 
         self.assertEqual('shared-ds-001', result[0]['aggregate_id'])
 
+    def test_get_pool_stats_with_pool_drain_list(self):
+        """Test pool_drain_list forces pools down unless manually set up."""
+        self.driver.using_cluster_credentials = True
+        conf = self.driver.configuration
+        conf.netapp_driver_reports_provisioned_capacity = False
+        conf.pool_drain_list = ['10.10.10.10:/vola', '10.10.10.10:/volb']
+        self.driver.zapi_client = mock.Mock()
+
+        def ssc_entry(pool_name):
+            return {
+                'pool_name': pool_name,
+                'thick_provisioning_support': True,
+                'thin_provisioning_support': False,
+                'netapp_thin_provisioned': 'false',
+                'netapp_compression': 'false',
+                'netapp_mirrored': 'false',
+                'netapp_dedup': 'true',
+                'netapp_aggregate': 'aggr1',
+                'netapp_raid_type': 'raid_dp',
+                'netapp_disk_type': 'SSD',
+                'consistent_group_snapshot_enabled': True,
+                'netapp_is_flexgroup': 'false',
+            }
+
+        ssc = {
+            # listed, no comment -> drained
+            'vola': ssc_entry('10.10.10.10:/vola'),
+            # listed, but user manually set it up -> stays up
+            'volb': ssc_entry('10.10.10.10:/volb'),
+            # not listed -> stays up
+            'volc': ssc_entry('10.10.10.10:/volc'),
+        }
+        self.mock_object(self.driver.ssc_library, 'get_ssc',
+                         return_value=ssc)
+        self.mock_object(self.driver.ssc_library, 'get_ssc_aggregates',
+                         return_value=['aggr1'])
+        self.mock_object(self.driver, 'get_replication_backend_names',
+                         return_value=[])
+
+        capacity = {
+            'reserved_percentage': fake.RESERVED_PERCENTAGE,
+            'max_over_subscription_ratio': fake.MAX_OVER_SUBSCRIPTION_RATIO,
+            'total_capacity_gb': 100.0,
+            'free_capacity_gb': 80.0,
+        }
+        self.mock_object(self.driver, '_get_share_capacity_info',
+                         return_value=capacity)
+        self.mock_object(self.driver.zapi_client,
+                         'get_flexvol_dedupe_used_percent',
+                         return_value=55.0)
+        aggr_capacities = {
+            'aggr1': {
+                'percent-used': 45,
+                'size-available': 59055800320.0,
+                'size-total': 107374182400.0,
+            },
+        }
+        self.mock_object(self.driver.zapi_client, 'get_aggregate_capacities',
+                         return_value=aggr_capacities)
+        self.driver.perf_library.get_node_utilization_for_pool = (
+            mock.Mock(return_value=30.0))
+
+        comments = {
+            'vola': None,
+            'volb': {'pool_state': 'up', 'pool_down_reason': ''},
+            'volc': None,
+        }
+        self.mock_object(self.driver, '_get_volume_comment',
+                         side_effect=lambda vol: comments.get(vol))
+
+        result = self.driver._get_pool_stats(filter_function='filter',
+                                             goodness_function='goodness')
+
+        by_name = {pool['pool_name']: pool for pool in result}
+        self.assertEqual('down', by_name['10.10.10.10:/vola']['pool_state'])
+        self.assertEqual('pool marked as draining',
+                         by_name['10.10.10.10:/vola']['pool_down_reason'])
+        self.assertEqual('up', by_name['10.10.10.10:/volb']['pool_state'])
+        self.assertEqual('', by_name['10.10.10.10:/volb']['pool_down_reason'])
+        self.assertEqual('up', by_name['10.10.10.10:/volc']['pool_state'])
+
     def test_update_volume_stats_has_aggregate_pool(self):
         """Test that has_aggregate_pool is set when pools have aggregate_id."""
         pool_with_agg = {
