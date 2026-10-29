@@ -501,6 +501,11 @@ def volume_update(context, volume_id, values):
     return IMPL.volume_update(context, volume_id, values)
 
 
+def volume_history_get_all_by_volume(context, volume_id):
+    """Get all history records for a volume."""
+    return IMPL.volume_history_get_all_by_volume(context, volume_id)
+
+
 def volumes_update(context, values_list):
     """Set the given properties on a list of volumes and update them.
 
