@@ -15,8 +15,11 @@
 
 import collections.abc as collections
 import inspect
+import time
 
 import decorator
+import eventlet
+from oslo_log import log as logging
 from oslo_utils import versionutils
 
 from cinder import db
@@ -24,6 +27,9 @@ from cinder import exception
 from cinder.objects import base
 from cinder import service
 from cinder.volume import rpcapi as vol_rpcapi
+
+
+LOG = logging.getLogger(__name__)
 
 
 class CinderCleanableObject(base.CinderPersistentObject):
@@ -199,14 +205,63 @@ class CinderCleanableObject(base.CinderPersistentObject):
                 cleanables = [cand for cand in candidates
                               if (isinstance(cand, CinderCleanableObject)
                                   and cand.is_cleanable(pinned=False))]
+                hb = None
+                stop_heartbeat = eventlet.event.Event()
                 try:
                     # Create the entries in the workers table
                     for cleanable in cleanables:
                         cleanable.set_worker()
 
+                    # Spawn a greenthread that periodically touches worker
+                    # entries to keep them fresh. This prevents a new pod's
+                    # init_host -> _do_cleanup from resetting resources that
+                    # are actively being processed during graceful shutdown.
+                    #
+                    # NOTE(epoxy): the heartbeat is an eventlet greenthread
+                    # because Epoxy still runs cinder under eventlet. When
+                    # cinder migrates off eventlet (upstream), this should
+                    # become a threading.Thread with an Event.wait() timeout.
+                    def _worker_heartbeat():
+                        last_failure_log = 0.0
+                        while not stop_heartbeat.ready():
+                            for cleanable in cleanables:
+                                if cleanable.worker:
+                                    try:
+                                        db.worker_update(
+                                            cleanable._context,
+                                            cleanable.worker.id)
+                                    except Exception:
+                                        # Rate-limit: this loop runs roughly
+                                        # every 0.1s, so do not log every
+                                        # failure.  A silent heartbeat means
+                                        # the worker entry goes stale and the
+                                        # new pod may reset the in-flight
+                                        # operation, so surface it.
+                                        now = time.monotonic()
+                                        if now - last_failure_log >= 1.0:
+                                            last_failure_log = now
+                                            LOG.warning(
+                                                "Failed to heartbeat worker "
+                                                "%s for %s; entry may go "
+                                                "stale and be reset",
+                                                cleanable.worker.id,
+                                                cleanable.obj_name())
+                            # Use event.ready() + sleep instead of a long
+                            # uninterruptible sleep. Short sleeps allow the
+                            # loop to notice stop_heartbeat quickly.
+                            for _ in range(100):
+                                if stop_heartbeat.ready():
+                                    break
+                                eventlet.sleep(0.1)
+                    hb = eventlet.spawn(_worker_heartbeat)
+
                     # Call the function
                     result = f(*args, **kwargs)
                 finally:
+                    # Stop the heartbeat greenthread
+                    stop_heartbeat.send()
+                    if hb is not None:
+                        hb.wait()
                     # Remove entries from the workers table
                     for cleanable in cleanables:
                         # NOTE(geguileo): We check that the status has changed
