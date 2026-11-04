@@ -14,6 +14,8 @@
 #    under the License.
 """Tests for Volume Manager Code."""
 
+import ast
+import inspect
 from unittest import mock
 
 import ddt
@@ -23,6 +25,7 @@ from cinder import exception
 from cinder.message import message_field
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
+from cinder.tests.unit import test
 from cinder.tests.unit import volume as base
 from cinder.volume import manager as vol_manager
 
@@ -502,3 +505,25 @@ class VolumeManagerTestCase(base.BaseVolumeTestCase):
                                                            image_meta_id,
                                                            url,
                                                            {'store': store_id})
+
+
+class DrainingDoesNotRejectWorkTestCase(test.TestCase):
+    """No manager method may refuse work just because draining started.
+
+    New RPC work is stopped by stopping the consumer in Phase 1 of
+    Service.stop(). A per-method guard would instead fire on calls the
+    manager makes to itself inside an operation that was already accepted,
+    aborting it half-way through.
+    """
+
+    def test_no_manager_method_is_guarded(self):
+        tree = ast.parse(inspect.getsource(vol_manager))
+        guarded = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for decorator in node.decorator_list
+            if isinstance(decorator, ast.Name)
+            and decorator.id == 'reject_if_draining'
+        }
+        self.assertEqual(set(), guarded)

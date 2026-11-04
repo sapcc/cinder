@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import time
 from unittest import mock
 
 from cinder import manager
@@ -54,3 +55,93 @@ class TestManager(test.TestCase):
 
         self.assertEqual(set(str(r) for r in result.objects),
                          set(str(e) for e in expected))
+
+
+class TestThreadPoolManager(test.TestCase):
+    """Test cases for ThreadPoolManager greenthread pool + shutdown."""
+
+    def test_add_to_threadpool_executes(self):
+        """Test that _add_to_threadpool runs the task to completion."""
+        mgr = manager.ThreadPoolManager()
+        executed = []
+
+        mgr._add_to_threadpool(lambda: executed.append(True))
+        mgr.cleanup_threadpool()  # waitall ensures task completes
+
+        self.assertEqual([True], executed)
+
+    def test_signal_shutdown_rejects_new_tasks(self):
+        """Test that new tasks are rejected after shutdown signal."""
+        mgr = manager.ThreadPoolManager()
+        mgr.signal_shutdown()
+
+        executed = []
+        result = mgr._add_to_threadpool(lambda: executed.append(True))
+
+        # Should return None when shutdown is signaled
+        self.assertIsNone(result)
+
+        # Give it a moment to potentially execute
+        time.sleep(0.1)
+
+        self.assertEqual([], executed)
+        mgr.cleanup_threadpool()
+
+    def test_signal_shutdown_allows_existing_tasks(self):
+        """Test that existing tasks continue after shutdown signal."""
+        mgr = manager.ThreadPoolManager()
+        completed = []
+
+        def slow_task():
+            time.sleep(0.1)
+            completed.append(True)
+
+        # Spawn task first
+        mgr._add_to_threadpool(slow_task)
+        # Then signal shutdown
+        mgr.signal_shutdown()
+
+        # Existing task should still complete on cleanup (waitall)
+        mgr.cleanup_threadpool()
+        self.assertEqual([True], completed)
+
+    def test_cleanup_threadpool_allows_restart(self):
+        """Test that cleanup_threadpool re-creates pool for restart.
+
+        oslo.service ProcessLauncher with restart_method='mutate' forks
+        a new child that inherits the parent's manager object. After
+        stop()/wait()/cleanup(), the child calls start() -> init_host()
+        which needs to submit tasks to the threadpool.
+        """
+        mgr = manager.ThreadPoolManager()
+
+        # Simulate a full shutdown cycle
+        mgr.signal_shutdown()
+        mgr.cleanup_threadpool()
+
+        # After cleanup, the pool should be re-created and usable
+        executed = []
+        result = mgr._add_to_threadpool(lambda: executed.append(True))
+        self.assertIsNotNone(result)
+
+        mgr.cleanup_threadpool()
+        self.assertEqual([True], executed)
+
+    def test_cleanup_threadpool_clears_shutdown_event(self):
+        """Test cleanup resets shutdown_event so new tasks accepted."""
+        mgr = manager.ThreadPoolManager()
+
+        mgr.signal_shutdown()
+        # After signal_shutdown, tasks should be rejected
+        result = mgr._add_to_threadpool(lambda: None)
+        self.assertIsNone(result)
+
+        mgr.cleanup_threadpool()
+
+        # After cleanup, tasks should be accepted again
+        executed = []
+        result = mgr._add_to_threadpool(lambda: executed.append(True))
+        self.assertIsNotNone(result)
+
+        mgr.cleanup_threadpool()
+        self.assertEqual([True], executed)

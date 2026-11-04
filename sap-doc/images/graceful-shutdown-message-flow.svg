@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="810" viewBox="0 0 1000 810" role="img" aria-labelledby="t d">
+  <title id="t">What a per-method guard would do to a message</title>
+  <desc id="d">Two lanes. Left: the SIGTERM arrives while the message is unacked, so the pod never acks it, RabbitMQ redelivers it to the replacement pod and the create still happens. Right: the pod takes and acks the message first, RabbitMQ removes it, then the SIGTERM arrives, the decorator refuses it and nothing retries it.</desc>
+
+  <defs>
+    <marker id="arrow" width="10" height="10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa3ad"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="810" fill="#ffffff"/>
+
+  <text x="40" y="36" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="21" font-weight="700" fill="#1f2328">What a per-method guard would do to a message</text>
+  <text x="40" y="60" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="13.5" fill="#5b6470">Same message, two lanes. The only difference is which happens first: the ack, or the SIGTERM.</text>
+
+  <!-- the message -->
+  <rect x="300" y="86" width="400" height="66" rx="6" fill="#f5f6f8" stroke="#ccd2d9" stroke-width="1.5"/>
+  <text x="500" y="110" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13" fill="#1f2328">create_volume(vol-123)</text>
+  <text x="500" y="130" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="12" fill="#5b6470">in the queue  cinder-volume.&lt;host&gt;@&lt;backend&gt;</text>
+  <text x="500" y="146" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#5b6470">not acknowledged</text>
+
+  <path d="M 500 152 L 500 198 L 250 198 L 250 284" fill="none" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <path d="M 500 152 L 500 198 L 750 198 L 750 284" fill="none" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ============ LANE 1 ============ -->
+  <rect x="60" y="286" width="380" height="58" rx="6" fill="#f5f6f8" stroke="#ccd2d9" stroke-width="1.5"/>
+  <text x="250" y="312" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">The SIGTERM arrives.</text>
+  <text x="250" y="332" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">The message is still unacked.</text>
+
+  <line x1="250" y1="344" x2="250" y2="360" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="60" y="362" width="380" height="64" rx="6" fill="#f5f6f8" stroke="#ccd2d9" stroke-width="1.5"/>
+  <text x="250" y="390" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">The pod exits and its channel closes.</text>
+  <text x="250" y="410" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">Nothing was acked, so nothing is lost.</text>
+
+  <line x1="250" y1="426" x2="250" y2="442" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="60" y="444" width="380" height="64" rx="6" fill="#f5f6f8" stroke="#ccd2d9" stroke-width="1.5"/>
+  <text x="250" y="472" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">RabbitMQ hands it to the replacement pod,</text>
+  <text x="250" y="492" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">which runs the create.</text>
+
+  <line x1="250" y1="508" x2="250" y2="524" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="60" y="526" width="380" height="56" rx="6" fill="#edf9f1" stroke="#a6d8ba" stroke-width="1.5"/>
+  <text x="250" y="560" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#1e7a45">&#10003;  The create happens</text>
+
+  <!-- ============ LANE 2 ============ -->
+  <rect x="560" y="286" width="380" height="58" rx="6" fill="#fdf0ee" stroke="#e0a49c" stroke-width="1.5"/>
+  <text x="750" y="312" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">The pod takes it first, so oslo acks it.</text>
+  <text x="750" y="332" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">RabbitMQ removes it from the queue.</text>
+
+  <line x1="750" y1="344" x2="750" y2="360" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="560" y="362" width="380" height="64" rx="6" fill="#f5f6f8" stroke="#ccd2d9" stroke-width="1.5"/>
+  <text x="750" y="390" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">Then the SIGTERM arrives. Too late:</text>
+  <text x="750" y="410" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">nothing is left in the queue to redeliver.</text>
+
+  <line x1="750" y1="426" x2="750" y2="442" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="560" y="444" width="380" height="64" rx="6" fill="#f5f6f8" stroke="#ccd2d9" stroke-width="1.5"/>
+  <text x="750" y="472" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">The handler runs. The decorator refuses it</text>
+  <text x="750" y="492" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" fill="#1f2328">and raises ServiceUnavailable.</text>
+
+  <line x1="750" y1="508" x2="750" y2="524" stroke="#9aa3ad" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="560" y="526" width="380" height="56" rx="6" fill="#fdf0ee" stroke="#e0a49c" stroke-width="1.5"/>
+  <text x="750" y="560" text-anchor="middle" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#a93226">&#10007;  The request is gone</text>
+
+  <!-- ============ FOOTER ============ -->
+  <rect x="40" y="612" width="920" height="178" rx="8" fill="#fbfbfc" stroke="#dfe3e8" stroke-width="1.5"/>
+  <text x="70" y="640" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#1f2328">On the right-hand lane, which message was lost decides the damage:</text>
+
+  <text x="70" y="672" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#1e7a45">delete_volume</text>
+  <text x="450" y="672" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="12.5" fill="#1f2328">recovered &#8212; on restart, init_host sees &#8216;deleting&#8217; and retries it</text>
+
+  <text x="70" y="700" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#a93226">create_volume, create_snapshot,</text>
+  <text x="70" y="716" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#a93226">extend_volume, retype</text>
+  <text x="450" y="708" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="12.5" fill="#1f2328">not recovered &#8212; startup cleanup sets them to &#8216;error&#8217;</text>
+
+  <text x="70" y="742" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#5b6470">attach, detach, initialize_connection</text>
+  <text x="450" y="742" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="12.5" fill="#1f2328">not affected &#8212; caller gets an error instead of hanging</text>
+
+  <text x="70" y="772" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" font-size="11.5" font-style="italic" fill="#5b6470">The left lane is a short window: rabbit_qos_prefetch_count defaults to 0 (unlimited prefetch), so the ack usually follows the take almost immediately.</text>
+</svg>
