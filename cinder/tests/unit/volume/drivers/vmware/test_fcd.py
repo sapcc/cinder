@@ -27,6 +27,7 @@ from oslo_vmware import vim_util
 
 from cinder import context
 from cinder import exception as cinder_exceptions
+from cinder.objects import snapshot as snapshot_obj
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
@@ -159,6 +160,12 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
 
         ret = self._driver._select_ds_fcd(volume)
         self.assertEqual(datastore, ret)
+        select_datastore.assert_called_once_with(volume, cinder_host=None)
+
+        cinder_host = 'other-host@vmware_fcd#other_ds'
+        ret = self._driver._select_ds_fcd(volume, cinder_host=cinder_host)
+        self.assertEqual(datastore, ret)
+        select_datastore.assert_called_with(volume, cinder_host=cinder_host)
 
     @mock.patch.object(VMDK_DRIVER, '_get_dc')
     @mock.patch.object(VMDK_DRIVER, '_select_ds_for_volume')
@@ -581,7 +588,7 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             provider_loc_to_ds_name_loc,
             snap_provider_loc_to_ds_name_loc,
             _get_storage_profile_id,
-            use_fcd_snapshot=False):
+            use_fcd_snapshot=False, hidden_backend=None):
         self._driver._use_fcd_snapshot = use_fcd_snapshot
 
         provider_location = mock.sentinel.provider_location
@@ -610,6 +617,9 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         volume = self._create_volume_obj()
         snapshot = fake_snapshot.fake_snapshot_obj(
             self._context, volume=volume)
+        if hidden_backend:
+            snapshot.metadata = {
+                snapshot_obj.SAP_HIDDEN_BACKEND_KEY: hidden_backend}
         ret = self._driver.create_snapshot(snapshot)
         self.assertEqual({'provider_location': provider_location}, ret)
 
@@ -617,13 +627,25 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
             vops.create_fcd_snapshot.assert_called_once_with(
                 fcd_loc, description="snapshot-%s" % snapshot.id)
         else:
-            select_ds_fcd.assert_called_once_with(snapshot.volume)
+            select_ds_fcd.assert_called_once_with(
+                snapshot.volume,
+                cinder_host=hidden_backend if hidden_backend and '#'
+                in hidden_backend else None)
             clone_fcd.assert_called_once_with(
                 volume.provider_location, snapshot, ds_ref,
                 profile_id=mock.sentinel.profile_id, key_id=None)
 
     def test_create_snapshot_legacy(self):
         self._test_create_snapshot()
+
+    def test_create_snapshot_legacy_hidden_pool(self):
+        self._test_create_snapshot(
+            hidden_backend='this-host@vmware_fcd#other_ds')
+
+    def test_create_snapshot_legacy_hidden_backend_without_pool(self):
+        # A backend-only value carries no datastore, so it must not be
+        # forwarded as cinder_host.
+        self._test_create_snapshot(hidden_backend='this-host@vmware_fcd')
 
     def test_create_snapshot(self):
         self._test_create_snapshot(use_fcd_snapshot=True)
