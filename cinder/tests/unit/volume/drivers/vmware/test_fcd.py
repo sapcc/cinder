@@ -27,6 +27,7 @@ from oslo_vmware import vim_util
 
 from cinder import context
 from cinder import exception as cinder_exceptions
+from cinder.objects import snapshot as snapshot_obj
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
@@ -666,6 +667,48 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
 
     def test_delete_snapshot_legacy(self):
         self._test_delete_snapshot()
+
+    def _fake_independent_snapshot(self, hidden_backend):
+        volume = self._create_volume_obj()
+        snapshot = fake_snapshot.fake_snapshot_obj(
+            self._context, volume=volume)
+        snapshot.provider_location = 'fake-fcd-id@fake-ds'
+        snapshot.metadata = {
+            snapshot_obj.SAP_HIDDEN_BACKEND_KEY: hidden_backend}
+        self._driver.host = 'this-host@vmware_fcd'
+        self._driver._admin_context = mock.sentinel.admin_context
+        self._driver._remote_api = mock.Mock()
+        return snapshot
+
+    @mock.patch.object(FCD_DRIVER, '_snap_provider_location_to_moref_location')
+    @mock.patch.object(FCD_DRIVER, '_delete_fcd')
+    def test_delete_snapshot_on_hidden_backend(self, delete_fcd,
+                                               snap_provider_to_moref_loc):
+        snap_provider_to_moref_loc.return_value = None
+        hidden = 'other-host@vmware_fcd#pool'
+        snapshot = self._fake_independent_snapshot(hidden)
+
+        self._driver.delete_snapshot(snapshot)
+
+        self._driver._remote_api.delete_fcd.assert_called_once_with(
+            mock.sentinel.admin_context, hidden, 'fake-fcd-id@fake-ds')
+        delete_fcd.assert_not_called()
+
+    @mock.patch.object(FCD_DRIVER, '_snap_provider_location_to_moref_location')
+    @mock.patch.object(FCD_DRIVER, '_provider_location_to_moref_location')
+    @mock.patch.object(FCD_DRIVER, '_delete_fcd')
+    def test_delete_snapshot_local_backend(self, delete_fcd,
+                                           provider_to_moref_loc,
+                                           snap_provider_to_moref_loc):
+        snap_provider_to_moref_loc.return_value = None
+        provider_to_moref_loc.return_value = mock.sentinel.provider_loc
+        snapshot = self._fake_independent_snapshot(
+            'this-host@vmware_fcd#other-pool')
+
+        self._driver.delete_snapshot(snapshot)
+
+        self._driver._remote_api.delete_fcd.assert_not_called()
+        delete_fcd.assert_called_once_with(mock.sentinel.provider_loc)
 
     def test_delete_snapshot_with_empty_provider_loc(self):
         self._test_delete_snapshot(empty_provider_loc=True)
