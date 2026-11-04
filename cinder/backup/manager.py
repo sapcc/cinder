@@ -36,8 +36,8 @@ import datetime
 import os
 import typing
 
-import eventlet
 from castellan import key_manager
+import eventlet
 from eventlet import tpool
 from oslo_config import cfg
 from oslo_log import log as logging

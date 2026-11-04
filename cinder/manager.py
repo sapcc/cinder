@@ -433,10 +433,11 @@ class CleanableManager(object):
         cleanup_request = objects.CleanupRequest(service_id=service_id)
         self.do_cleanup(ctxt, cleanup_request, skip_fresh=True)
         # skip_fresh above cannot tell a draining pod from a killed one: both
-        # leave entries heartbeated seconds ago, so both are skipped. A draining
-        # pod keeps heartbeating them and needs them left alone, while a killed
-        # pod's entries are orphaned, and nothing else would ever claim them,
-        # leaving volumes stuck in 'deleting'. So run the same pass again once
+        # leave entries heartbeated seconds ago, so both are skipped. A
+        # draining pod keeps heartbeating them and needs them left alone,
+        # while a killed pod's entries are orphaned, and nothing else would
+        # ever claim them, leaving volumes stuck in 'deleting'. So run the
+        # same pass again once
         # the window has passed: entries heartbeated since then are still
         # skipped, entries that went quiet are claimed.
         eventlet.spawn_after(CONF.service_down_time + 10,
