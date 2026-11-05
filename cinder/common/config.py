@@ -138,7 +138,14 @@ global_opts = [
                help='The full class name of the consistencygroup API class'),
     cfg.BoolOpt('split_loggers',
                 default=False,
-                help='Log requests to multiple loggers.')
+                help='Log requests to multiple loggers.'),
+    cfg.BoolOpt('volume_history_enabled',
+                default=True,
+                help='Enable volume history tracking. When enabled, all '
+                     'mutations to volume DB rows are recorded in the '
+                     'volume_history table for auditing purposes. Disabling '
+                     'this can reduce DB overhead in high-throughput '
+                     'environments.'),
 ]
 
 auth_opts = [
