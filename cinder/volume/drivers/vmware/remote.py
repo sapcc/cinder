@@ -94,6 +94,12 @@ class VmdkDriverRemoteApi(rpc.RPCAPI):
                           profile_id=profile_id,
                           key_id=key_id)
 
+    @volume_utils.trace
+    def delete_fcd(self, ctxt, host, provider_location, timeout=60):
+        cctxt = self._get_cctxt(host, timeout=timeout)
+        return cctxt.call(ctxt, 'delete_fcd',
+                          provider_location=provider_location)
+
 
 class VmdkDriverRemoteService(object):
     RPC_API_VERSION = VmdkDriverRemoteApi.RPC_API_VERSION
@@ -185,3 +191,9 @@ class VmdkDriverRemoteService(object):
         disk_path = vops.get_vmdk_path_for_fcd(fcd_loc=new_fcd_loc)
         vops.update_fcd_vmdk_uuid(ds_ref, disk_path, volume_id)
         return prov_loc, disk_path
+
+    @volume_utils.trace
+    def delete_fcd(self, ctxt, provider_location):
+        prov_loc = self._driver._provider_location_to_moref_location(
+            provider_location)
+        return self._driver._delete_fcd(prov_loc)

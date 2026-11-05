@@ -60,6 +60,18 @@ class VmdkDriverRemoteApiTest(test.RPCAPITestCase):
                            cinder_host=self._fake_host,
                            )
 
+    @mock.patch.object(vmware_remote.VmdkDriverRemoteApi, '_get_cctxt')
+    def test_delete_fcd(self, get_cctxt):
+        cctxt = mock.Mock()
+        get_cctxt.return_value = cctxt
+        ctxt = mock.sentinel.ctxt
+
+        self.rpcapi().delete_fcd(ctxt, self._fake_host, 'fcd@ds', timeout=30)
+
+        get_cctxt.assert_called_once_with(self._fake_host, timeout=30)
+        cctxt.call.assert_called_once_with(
+            ctxt, 'delete_fcd', provider_location='fcd@ds')
+
 
 class VmdkDriverRemoteServiceTest(test.TestCase):
 
@@ -124,3 +136,15 @@ class VmdkDriverRemoteServiceTest(test.TestCase):
         self._service.create_backing(self._ctxt, self._fake_volume)
         self._driver._create_backing.assert_called_once_with(
             self._fake_volume, create_params=None, cinder_host=None)
+
+    def test_delete_fcd(self):
+        provider_location = 'fake-fcd-id@fake-ds'
+        to_moref = self._driver._provider_location_to_moref_location
+        to_moref.return_value = mock.sentinel.moref_loc
+
+        ret_val = self._service.delete_fcd(self._ctxt, provider_location)
+
+        to_moref.assert_called_once_with(provider_location)
+        self._driver._delete_fcd.assert_called_once_with(
+            mock.sentinel.moref_loc)
+        self.assertEqual(self._driver._delete_fcd.return_value, ret_val)

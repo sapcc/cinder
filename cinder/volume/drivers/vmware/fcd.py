@@ -34,6 +34,7 @@ from cinder.common import constants
 from cinder import exception
 from cinder.i18n import _
 from cinder import interface
+from cinder.objects import snapshot as snapshot_obj
 from cinder.volume.drivers.vmware import vmdk
 from cinder.volume.drivers.vmware import volumeops as vops
 from cinder.volume import volume_utils
@@ -1124,6 +1125,17 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 snap_location)
             return self.volumeops.delete_fcd_snapshot(fcd_snap_loc)
         else:
+            # The clone lives on the backend that created it, which is not
+            # necessarily the volume's current backend once the volume has
+            # been migrated to another vCenter.  Delete the clone there,
+            # where its datastore can be resolved.
+            hidden = (snapshot.metadata or {}).get(
+                snapshot_obj.SAP_HIDDEN_BACKEND_KEY)
+            if hidden and volume_utils.extract_host(hidden) != self.host:
+                LOG.info("Deleting snapshot %(snap)s clone on %(host)s.",
+                         {'snap': snapshot.id, 'host': hidden})
+                return self._remote_api.delete_fcd(
+                    self._admin_context, hidden, snapshot.provider_location)
             provider_loc = self._provider_location_to_moref_location(
                 snapshot.provider_location
             )
