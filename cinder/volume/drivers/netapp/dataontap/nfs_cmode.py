@@ -316,6 +316,15 @@ class NetAppCmodeNfsDriver(
             LOG.error("Could not delete old volume %s. A manual deletion is "
                       "required.", tmp_file_path)
 
+    def _swap_files_rpc(self, flexvol_name, original_file, new_file,
+                        vserver):
+        old_vserver = self.zapi_client.connection._vserver
+        if old_vserver != vserver:
+            # set to vserver to unscoped
+            self.zapi_client.connection.set_vserver(None)
+        self._swap_files(flexvol_name, original_file, new_file)
+        self.zapi_client.connection.set_vserver(old_vserver)
+
     def _clone_backing_file_for_volume(self, volume_name, clone_name,
                                        volume_id, share=None,
                                        is_snapshot=False,

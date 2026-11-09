@@ -41,15 +41,18 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
             version=version, **kwargs)
 
     @volume_utils.trace
-    def swap_files(self, ctxt, host, vol_name, original_file, new_file):
+    def swap_files(self, ctxt, host, vol_name, original_file, new_file,
+                   vserver=None):
         cctxt = self._get_cctxt(host=host)
         return cctxt.call(ctxt, 'swap_files', vol_name=vol_name,
-                          original_file=original_file, new_file=new_file)
+                          original_file=original_file, new_file=new_file,
+                          vserver=vserver)
 
     @volume_utils.trace
-    def get_file_sizes_by_dir(self, ctxt, host, path):
+    def get_file_sizes_by_dir(self, ctxt, host, path, vserver=None):
         cctxt = self._get_cctxt(host=host)
-        return cctxt.call(ctxt, 'get_file_sizes_by_dir', path=path)
+        return cctxt.call(ctxt, 'get_file_sizes_by_dir', path=path,
+                          vserver=vserver)
 
     @volume_utils.trace
     def get_vserver_for_ip(self, ctxt, host, lif_ip):
@@ -66,11 +69,11 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
                           is_snapshot=is_snapshot)
 
     def file_assign_qos(self, ctxt, host, vol_name,
-                        qos_policy_group_name, path):
+                        qos_policy_group_name, path, vserver=None):
         cctxt = self._get_cctxt(host=host)
         return cctxt.call(ctxt, 'file_assign_qos', vol_name=vol_name,
                           qos_policy_group_name=qos_policy_group_name,
-                          path=path)
+                          path=path, vserver=vserver)
 
 
 class SAPNetappDriverRemoteService(object):
@@ -81,15 +84,17 @@ class SAPNetappDriverRemoteService(object):
     def __init__(self, driver):
         self._driver = driver
 
-    def swap_files(self, ctxt, vol_name, original_file, new_file):
+    def swap_files(self, ctxt, vol_name, original_file, new_file, vserver):
         # swaps 2 files using temp_file
-        return self._driver._swap_files(flexvol_name=vol_name,
-                                        original_file=original_file,
-                                        new_file=new_file)
+        return self._driver._swap_files_rpc(flexvol_name=vol_name,
+                                            original_file=original_file,
+                                            new_file=new_file,
+                                            vserver=vserver)
 
-    def get_file_sizes_by_dir(self, ctxt, path):
+    def get_file_sizes_by_dir(self, ctxt, path, vserver):
         # Returns used bytes of a file
-        return self._driver.zapi_client.get_file_sizes_by_dir(path)
+        return self._driver.zapi_client.get_file_sizes_by_dir_rpc(path,
+                                                                  vserver)
 
     def get_vserver_for_ip(self, ctxt, lif_ip):
         # Returns vserver name from LIF ip
@@ -106,10 +111,10 @@ class SAPNetappDriverRemoteService(object):
                                             is_snapshot=is_snapshot)
 
     def file_assign_qos(self, ctxt, vol_name,
-                        qos_policy_group_name, path):
+                        qos_policy_group_name, path, vserver):
         # Sets QOS policy on a file
-        set_qos = self._driver.zapi_client.file_assign_qos
+        set_qos = self._driver.zapi_client.file_assign_qos_rpc
         return set_qos(flex_vol=vol_name,
                        qos_policy_group_name=qos_policy_group_name,
                        qos_policy_group_is_adaptive=True,
-                       file_path=path)
+                       file_path=path, vserver=vserver)
