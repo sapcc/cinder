@@ -825,8 +825,9 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         if old_vserver != vserver:
             # Change to unresticted access due to rpc
             self.connection.set_vserver(None)
-        self.get_file_sizes_by_dir(dir_path)
+        files = self.get_file_sizes_by_dir(dir_path)
         self.connection.set_vserver(old_vserver)
+        return files
 
     def get_volume_state(self, junction_path=None, name=None):
         """Returns volume state for a given name or junction path."""
