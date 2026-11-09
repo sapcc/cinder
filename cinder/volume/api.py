@@ -1923,10 +1923,13 @@ class API(base.Base):
         # migrate_by_connector is called for nova live migration
         # so this is only called by an admin manually migrating a volume
         if volume.status == 'in-use':
+            kvm = False
+            if volume['provider_location'] in volume['host']:
+                kvm = True
             # Check if the new host is in a different shard.
             src_host = volume_utils.extract_host(volume['host'], 'host')
             dst_host = volume_utils.extract_host(host, 'host')
-            if src_host != dst_host:
+            if (src_host != dst_host) and (not kvm):
                 msg = ("Cannot migrate an attached volume to a different "
                        "host/shard")
                 LOG.error(msg)
