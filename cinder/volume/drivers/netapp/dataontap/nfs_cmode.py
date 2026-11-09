@@ -322,8 +322,12 @@ class NetAppCmodeNfsDriver(
         if old_vserver != vserver:
             # set to vserver to unscoped
             self.zapi_client.connection.set_vserver(None)
-        self._swap_files(flexvol_name, original_file, new_file)
-        self.zapi_client.connection.set_vserver(old_vserver)
+        try:
+            self._swap_files(flexvol_name, original_file, new_file)
+        except Exception:
+            raise
+        finally:
+            self.zapi_client.connection.set_vserver(old_vserver)
 
     def _clone_backing_file_for_volume(self, volume_name, clone_name,
                                        volume_id, share=None,
