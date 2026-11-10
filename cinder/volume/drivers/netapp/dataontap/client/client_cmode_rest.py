@@ -1737,23 +1737,25 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         self.send_request('/storage/luns/', 'patch', query=query, body=body)
 
     def file_exists(self, netapp_vol, file_path):
-
-        file_found = False
-        info_fields = {'type': 'file'}
+        """Checks if a file exists in the given volume."""
         file_elements = file_path.split('/')
-        if len(file_elements) == 1:
-            dir_path = ''
-        else:
-            dir_path = '/'.join(file_elements[:-1])
-        dir_path.replace('.', '%2E').replace('/', '%2F')
+        dir_path = '/'.join(file_elements[:-1])
+        # Path requires "%2E" to represent "." and "%2F" to represent "/".
+        dir_path = dir_path.replace('.', '%2E').replace('/', '%2F')
         file_name = file_elements[-1]
-        query = f'/storage/volumes/{netapp_vol["uuid"]}/files/{dir_path}'
-        file_info = self.send_request(query, 'get', body=info_fields)
-        for file in file_info['records']:
+        query = {'type': 'file', 'fields': 'name'}
+        try:
+            file_info = self.send_request(
+                f'/storage/volumes/{netapp_vol["uuid"]}/files/{dir_path}',
+                'get', query=query)
+        except netapp_api.NaApiError as e:
+            if e.code == netapp_api.REST_NO_SUCH_FILE:
+                return False
+            raise
+        for file in file_info.get('records', []):
             if file['name'] == file_name:
-                file_found = True
-
-        return file_found
+                return True
+        return False
 
     def clone_file(self, flex_vol, src_path, dest_path, vserver,
                    dest_exists=False, source_snapshot=None, is_snapshot=False):
