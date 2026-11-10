@@ -2446,7 +2446,7 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.mock_object(self.client.connection, 'get_api_version',
                          return_value=api_version)
         self.mock_object(self.client, 'file_exists',
-                         return_vaule=True)
+                         return_value=True)
 
         self.client.clone_file(
             fake_volume['name'], fake_name, fake_new_name, fake.VSERVER_NAME,
@@ -2496,6 +2496,17 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
                 code=netapp_api.REST_NO_SUCH_FILE))
         self.assertFalse(self.client.file_exists(fake_volume, 'vol/x.vmdk'))
 
+    def test_file_exists_other_api_error_raises(self):
+        # Any NaApiError other than REST_NO_SUCH_FILE must propagate.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(
+            self.client, 'send_request',
+            side_effect=netapp_api.NaApiError(
+                code=netapp_api.EAPIERROR))
+        self.assertRaises(netapp_api.NaApiError,
+                          self.client.file_exists,
+                          fake_volume, 'vol/x.vmdk')
+
     def test_file_exists_single_segment(self):
         # File at flexvol root: dir_path is '', URL ends with /files/.
         fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
@@ -2516,6 +2527,32 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
             self.client.file_exists(fake_volume, 'vol.d/want.vmdk'))
         self.assertFalse(
             self.client.file_exists(fake_volume, 'vol.d/absent.vmdk'))
+
+    def test_clone_file_overwrite_set_when_dest_exists(self):
+        # file_exists True -> overwrite_destination sent.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, '_get_volume_by_args',
+                         return_value=fake_volume)
+        self.mock_object(self.client, 'file_exists', return_value=True)
+        self.mock_object(self.client, 'send_request')
+        self.client.clone_file(fake.VOLUME_NAME, fake.NFS_VOLUME['name'],
+                               fake.SNAPSHOT_NAME, fake.VSERVER_NAME,
+                               dest_exists=True)
+        body = self.client.send_request.call_args[1]['body']
+        self.assertTrue(body['overwrite_destination'])
+
+    def test_clone_file_overwrite_omitted_when_dest_absent(self):
+        # file_exists False -> safeguard: no overwrite flag.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, '_get_volume_by_args',
+                         return_value=fake_volume)
+        self.mock_object(self.client, 'file_exists', return_value=False)
+        self.mock_object(self.client, 'send_request')
+        self.client.clone_file(fake.VOLUME_NAME, fake.NFS_VOLUME['name'],
+                               fake.SNAPSHOT_NAME, fake.VSERVER_NAME,
+                               dest_exists=True)
+        body = self.client.send_request.call_args[1]['body']
+        self.assertNotIn('overwrite_destination', body)
 
     def test_clone_lun(self):
         self.client.vserver = fake.VSERVER_NAME
