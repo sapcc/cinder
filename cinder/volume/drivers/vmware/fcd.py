@@ -116,8 +116,9 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
         stats['storage_protocol'] = self.STORAGE_TYPE
         return stats
 
-    def _select_ds_fcd(self, volume):
-        (host, rp, folder, summary) = self._select_ds_for_volume(volume)
+    def _select_ds_fcd(self, volume, cinder_host=None):
+        (host, rp, folder, summary) = self._select_ds_for_volume(
+            volume, cinder_host=cinder_host)
         return summary.datastore
 
     def _parse_manage_existing_ref(self, existing_ref):
@@ -1080,7 +1081,15 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
             return {'provider_location': p_location}
 
         # This is a clone operattion, not a snapshot operation.
-        ds_ref = self._select_ds_fcd(snapshot.volume)
+        # The scheduler picked a pool for this snapshot and recorded it in
+        # the metadata before dispatching here; clone onto that datastore,
+        # otherwise the clone lands on the volume's pool while capacity is
+        # accounted against the recorded one.
+        hidden = (snapshot.metadata or {}).get(
+            snapshot_obj.SAP_HIDDEN_BACKEND_KEY)
+        if not (hidden and volume_utils.extract_host(hidden, 'pool')):
+            hidden = None
+        ds_ref = self._select_ds_fcd(snapshot.volume, cinder_host=hidden)
         # convert the datastore name provider location to what the
         # volumeops uses, which is the moref format.
         provider_location = self._provider_location_to_moref_location(
