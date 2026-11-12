@@ -2772,6 +2772,7 @@ class VMwareVolumeOps(object):
         src_mpath = self._get_mount_path(fcd_loc.ds_ref())
         # src_mpath - <ip>:/<vol_name>/<qtree>
         # eg.: 192.168.8.1:/nfs_stnpca2_st01_ds1/nfs_stnpca2_st01_ds1_vc_b_2
+        lif_ip = src_mpath.split(':')[0]
         src_ds_mpath = src_mpath.split(':')[1]
         src_qtree = src_ds_mpath.split('/')[2]
         tgt_qtree = tgt_ds_mpath.split('/')[2]
@@ -2779,6 +2780,9 @@ class VMwareVolumeOps(object):
         _, folder_path, src_vmdk_file = split_datastore_path(src_vmdk_path)
         _, tgt_folder_path, tgt_vmdk_file = split_datastore_path(new_disk_path
                                                                  )
+        vserver = netapp_api.get_vserver_for_ip(self._admin_context,
+                                                host=netapp_host,
+                                                lif_ip=lif_ip)
         netapp_vol = src_ds_mpath.split('/')[1]
         src_flat_file = src_vmdk_file.replace('.vmdk', '-flat.vmdk')
         tgt_flat_file = tgt_vmdk_file.replace('.vmdk', '-flat.vmdk')
@@ -2791,15 +2795,18 @@ class VMwareVolumeOps(object):
         path = netapp_vol + "/%s/%s" % (src_qtree, folder_path)
         src_bytes_used = netapp_api.get_file_sizes_by_dir(context,
                                                           host=netapp_host,
-                                                          path=path)
+                                                          path=path,
+                                                          vserver=vserver)
         netapp_api.swap_files(context, host=netapp_host,
                               vol_name=netapp_vol,
                               original_file=destination_path,
-                              new_file=source_path)
+                              new_file=source_path,
+                              vserver=vserver)
         path = netapp_vol + "/%s/%s" % (tgt_qtree, tgt_folder_path)
         dst_bytes_used = netapp_api.get_file_sizes_by_dir(context,
                                                           host=netapp_host,
-                                                          path=path)
+                                                          path=path,
+                                                          vserver=vserver)
         for f in src_bytes_used:
             if f['name'] == src_flat_file:
                 src_bytes = f['file-size']
