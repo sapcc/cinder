@@ -314,6 +314,108 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             mock_get_aggrs.assert_called_once_with()
             mock_get_aggr_capacities.assert_called_once_with(['aggr1'])
 
+    def _setup_pool_stats_with_cache(self):
+        """Mock the minimum needed to run _get_pool_stats with the caches."""
+
+        self.driver.using_cluster_credentials = True
+        conf = self.driver.configuration
+        conf.netapp_driver_reports_provisioned_capacity = False
+        self.driver.zapi_client = mock.Mock()
+        ssc = {
+            'vola': {
+                'pool_name': '10.10.10.10:/vola',
+                'thick_provisioning_support': True,
+                'thin_provisioning_support': False,
+                'netapp_thin_provisioned': 'false',
+                'netapp_compression': 'false',
+                'netapp_mirrored': 'false',
+                'netapp_dedup': 'true',
+                'netapp_aggregate': 'aggr1',
+                'netapp_raid_type': 'raid_dp',
+                'netapp_disk_type': 'SSD',
+                'consistent_group_snapshot_enabled': True,
+                'netapp_is_flexgroup': 'false',
+            },
+        }
+        self.mock_object(self.driver.ssc_library, 'get_ssc',
+                         return_value=ssc)
+        self.mock_object(self.driver.ssc_library, 'get_ssc_aggregates',
+                         return_value=['aggr1'])
+        self.mock_object(self.driver, 'get_replication_backend_names',
+                         return_value=[])
+        self.mock_object(self.driver, '_get_share_capacity_info',
+                         return_value={
+                             'reserved_percentage': fake.RESERVED_PERCENTAGE,
+                             'max_over_subscription_ratio':
+                                 fake.MAX_OVER_SUBSCRIPTION_RATIO,
+                             'total_capacity_gb': 100.0,
+                             'free_capacity_gb': 80.0,
+                         })
+        self.mock_object(self.driver.zapi_client, 'get_aggregate_capacities',
+                         return_value={})
+        self.driver.perf_library.get_node_utilization_for_pool = (
+            mock.Mock(return_value=30.0))
+        mock_perf_update = self.mock_object(
+            self.driver.perf_library, 'update_performance_cache')
+        mock_dedupe = self.mock_object(
+            self.driver.zapi_client, 'get_flexvol_dedupe_used_percent',
+            return_value=55.0)
+        return mock_perf_update, mock_dedupe
+
+    def test_get_pool_stats_skips_cached_data_within_interval(self):
+        mock_perf_update, mock_dedupe = self._setup_pool_stats_with_cache()
+
+        first = self.driver._get_pool_stats()
+        # _update_volume_stats stores the result for the next refresh
+        self.driver._stats = {'pools': first}
+        second = self.driver._get_pool_stats()
+
+        mock_perf_update.assert_called_once_with(
+            self.driver.ssc_library.get_ssc.return_value)
+        mock_dedupe.assert_called_once_with('vola')
+        self.assertEqual(first, second)
+
+    def test_get_pool_stats_refreshes_cached_data_after_interval(self):
+        mock_perf_update, mock_dedupe = self._setup_pool_stats_with_cache()
+        conf = self.driver.configuration
+        conf.netapp_performance_cache_expiry_duration = 0
+        conf.netapp_dedupe_cache_expiry_duration = 0
+        mock_dedupe.side_effect = [55.0, 20.0]
+
+        first = self.driver._get_pool_stats()
+        self.driver._stats = {'pools': first}
+        second = self.driver._get_pool_stats()
+
+        self.assertEqual(2, mock_perf_update.call_count)
+        self.assertEqual(2, mock_dedupe.call_count)
+        self.assertEqual(55.0, first[0]['netapp_dedupe_used_percent'])
+        self.assertEqual(20.0, second[0]['netapp_dedupe_used_percent'])
+
+    def test_get_pool_stats_reuses_previous_dedupe_value(self):
+        _, mock_dedupe = self._setup_pool_stats_with_cache()
+        # No refresh is due, so the last reported value is reused
+        self.driver.configuration.netapp_dedupe_cache_expiry_duration = (
+            10 ** 10)
+        self.driver._stats = {
+            'pools': [{'pool_name': '10.10.10.10:/vola',
+                       'netapp_dedupe_used_percent': 42.0}],
+        }
+
+        result = self.driver._get_pool_stats()
+
+        mock_dedupe.assert_not_called()
+        self.assertEqual(42.0, result[0]['netapp_dedupe_used_percent'])
+
+    def test_get_pool_stats_dedupe_without_previous_stats(self):
+        _, mock_dedupe = self._setup_pool_stats_with_cache()
+        self.driver.configuration.netapp_dedupe_cache_expiry_duration = (
+            10 ** 10)
+
+        result = self.driver._get_pool_stats()
+
+        mock_dedupe.assert_not_called()
+        self.assertEqual(0.0, result[0]['netapp_dedupe_used_percent'])
+
     def test_get_pool_stats_with_aggregate_id(self):
         """Test that aggregate_id from comment field appears in pool stats."""
         self.driver.using_cluster_credentials = True
