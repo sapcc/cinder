@@ -36,11 +36,13 @@ intact.
 """
 
 import functools
+from threading import Event
 import time
 import typing
 from typing import Any, Optional, Union
 
 from castellan import key_manager
+import eventlet
 from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
@@ -369,6 +371,8 @@ class VolumeManager(manager.CleanableManager,
                      {'host': self.host})
             self.image_volume_cache = None
 
+        self._publish_service_capabilities_event = Event()
+
     @volume_utils.trace
     def _update_allocated_capacity(self,
                                    vol: objects.Volume,
@@ -642,6 +646,8 @@ class VolumeManager(manager.CleanableManager,
                                 volumes=volumes_to_migrate)
 
         # collect and publish service capabilities
+        LOG.debug('Spawning publish_service_capabilities event listener')
+        eventlet.spawn(self._publish_service_capabilities_event_listener)
         self.publish_service_capabilities(ctxt)
         LOG.info("Driver initialization completed successfully.",
                  resource={'type': 'driver',
@@ -3340,8 +3346,33 @@ class VolumeManager(manager.CleanableManager,
     def publish_service_capabilities(self,
                                      context: context.RequestContext) -> None:
         """Collect driver status and then publish."""
-        self._report_driver_status(context)
-        self._publish_service_capabilities(context)
+        self._publish_service_capabilities_event.set()
+
+    def _do_publish_service_capabilities(self, ctxt):
+        """Called by _publish_service_capabilities_event_listener()
+
+        Extracted for testing
+        """
+        self._report_driver_status(ctxt)
+        self._publish_service_capabilities(ctxt)
+
+    def _publish_service_capabilities_event_listener(self):
+        """React to _publish_service_capabilities_event being set"""
+        while True:
+            if not self._publish_service_capabilities_event.wait(timeout=10):
+                continue
+
+            LOG.debug('Starting _publish_service_capabilities()')
+            self._publish_service_capabilities_event.clear()
+
+            try:
+                ctxt = context.get_admin_context()
+                self._do_publish_service_capabilities(ctxt)
+            except Exception as e:
+                msg = "Finished _publish_service_capabilities() with error: %s"
+                LOG.exception(msg, e)
+            else:
+                LOG.debug('Finished _publish_service_capabilities()')
 
     def _notify_about_volume_usage(self,
                                    context: context.RequestContext,

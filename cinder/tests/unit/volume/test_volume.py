@@ -1476,8 +1476,10 @@ class VolumeTestCase(base.BaseVolumeTestCase):
     @mock.patch.object(coordination.Coordinator, 'get_lock')
     @mock.patch.object(fake_driver.FakeLoggingVolumeDriver,
                        'create_volume_from_snapshot')
+    @mock.patch.object(cinder.volume.manager.VolumeManager,
+                       'publish_service_capabilities')
     def test_create_volume_from_snapshot_check_locks(
-            self, mock_lvm_create, mock_lock):
+            self, mock_publish_sc, mock_lvm_create, mock_lock):
         orig_flow = engine.ActionEngine.run
 
         def mock_flow_run(*args, **kwargs):
@@ -1518,7 +1520,8 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # locked
         self.volume.delete_volume(self.context, dst_vol)
         mock_lock.assert_any_call('%s-delete_volume' % dst_vol.id)
-        mock_lock.assert_any_call('volume-stats-%s' % self.volume.host)
+        mock_publish_sc.assert_called()
+        mock_publish_sc.reset_mock()
 
         # locked
         self.volume.delete_snapshot(self.context, snapshot_obj)
@@ -1527,12 +1530,15 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # locked
         self.volume.delete_volume(self.context, src_vol)
         mock_lock.assert_any_call('%s-delete_volume' % src_vol.id)
-        mock_lock.assert_any_call('volume-stats-%s' % self.volume.host)
+        mock_publish_sc.assert_called()
 
         self.assertTrue(mock_lvm_create.called)
 
     @mock.patch.object(coordination.Coordinator, 'get_lock')
-    def test_create_volume_from_volume_check_locks(self, mock_lock):
+    @mock.patch.object(cinder.volume.manager.VolumeManager,
+                       'publish_service_capabilities')
+    def test_create_volume_from_volume_check_locks(self, mock_publish_sc,
+                                                   mock_lock):
         # mock the synchroniser so we can record events
         self.mock_object(utils, 'execute', self._fake_execute)
 
@@ -1573,7 +1579,7 @@ class VolumeTestCase(base.BaseVolumeTestCase):
         # locked
         self.volume.delete_volume(self.context, dst_vol)
         mock_lock.assert_any_call('%s-delete_volume' % dst_vol_id)
-        mock_lock.assert_any_call('volume-stats-%s' % self.volume.host)
+        mock_publish_sc.assert_called()
 
         # locked
         self.volume.delete_volume(self.context, src_vol)

@@ -195,7 +195,7 @@ class VolumeCapabilitiesTestCase(base.BaseVolumeTestCase):
             manager = vol_manager.VolumeManager()
             manager.stats = {'pools': {}}
             manager.driver.set_initialized()
-            manager.publish_service_capabilities(self.context)
+            manager._do_publish_service_capabilities(self.context)
             self.assertTrue(mock_loads.called)
             volume_stats = manager.last_capabilities
             self.assertEqual(fake_capabilities['key1'],
