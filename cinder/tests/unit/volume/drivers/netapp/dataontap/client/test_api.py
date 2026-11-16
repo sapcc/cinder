@@ -17,6 +17,7 @@
 #    under the License.
 """Tests for NetApp API layer"""
 
+import copy
 from unittest import mock
 import urllib
 
@@ -684,9 +685,7 @@ class NetAppRestApiServerTests(test.TestCase):
     @ddt.unpack
     def test_send_http_request_http_error(self, error, raised):
         self.mock_object(netapp_api, 'LOG')
-        _mock_session = mock.Mock()
-        self.mock_object(self.rest_client, '_build_session',
-                         mock.Mock(return_value=_mock_session))
+        self.rest_client._session = mock.Mock()
         self.mock_object(
             self.rest_client, '_get_request_method', mock.Mock(
                 return_value=mock.Mock(side_effect=error)))
@@ -725,9 +724,7 @@ class NetAppRestApiServerTests(test.TestCase):
         mock_json_dumps = self.mock_object(
             jsonutils, 'dumps', mock.Mock(return_value='fake_dump_body'))
         _mock_session = mock.Mock()
-        mock_build_session = self.mock_object(
-            self.rest_client, '_build_session',
-            mock.Mock(return_value=_mock_session))
+        self.rest_client._session = _mock_session
         response = mock.Mock()
         response.content = resp_content
         response.status_code = 10
@@ -748,16 +745,56 @@ class NetAppRestApiServerTests(test.TestCase):
         self.assertEqual(10, code)
         self.assertEqual(bool(body), mock_json_dumps.called)
         self.assertEqual(bool(resp_content), mock_json_loads.called)
-        mock_build_session.assert_called_once_with(zapi_fakes.FAKE_HEADERS)
         mock_get_request_method.assert_called_once_with('post', _mock_session)
         expected_data = 'fake_dump_body' if body else {}
         if timeout:
             mock_post.assert_called_once_with(
                 zapi_fakes.FAKE_ACTION_ENDPOINT, data=expected_data,
-                timeout=timeout)
+                headers=zapi_fakes.FAKE_HEADERS, timeout=timeout)
         else:
-            mock_post.assert_called_once_with(zapi_fakes.FAKE_ACTION_ENDPOINT,
-                                              data=expected_data)
+            mock_post.assert_called_once_with(
+                zapi_fakes.FAKE_ACTION_ENDPOINT, data=expected_data,
+                headers=zapi_fakes.FAKE_HEADERS)
+
+    def test_reuses_one_session_for_all_requests(self):
+        """One session carries the connection pool.
+
+        Headers travel with each request, so concurrent callers cannot
+        overwrite each other's.
+        """
+        fake_session = mock.Mock()
+        mock_requests_session = self.mock_object(
+            requests, 'Session', mock.Mock(return_value=fake_session))
+        client = netapp_api.RestNaServer('127.0.0.1')
+        response = mock.Mock(status_code=10)
+        response.content = None
+        fake_session.get.return_value = response
+
+        first = {'X-Dot-SVM-Name': 'vserver-1'}
+        second = {'X-Dot-SVM-Name': 'vserver-2'}
+        client.send_http_request('get', 'fake_url', None, first)
+        client.send_http_request('get', 'fake_url', None, second)
+
+        mock_requests_session.assert_called_once_with()
+        self.assertEqual(
+            [mock.call('fake_url', data={}, headers=first),
+             mock.call('fake_url', data={}, headers=second)],
+            fake_session.get.call_args_list)
+
+    def test__deepcopy_of_client_gets_its_own_session(self):
+        """The EMS log path deep-copies the client.
+
+        The copy keeps the configuration but must not share the connection
+        pool with the original.
+        """
+        self.rest_client.set_vserver(zapi_fakes.VSERVER_NAME)
+
+        clone = copy.deepcopy(self.rest_client)
+
+        self.assertIsNot(self.rest_client._session, clone._session)
+        self.assertEqual(self.rest_client._host, clone._host)
+        self.assertEqual(zapi_fakes.VSERVER_NAME, clone.get_vserver())
+        self.assertEqual(self.rest_client._ssl_verify, clone._ssl_verify)
 
     @ddt.data(
         {'host': '192.168.1.0', 'port': '80', 'protocol': 'http'},
@@ -857,13 +894,11 @@ class NetAppRestApiServerTests(test.TestCase):
             mock.Mock(return_value='fake_auth'))
         self.rest_client._ssl_verify = 'fake_ssl'
 
-        result = self.rest_client._build_session(zapi_fakes.FAKE_HEADERS)
+        result = self.rest_client._build_session()
 
         self.assertEqual(fake_session, result)
         self.assertEqual('fake_auth', result.auth)
         self.assertEqual('fake_ssl', result.verify)
-        self.assertEqual(zapi_fakes.FAKE_HEADERS,
-                         result.headers)
         mock_requests_session.assert_called_once_with()
         mock_auth.assert_called_once_with()
 
@@ -879,11 +914,10 @@ class NetAppRestApiServerTests(test.TestCase):
         mock_auth = self.mock_object(
             self.rest_client, '_create_certificate_auth_handler',
             mock.Mock(return_value=('fake_cert', 'fake_verify')))
-        result = self.rest_client._build_session(zapi_fakes.FAKE_HEADERS)
+        result = self.rest_client._build_session()
         self.assertEqual(fake_session, result)
         self.assertEqual(('fake_cert', 'fake_verify'),
                          (result.cert, result.verify))
-        self.assertEqual(zapi_fakes.FAKE_HEADERS, result.headers)
         mock_requests_session.assert_called_once_with()
         mock_auth.assert_called_once_with()
 
