@@ -28,6 +28,7 @@ import uuid
 from oslo_log import log as logging
 from oslo_service import loopingcall
 from oslo_utils import excutils
+from oslo_utils import timeutils
 from oslo_utils import units
 
 from cinder.common import constants
@@ -90,6 +91,9 @@ class NetAppCmodeNfsDriver(
         self.driver_name = 'NetApp_NFS_Cluster_direct'
         self.driver_mode = 'cluster'
         self.configuration.append_config_values(na_opts.netapp_cluster_opts)
+        # The pool statistics cache intervals (netapp_san_opts) are read by
+        # _get_pool_stats, so they must be registered for this backend.
+        self.configuration.append_config_values(na_opts.netapp_san_opts)
         self.failed_over_backend_name = kwargs.get('active_backend_id')
         self.failed_over = self.failed_over_backend_name is not None
         self.replication_enabled = (
@@ -98,6 +102,11 @@ class NetAppCmodeNfsDriver(
         self.additional_endpoints.extend([
             remote_api.SAPNetappDriverRemoteService(self)
         ])
+
+        # Timestamps of the last pool statistics refresh, used to avoid
+        # re-fetching slow ONTAP data on every stats update.
+        self.last_perf_update = 0
+        self.last_dedupe_update = 0
 
     def do_setup(self, context):
         """Do the customized set up on client for cluster mode."""
@@ -476,8 +485,15 @@ class NetAppCmodeNfsDriver(
         # Utilization and performance metrics require cluster-scoped
         # credentials
         if self.using_cluster_credentials:
-            # Get up-to-date node utilization metrics just once
-            self.perf_library.update_performance_cache(ssc)
+            # Refresh the node utilization metrics only once the configured
+            # interval has elapsed, so that repeated stats updates (periodic
+            # task, volume delete) do not each pay for the ONTAP round-trips.
+            now = timeutils.utcnow().timestamp()
+            perf_expiry = (
+                self.configuration.netapp_performance_cache_expiry_duration)
+            if (now - self.last_perf_update) > perf_expiry:
+                self.perf_library.update_performance_cache(ssc)
+                self.last_perf_update = now
 
             # Get up-to-date aggregate capacities just once
             aggregates = self.ssc_library.get_ssc_aggregates()
@@ -519,11 +535,24 @@ class NetAppCmodeNfsDriver(
                 pool['provisioned_capacity_gb'] = na_utils.round_down(
                     float(provisioned_cap) / units.Gi)
 
+            dedupe_used = 0.0
             if self.using_cluster_credentials and not is_flexgroup:
-                dedupe_used = self.zapi_client.get_flexvol_dedupe_used_percent(
-                    ssc_vol_name)
-            else:
-                dedupe_used = 0.0
+                dedupe_expiry = (
+                    self.configuration.netapp_dedupe_cache_expiry_duration)
+                now = timeutils.utcnow().timestamp()
+                if (now - self.last_dedupe_update) > dedupe_expiry:
+                    dedupe_used = (
+                        self.zapi_client.get_flexvol_dedupe_used_percent(
+                            ssc_vol_name))
+                    self.last_dedupe_update = now
+                else:
+                    # Reuse the value reported by the previous stats update
+                    # instead of asking ONTAP again for every pool.
+                    for current_pool in self._stats.get('pools', []):
+                        if current_pool.get('pool_name') == nfs_share:
+                            dedupe_used = current_pool.get(
+                                'netapp_dedupe_used_percent') or 0.0
+                            break
             pool['netapp_dedupe_used_percent'] = na_utils.round_down(
                 dedupe_used)
 
