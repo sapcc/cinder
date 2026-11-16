@@ -277,7 +277,32 @@ netapp_san_opts = [
                      'applied to the names of objects from the storage '
                      'backend which represent pools in Cinder. This option '
                      'is only utilized when the storage protocol is '
-                     'configured to use iSCSI or FC.')), ]
+                     'configured to use iSCSI or FC.')),
+    cfg.IntOpt('netapp_dedupe_cache_expiry_duration',
+               min=60,
+               default=600,
+               help='Specifies the time interval (in seconds) between '
+                    'updates of netapp_dedupe_used_percent for ONTAP '
+                    'backend pools. When the scheduled update runs, '
+                    'netapp_dedupe_used_percent will only be refreshed '
+                    'if the specified time has elapsed since the last '
+                    'Choosing a lower value results in more frequent '
+                    'updates, which increases the load on ONTAP. '
+                    'Conversely, setting a higher value means the '
+                    'netapp_dedupe_used_percent may be slightly outdated '
+                    'but reduces the load on ONTAP.'),
+    cfg.IntOpt('netapp_performance_cache_expiry_duration',
+               min=60,
+               default=300,
+               help='Specifies the time interval (in seconds) between updates '
+                    'of performance utilization for ONTAP backend pools. When '
+                    'the scheduled update runs, performance utilization will '
+                    'only be refreshed if the specified time has elapsed '
+                    'since the last update. Choosing a lower value results '
+                    'in more frequent updates, which increases the load on '
+                    'ONTAP. Conversely, setting a higher value means the '
+                    'performance utilization data may be slightly outdated '
+                    'but reduces the load on ONTAP.')]
 
 netapp_replication_opts = [
     cfg.MultiOpt('netapp_replication_aggregate_map',
