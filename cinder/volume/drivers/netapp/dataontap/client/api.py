@@ -19,6 +19,7 @@
 
 Contains classes required to issue API calls to Data ONTAP and OnCommand DFM.
 """
+import copy
 import random
 import ssl
 import urllib
@@ -704,6 +705,12 @@ class RestNaServer(object):
         self._ontap_version = None
         self._timeout = None
 
+        # One session per client keeps the connection pool warm across REST
+        # calls. Request headers are passed per call (not stored on the
+        # session), so concurrent greenthreads cannot overwrite each other's
+        # X-Dot-SVM-Name tunneling header.
+        self._session = self._build_session()
+
         LOG.debug('Using REST with NetApp controller: %s', self._host)
 
     def set_transport_type(self, transport_type):
@@ -807,14 +814,25 @@ class RestNaServer(object):
             host = '[%s]' % host
         return '%s://%s:%s/api/' % (self._protocol, host, self._port)
 
-    def _build_session(self, headers):
-        """Builds a session for a REST request.
+    def __deepcopy__(self, memo):
+        """Copies the client configuration, never the connection pool.
 
-        Returns a new session object each time to avoid race conditions
-        when multiple greenthreads make concurrent REST calls. Previously,
-        the session was stored on self._session, which caused a race where
-        one greenthread's headers (e.g., with X-Dot-SVM-Name tunneling)
-        could be overwritten by another greenthread's _build_session call.
+        send_ems_log_message() deep-copies the client to borrow it for one
+        request with a different vserver. The copy gets its own session, so it
+        does not share sockets with the original and its behaviour does not
+        depend on how deepcopy treats a live connection pool.
+        """
+        clone = copy.copy(self)
+        clone._session = self._build_session()
+        memo[id(self)] = clone
+        return clone
+
+    def _build_session(self):
+        """Builds the session used for REST requests.
+
+        The session is built once per client so its connection pool is reused
+        by every request. Headers are passed per request, so the session holds
+        no per-call state.
         """
         session = requests.Session()
 
@@ -829,7 +847,6 @@ class RestNaServer(object):
         else:
             session.auth = self._create_basic_auth_handler()
             session.verify = self._ssl_verify
-        session.headers = headers
         return session
 
     def _build_headers(self, enable_tunneling):
@@ -873,15 +890,15 @@ class RestNaServer(object):
         """
         data = jsonutils.dumps(body) if body else {}
 
-        session = self._build_session(headers)
+        session = self._session
         request_method = self._get_request_method(method, session)
 
         try:
             if self._timeout is not None:
                 response = request_method(
-                    url, data=data, timeout=self._timeout)
+                    url, data=data, headers=headers, timeout=self._timeout)
             else:
-                response = request_method(url, data=data)
+                response = request_method(url, data=data, headers=headers)
         except requests.HTTPError as e:
             raise NaApiError(e.errno, e.strerror)
         except Exception as e:
