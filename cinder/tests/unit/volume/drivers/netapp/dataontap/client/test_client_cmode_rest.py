@@ -2446,7 +2446,7 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.mock_object(self.client.connection, 'get_api_version',
                          return_value=api_version)
         self.mock_object(self.client, 'file_exists',
-                         return_vaule=True)
+                         return_value=True)
 
         self.client.clone_file(
             fake_volume['name'], fake_name, fake_new_name, fake.VSERVER_NAME,
@@ -2455,6 +2455,104 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.client.send_request.assert_has_calls([
             mock.call('/storage/file/clone', 'post', body=expected_body),
         ])
+
+    def test_file_exists_encodes_dir_path(self):
+        # Multi-segment path: raw '.' and '/' must not reach the URL.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, 'send_request',
+                         return_value={'records': [{'name': 'x-flat.vmdk'}]})
+        self.client.file_exists(fake_volume, 'vol/dir.d/x-flat.vmdk')
+        url = self.client.send_request.call_args[0][0]
+        self.assertNotIn('/', url.split('/files/')[1])
+        self.assertNotIn('.', url.split('/files/')[1])
+        self.assertIn('%2F', url)
+        self.assertIn('%2E', url)
+
+    def test_file_exists_passes_type_filter_as_query(self):
+        # GET must carry the type filter in query=, not body= (which
+        # send_request's GET path silently drops).
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, 'send_request',
+                         return_value={'records': []})
+        self.client.file_exists(fake_volume, 'vol/x-flat.vmdk')
+        kwargs = self.client.send_request.call_args[1]
+        self.assertEqual(kwargs.get('query'),
+                         {'type': 'file', 'fields': 'name'})
+        self.assertNotIn('body', kwargs)
+
+    def test_file_exists_empty_response_returns_false(self):
+        # Empty dir: no 'records' key in response. Must not KeyError.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, 'send_request',
+                         return_value={'num_records': 0})
+        self.assertFalse(self.client.file_exists(fake_volume, 'vol/x.vmdk'))
+
+    def test_file_exists_no_such_file_returns_false(self):
+        # REST_NO_SUCH_FILE must read as file-not-found, not raise.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(
+            self.client, 'send_request',
+            side_effect=netapp_api.NaApiError(
+                code=netapp_api.REST_NO_SUCH_FILE))
+        self.assertFalse(self.client.file_exists(fake_volume, 'vol/x.vmdk'))
+
+    def test_file_exists_other_api_error_raises(self):
+        # Any NaApiError other than REST_NO_SUCH_FILE must propagate.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(
+            self.client, 'send_request',
+            side_effect=netapp_api.NaApiError(
+                code=netapp_api.EAPIERROR))
+        self.assertRaises(netapp_api.NaApiError,
+                          self.client.file_exists,
+                          fake_volume, 'vol/x.vmdk')
+
+    def test_file_exists_single_segment(self):
+        # File at flexvol root: dir_path is '', URL ends with /files/.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, 'send_request',
+                         return_value={'records': []})
+        result = self.client.file_exists(fake_volume, 'x-flat.vmdk')
+        url = self.client.send_request.call_args[0][0]
+        self.assertTrue(url.endswith('/files/'))
+        self.assertFalse(result)
+
+    def test_file_exists_matches_file_name(self):
+        # Only the final segment is the file name to look up.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, 'send_request',
+                         return_value={'records': [{'name': 'other.vmdk'},
+                                                   {'name': 'want.vmdk'}]})
+        self.assertTrue(
+            self.client.file_exists(fake_volume, 'vol.d/want.vmdk'))
+        self.assertFalse(
+            self.client.file_exists(fake_volume, 'vol.d/absent.vmdk'))
+
+    def test_clone_file_overwrite_set_when_dest_exists(self):
+        # file_exists True -> overwrite_destination sent.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, '_get_volume_by_args',
+                         return_value=fake_volume)
+        self.mock_object(self.client, 'file_exists', return_value=True)
+        self.mock_object(self.client, 'send_request')
+        self.client.clone_file(fake.VOLUME_NAME, fake.NFS_VOLUME['name'],
+                               fake.SNAPSHOT_NAME, fake.VSERVER_NAME,
+                               dest_exists=True)
+        body = self.client.send_request.call_args[1]['body']
+        self.assertTrue(body['overwrite_destination'])
+
+    def test_clone_file_overwrite_omitted_when_dest_absent(self):
+        # file_exists False -> safeguard: no overwrite flag.
+        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, '_get_volume_by_args',
+                         return_value=fake_volume)
+        self.mock_object(self.client, 'file_exists', return_value=False)
+        self.mock_object(self.client, 'send_request')
+        self.client.clone_file(fake.VOLUME_NAME, fake.NFS_VOLUME['name'],
+                               fake.SNAPSHOT_NAME, fake.VSERVER_NAME,
+                               dest_exists=True)
+        body = self.client.send_request.call_args[1]['body']
+        self.assertNotIn('overwrite_destination', body)
 
     def test_clone_lun(self):
         self.client.vserver = fake.VSERVER_NAME
