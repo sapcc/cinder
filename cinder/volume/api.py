@@ -1924,7 +1924,9 @@ class API(base.Base):
         # so this is only called by an admin manually migrating a volume
         if volume.status == 'in-use':
             kvm = False
-            if volume['provider_location'] in volume['host']:
+            provider_location = volume['provider_location']
+            pool = volume_utils.extract_host(volume['host'], 'pool')
+            if pool == provider_location:
                 kvm = True
             # Check if the new host is in a different shard.
             src_host = volume_utils.extract_host(volume['host'], 'host')
