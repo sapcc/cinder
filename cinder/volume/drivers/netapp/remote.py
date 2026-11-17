@@ -18,14 +18,19 @@ RPC server and client for communicating with other netapp drivers directly.
 This allows remote calls to be made to a running netapp driver to do work on
 volumes.
 """
+from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
+from oslo_utils import timeutils
 
+from cinder.i18n import _
 from cinder import rpc
+from cinder.volume.drivers.netapp import utils as na_utils
 from cinder.volume.rpcapi import VolumeAPI
 from cinder.volume import volume_utils
 
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -42,6 +47,8 @@ class SAPNetappDriverRemoteApi(rpc.RPCAPI):
 
     @volume_utils.trace
     def swap_files(self, ctxt, host, vol_name, original_file, new_file):
+        if hasattr(ctxt, 'timestamp'):
+            ctxt.timestamp = timeutils.utcnow()
         cctxt = self._get_cctxt(host=host)
         return cctxt.call(ctxt, 'swap_files', vol_name=vol_name,
                           original_file=original_file, new_file=new_file)
@@ -83,6 +90,21 @@ class SAPNetappDriverRemoteService(object):
 
     def swap_files(self, ctxt, vol_name, original_file, new_file):
         # swaps 2 files using temp_file
+        timestamp = getattr(ctxt, 'timestamp', None)
+        if timestamp is not None:
+            if isinstance(timestamp, str):
+                timestamp = timeutils.parse_isotime(timestamp)
+            age = timeutils.delta_seconds(
+                timeutils.normalize_time(timestamp),
+                timeutils.utcnow())
+            if age > CONF.rpc_response_timeout:
+                msg = _("Rejecting expired swap_files RPC for %(orig)s "
+                        "(age %(age).1fs > %(timeout)ss).") % {
+                    'orig': original_file,
+                    'age': age,
+                    'timeout': CONF.rpc_response_timeout}
+                LOG.warning(msg)
+                raise na_utils.NetAppDriverException(msg)
         return self._driver._swap_files(flexvol_name=vol_name,
                                         original_file=original_file,
                                         new_file=new_file)

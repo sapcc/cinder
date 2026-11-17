@@ -37,6 +37,7 @@ from cinder.i18n import _
 from cinder.image import image_utils
 from cinder import interface
 from cinder.objects import fields
+from cinder.volume.drivers.netapp.dataontap.client import api as netapp_api
 from cinder.volume.drivers.netapp.dataontap import nfs_base
 from cinder.volume.drivers.netapp.dataontap.performance import perf_cmode
 from cinder.volume.drivers.netapp.dataontap.utils import capabilities
@@ -296,19 +297,20 @@ class NetAppCmodeNfsDriver(
 
         try:
             self.zapi_client.rename_file(original_file_path, tmp_file_path)
-        except exception.VolumeBackendAPIException:
+        except (exception.VolumeBackendAPIException, netapp_api.NaApiError):
             msg = _("Could not rename original volume from %s to %s.")
             raise na_utils.NetAppDriverException(msg % (original_file_path,
                                                         tmp_file_path))
 
         try:
             self.zapi_client.rename_file(new_file_path, original_file_path)
-        except exception.VolumeBackendAPIException:
+        except (exception.VolumeBackendAPIException, netapp_api.NaApiError):
             try:
                 LOG.debug("Revert volume failed. Rolling back to its original"
                           " name.")
                 self.zapi_client.rename_file(tmp_file_path, original_file_path)
-            except exception.VolumeBackendAPIException:
+            except (exception.VolumeBackendAPIException,
+                    netapp_api.NaApiError):
                 LOG.error("Could not rollback original volume name from %s "
                           "to %s. Cinder may lose the volume management. "
                           "Please, you should rename it back manually.",
@@ -321,7 +323,7 @@ class NetAppCmodeNfsDriver(
 
         try:
             self.zapi_client.delete_file(tmp_file_path)
-        except exception.VolumeBackendAPIException:
+        except (exception.VolumeBackendAPIException, netapp_api.NaApiError):
             LOG.error("Could not delete old volume %s. A manual deletion is "
                       "required.", tmp_file_path)
 
