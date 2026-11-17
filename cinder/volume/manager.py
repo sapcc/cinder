@@ -3517,7 +3517,7 @@ class VolumeManager(manager.CleanableManager,
                           new_reservations, status_update) -> None:
             try:
                 volume.update(status_update)
-                volume.save()
+                self.db.volume_update(context, volume.id, status_update)
             finally:
                 if old_reservations:
                     QUOTAS.rollback(context, old_reservations)
