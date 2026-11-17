@@ -14,6 +14,7 @@
 #    under the License.
 """Mock unit tests for the NetApp cmode nfs storage driver."""
 
+import datetime
 import json
 from unittest import mock
 import uuid
@@ -21,8 +22,10 @@ import uuid
 import ddt
 from os_brick.remotefs import remotefs as remotefs_brick
 from oslo_utils.secretutils import md5
+from oslo_utils import timeutils
 from oslo_utils import units
 
+from cinder import context
 from cinder import exception
 from cinder.image import image_utils
 from cinder.objects import fields
@@ -43,6 +46,7 @@ from cinder.volume.drivers.netapp.dataontap.utils import capabilities
 from cinder.volume.drivers.netapp.dataontap.utils import data_motion
 from cinder.volume.drivers.netapp.dataontap.utils import loopingcalls
 from cinder.volume.drivers.netapp.dataontap.utils import utils as dot_utils
+from cinder.volume.drivers.netapp import remote as netapp_remote
 from cinder.volume.drivers.netapp import utils as na_utils
 from cinder.volume.drivers import nfs
 from cinder.volume import volume_utils
@@ -2782,10 +2786,17 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
 
         mock_delete_file.assert_called_once_with(tmp_file_path)
 
-    @ddt.data((True, False), (False, False), (False, True))
+    @ddt.data(
+        (True, False, exception.VolumeBackendAPIException(data="data")),
+        (False, False, exception.VolumeBackendAPIException(data="data")),
+        (False, True, exception.VolumeBackendAPIException(data="data")),
+        (True, False, netapp_api.NaApiError('6488082', 'No such file')),
+        (False, False, netapp_api.NaApiError('6488082', 'No such file')),
+        (False, True, netapp_api.NaApiError('6488082', 'No such file')),
+    )
     @ddt.unpack
     def test__swap_files_rename_exception(self, first_exception,
-                                          rollback_exception):
+                                          rollback_exception, exc):
         new_file = 'new-%s' % fake.SNAPSHOT['name']
         new_file_path = '/vol/%s/%s' % (fake.FLEXVOL, new_file)
         original_file_path = '/vol/%s/%s' % (fake.FLEXVOL, fake.VOLUME_NAME)
@@ -2796,15 +2807,11 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             return True
 
         if not first_exception and not rollback_exception:
-            side_effect = [_skip_side_effect,
-                           exception.VolumeBackendAPIException(data="data"),
-                           _skip_side_effect]
+            side_effect = [_skip_side_effect, exc, _skip_side_effect]
         elif not first_exception and rollback_exception:
-            side_effect = [_skip_side_effect,
-                           exception.VolumeBackendAPIException(data="data"),
-                           exception.VolumeBackendAPIException(data="data")]
+            side_effect = [_skip_side_effect, exc, exc]
         else:
-            side_effect = exception.VolumeBackendAPIException(data="data")
+            side_effect = exc
 
         mock_rename_file = self.mock_object(self.driver.zapi_client,
                                             'rename_file',
@@ -2823,15 +2830,43 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             mock_rename_file.assert_called_once_with(original_file_path,
                                                      tmp_file_path)
 
-    def test__swap_files_delete_exception(self):
+    @ddt.data(
+        exception.VolumeBackendAPIException(data="data"),
+        netapp_api.NaApiError('6488082', 'No such file'),
+    )
+    def test__swap_files_delete_exception(self, side_effect):
         new_file = 'new-%s' % fake.SNAPSHOT['name']
 
         self.mock_object(self.driver.zapi_client, 'rename_file')
-        side_effect = exception.VolumeBackendAPIException(data="data")
         self.mock_object(self.driver.zapi_client, 'delete_file',
                          side_effect=side_effect)
 
         self.driver._swap_files(fake.FLEXVOL, fake.VOLUME_NAME, new_file)
+
+    def test_remote_swap_files_rejects_expired_request(self):
+        service = netapp_remote.SAPNetappDriverRemoteService(self.driver)
+        mock_swap = self.mock_object(self.driver, '_swap_files')
+        expired_ts = (timeutils.utcnow() -
+                      datetime.timedelta(seconds=601)).isoformat()
+        ctxt = context.RequestContext(is_admin=True, timestamp=expired_ts)
+
+        self.assertRaises(
+            na_utils.NetAppDriverException,
+            service.swap_files,
+            ctxt, fake.FLEXVOL, fake.VOLUME_NAME, 'new-file')
+        mock_swap.assert_not_called()
+
+    def test_remote_swap_files_executes_fresh_request(self):
+        service = netapp_remote.SAPNetappDriverRemoteService(self.driver)
+        mock_swap = self.mock_object(self.driver, '_swap_files')
+        ctxt = context.RequestContext(is_admin=True,
+                                      timestamp=timeutils.utcnow())
+
+        service.swap_files(ctxt, fake.FLEXVOL, fake.VOLUME_NAME, 'new-file')
+        mock_swap.assert_called_once_with(
+            flexvol_name=fake.FLEXVOL,
+            original_file=fake.VOLUME_NAME,
+            new_file='new-file')
 
     def test_terminate_connection(self):
         connector = {'ip': fake.FC_CONNECTOR['ip']}

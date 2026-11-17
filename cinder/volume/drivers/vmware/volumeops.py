@@ -2788,28 +2788,10 @@ class VMwareVolumeOps(object):
                                         tgt_flat_file)
         LOG.debug("Moving src file %(src_file)s to %(dst_file)s",
                   {'src_file': source_path, 'dst_file': destination_path})
-        path = netapp_vol + "/%s/%s" % (src_qtree, folder_path)
-        src_bytes_used = netapp_api.get_file_sizes_by_dir(context,
-                                                          host=netapp_host,
-                                                          path=path)
         netapp_api.swap_files(context, host=netapp_host,
                               vol_name=netapp_vol,
                               original_file=destination_path,
                               new_file=source_path)
-        path = netapp_vol + "/%s/%s" % (tgt_qtree, tgt_folder_path)
-        dst_bytes_used = netapp_api.get_file_sizes_by_dir(context,
-                                                          host=netapp_host,
-                                                          path=path)
-        for f in src_bytes_used:
-            if f['name'] == src_flat_file:
-                src_bytes = f['file-size']
-        for f in dst_bytes_used:
-            if f['name'] == tgt_flat_file:
-                dst_bytes = f['file-size']
-        LOG.debug("Qtree migration info src size:%f , dst size:%f",
-                  src_bytes, dst_bytes)
-        # If the move is success, than the src bytes are the same as the dst.
-        return src_bytes == dst_bytes
 
     def set_qos(self, context, ds_ref, netapp_api, netapp_host,
                 vmdk_path,
