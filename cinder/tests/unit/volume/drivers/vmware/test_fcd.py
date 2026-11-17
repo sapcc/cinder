@@ -18,6 +18,7 @@
 from unittest import mock
 
 import ddt
+import oslo_messaging as messaging
 from oslo_utils import timeutils
 from oslo_utils import units
 from oslo_vmware import exceptions as vexc
@@ -1644,3 +1645,98 @@ class VMwareVStorageObjectDriverTestCase(test.TestCase):
         warning_args = str(mock_log.warning.call_args)
         self.assertIn('fcd-999', warning_args)
         self.assertIn('vm/vm.vmdk', warning_args)
+
+    def _setup_qtree_migration_mocks(self, vops, select_ds_for_volume):
+        src_ds_info = mock.MagicMock()
+        src_ds_info.type = 'NFS41'
+        src_ds_info.__getitem__.side_effect = {'url': 'ds://src'}.__getitem__
+        select_ds_for_volume.return_value = (None, None, None, src_ds_info)
+        vops._get_mount_path.return_value = '10.0.0.1:/vol1/qtree_src'
+        vops.get_netapp_for_ds.return_value = 'netapp.example.com'
+
+        remote_api = mock.Mock()
+        remote_api.select_ds_for_volume.return_value = {
+            'datastore': 'datastore-202',
+            'datastore_url': 'ds://tgt',
+            'mount_path': '10.0.0.1:/vol1/qtree_tgt',
+            'profile_id': 'prof-1',
+        }
+        remote_api.create_fcd.return_value = (
+            'tgt-fcd@qtree_tgt', '[qtree_tgt] vol/tgt.vmdk')
+        self._driver._remote_api = remote_api
+        self._driver._remote_netapp_api = mock.Mock()
+        return remote_api
+
+    @mock.patch.object(FCD_DRIVER, '_register_kmip_key_id', return_value=None)
+    @mock.patch.object(FCD_DRIVER, '_get_disk_type', return_value='thin')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_for_volume')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    def test_migrate_unattached_qtree_failure_deletes_target_fcd(
+            self, vops, select_ds_for_volume, get_disk_type, reg_kmip):
+        volume = self._create_volume_obj()
+        ctxt = mock.sentinel.context
+        dest_host = 'host2@vmware_fcd#qtree_tgt'
+        fcd_loc = mock.Mock()
+        remote_api = self._setup_qtree_migration_mocks(
+            vops, select_ds_for_volume)
+        vops.migrate_unattached_qtree.side_effect = (
+            cinder_exceptions.VolumeBackendAPIException(data='swap failed'))
+
+        self.assertRaises(
+            cinder_exceptions.VolumeBackendAPIException,
+            self._driver._migrate_unattached,
+            ctxt, dest_host, volume, fcd_loc, cross_vc=True)
+
+        remote_api.delete_fcd.assert_called_once_with(
+            ctxt, dest_host, 'tgt-fcd@qtree_tgt')
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch.object(FCD_DRIVER, '_register_kmip_key_id', return_value=None)
+    @mock.patch.object(FCD_DRIVER, '_get_disk_type', return_value='thin')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_for_volume')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    def test_migrate_unattached_qtree_timeout_preserves_target_fcd(
+            self, vops, select_ds_for_volume, get_disk_type, reg_kmip):
+        volume = self._create_volume_obj()
+        ctxt = mock.sentinel.context
+        dest_host = 'host2@vmware_fcd#qtree_tgt'
+        fcd_loc = mock.Mock()
+        remote_api = self._setup_qtree_migration_mocks(
+            vops, select_ds_for_volume)
+        vops.migrate_unattached_qtree.side_effect = (
+            messaging.MessagingTimeout())
+
+        self.assertRaises(
+            messaging.MessagingTimeout,
+            self._driver._migrate_unattached,
+            ctxt, dest_host, volume, fcd_loc, cross_vc=True)
+
+        remote_api.delete_fcd.assert_not_called()
+        vops.delete_fcd.assert_not_called()
+
+    @mock.patch.object(FCD_DRIVER, '_register_kmip_key_id', return_value=None)
+    @mock.patch.object(FCD_DRIVER, '_get_disk_type', return_value='thin')
+    @mock.patch.object(FCD_DRIVER, '_select_ds_for_volume')
+    @mock.patch.object(FCD_DRIVER, 'volumeops')
+    def test_migrate_unattached_qtree_saves_before_deleting_source_fcd(
+            self, vops, select_ds_for_volume, get_disk_type, reg_kmip):
+        volume = mock.MagicMock()
+        volume.id = self.VOL_ID
+        volume.name = 'volume-%s' % self.VOL_ID
+        volume.size = self.VOL_SIZE
+        ctxt = mock.sentinel.context
+        dest_host = 'host2@vmware_fcd#qtree_tgt'
+        fcd_loc = mock.Mock()
+        self._setup_qtree_migration_mocks(vops, select_ds_for_volume)
+        call_order = []
+        volume.save.side_effect = lambda: call_order.append('save')
+        vops.delete_fcd.side_effect = (
+            lambda loc: call_order.append('delete_fcd'))
+
+        res = self._driver._migrate_unattached(
+            ctxt, dest_host, volume, fcd_loc, cross_vc=True)
+
+        self.assertEqual((True, None), res)
+        volume.update.assert_called_once_with(
+            {'provider_location': 'tgt-fcd@qtree_tgt'})
+        self.assertEqual(['save', 'delete_fcd'], call_order)
