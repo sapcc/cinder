@@ -18,13 +18,15 @@ RPC server and client for communicating with other netapp drivers directly.
 This allows remote calls to be made to a running netapp driver to do work on
 volumes.
 """
+import time
+
 from oslo_log import log as logging
 import oslo_messaging as messaging
 
 from cinder import rpc
+from cinder.volume.drivers.netapp.dataontap.client import api as netapp_api
 from cinder.volume.rpcapi import VolumeAPI
 from cinder.volume import volume_utils
-
 
 LOG = logging.getLogger(__name__)
 
@@ -97,13 +99,28 @@ class SAPNetappDriverRemoteService(object):
 
     def clone_file(self, ctxt, flex_vol, src_path, dest_path, vserver,
                    dest_exists, is_snapshot):
-        # Clones a file on ONTAP
-        self._driver.zapi_client.clone_file(flex_vol=flex_vol,
-                                            src_path=src_path,
-                                            dest_path=dest_path,
-                                            vserver=vserver,
-                                            dest_exists=dest_exists,
-                                            is_snapshot=is_snapshot)
+        # Clones a file on ONTAP, retrying on "device busy" (13565952)
+        _CLONE_DEVICE_BUSY = '13565952'
+        retries = 10
+        clone_command = self._driver.zapi_client.clone_file
+        for attempt in range(1, retries + 1):
+            try:
+                clone_command(flex_vol=flex_vol, src_path=src_path,
+                              dest_path=dest_path, vserver=vserver,
+                              dest_exists=dest_exists,
+                              is_snapshot=is_snapshot)
+                return
+            except netapp_api.NaApiError as e:
+                if (str(e.code) == _CLONE_DEVICE_BUSY
+                        and attempt < retries):
+                    LOG.debug('clone_file device busy (attempt %d/%d), '
+                              'retrying in 10s.', attempt, retries)
+                    time.sleep(10)
+                    dest_exists = True
+                    if attempt > 3:
+                        clone_command = self._driver.zapi_client.clone_file_ssh
+                else:
+                    raise
 
     def file_assign_qos(self, ctxt, vol_name,
                         qos_policy_group_name, path):
