@@ -15,6 +15,7 @@
 
 from unittest import mock
 
+from oslo_config import cfg
 from oslo_utils import timeutils
 
 from cinder import context
@@ -24,6 +25,8 @@ from cinder import objects
 from cinder.tests.unit import fake_constants
 from cinder.tests.unit import test
 from cinder.tests.unit import utils
+
+CONF = cfg.CONF
 
 
 class FakeManager(manager.CleanableManager):
@@ -47,17 +50,40 @@ class TestCleanableManager(test.TestCase):
                                               is_admin=True)
         self.service = db.service_create(self.context, {})
 
+    @mock.patch('cinder.manager.eventlet.spawn_after')
     @mock.patch('cinder.manager.CleanableManager.do_cleanup', autospec=True)
-    def test_init_host_with_service(self, mock_cleanup):
+    def test_init_host_with_service(self, mock_cleanup, mock_spawn_after):
         mngr = FakeManager()
         self.assertFalse(hasattr(mngr, 'service_id'))
         mngr.init_host(service_id=self.service.id)
 
         self.assertEqual(self.service.id, mngr.service_id)
-        mock_cleanup.assert_called_once_with(mngr, mock.ANY, mock.ANY)
+        mock_cleanup.assert_called_once_with(
+            mngr, mock.ANY, mock.ANY, skip_fresh=True)
         clean_req = mock_cleanup.call_args[0][2]
         self.assertIsInstance(clean_req, objects.CleanupRequest)
         self.assertEqual(self.service.id, clean_req.service_id)
+
+    @mock.patch('cinder.manager.eventlet.spawn_after')
+    def test_init_host_schedules_second_cleanup(self, mock_spawn_after):
+        """Entries orphaned by a killed pod are retried after they go stale."""
+        mngr = FakeManager()
+        mngr.init_host(service_id=self.service.id)
+
+        delay, func, _, clean_req = mock_spawn_after.call_args[0]
+        self.assertEqual(CONF.service_down_time + 10, delay)
+        self.assertEqual(mngr._delayed_cleanup, func)
+        self.assertEqual(self.service.id, clean_req.service_id)
+
+    @mock.patch('cinder.manager.CleanableManager.do_cleanup', autospec=True)
+    def test_delayed_cleanup_reruns_cleanup(self, mock_cleanup):
+        mngr = FakeManager(self.service.id)
+        clean_req = objects.CleanupRequest(service_id=self.service.id)
+
+        mngr._delayed_cleanup(self.context, clean_req)
+
+        mock_cleanup.assert_called_once_with(
+            mngr, self.context, clean_req, skip_fresh=True)
 
     def test_do_cleanup(self):
         """Basic successful cleanup."""

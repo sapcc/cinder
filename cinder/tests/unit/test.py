@@ -336,9 +336,31 @@ class TestCase(testtools.TestCase):
                 x.stop()
             except Exception:
                 pass
+            # Explicitly deregister RPC endpoints from the fake transport.
+            # In production, the process exits after stop() and the OS
+            # closes the AMQP socket. In tests, stale endpoints remain
+            # registered in oslo.messaging's fake transport and can
+            # receive messages intended for the next test's service.
+            for server in ('rpcserver', 'backend_rpcserver',
+                           'cluster_rpcserver'):
+                srv = getattr(x, server, None)
+                if srv is not None:
+                    try:
+                        srv.stop()
+                        srv.wait()
+                    except Exception:
+                        pass
 
         # Stop any looping call that has not yet been stopped
         cinder_unit.stop_looping_calls()
+
+        # Restore SIGTERM/SIGINT for the worker process. Service.stop()
+        # installs SIG_IGN once per process; if left set, a hung stestr
+        # worker can no longer be killed with SIGTERM.
+        import signal
+        service._GS_SIGNALS_IGNORED = False
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         # Delete attributes that don't start with _ so they don't pin
         # memory around unnecessarily for the duration of the test
