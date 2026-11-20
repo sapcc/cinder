@@ -103,12 +103,12 @@ class SAPNetappDriverRemoteService(object):
     def clone_file(self, ctxt, flex_vol, src_path, dest_path, vserver,
                    dest_exists, is_snapshot):
         # Clones a file on ONTAP
-        self._driver.zapi_client.clone_file(flex_vol=flex_vol,
-                                            src_path=src_path,
-                                            dest_path=dest_path,
-                                            vserver=vserver,
-                                            dest_exists=dest_exists,
-                                            is_snapshot=is_snapshot)
+        self._driver.zapi_client.clone_file_rpc(flex_vol=flex_vol,
+                                                src_path=src_path,
+                                                dest_path=dest_path,
+                                                vserver=vserver,
+                                                dest_exists=dest_exists,
+                                                is_snapshot=is_snapshot)
 
     def file_assign_qos(self, ctxt, vol_name,
                         qos_policy_group_name, path, vserver):

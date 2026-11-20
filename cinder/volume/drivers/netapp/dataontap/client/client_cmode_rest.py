@@ -1808,6 +1808,19 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
         self.send_request('/storage/file/clone', 'post', body=body)
 
+    def clone_file_rpc(self, flex_vol, src_path, dest_path, vserver,
+                       dest_exists=False, source_snapshot=None,
+                       is_snapshot=False):
+
+        old_vserver = self.connection._vserver
+        if old_vserver != vserver:
+            # Change to unresticted access due to rpc
+            self.connection.set_vserver(None)
+            self.clone_file(self, flex_vol, src_path, dest_path,
+                            vserver, dest_exists, source_snapshot,
+                            is_snapshot)
+            self.connection.set_vserver(old_vserver)
+
     def clone_lun(self, volume, name, new_name, space_reserved='true',
                   qos_policy_group_name=None, src_block=0, dest_block=0,
                   block_count=0, source_snapshot=None, is_snapshot=False,
