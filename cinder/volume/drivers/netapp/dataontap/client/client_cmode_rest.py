@@ -820,6 +820,15 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
             })
         return files
 
+    def get_file_sizes_by_dir_rpc(self, dir_path, vserver):
+        old_vserver = self.connection._vserver
+        if old_vserver != vserver:
+            # Change to unresticted access due to rpc
+            self.connection.set_vserver(None)
+        files = self.get_file_sizes_by_dir(dir_path)
+        self.connection.set_vserver(old_vserver)
+        return files
+
     def get_volume_state(self, junction_path=None, name=None):
         """Returns volume state for a given name or junction path."""
 
@@ -1287,6 +1296,17 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         self.send_request(
             f'/storage/volumes/{volume["uuid"]}/files/{file_path}',
             'patch', body=body, enable_tunneling=False)
+
+    def file_assign_qos_rpc(self, flex_vol, qos_policy_group_name,
+                            qos_policy_group_is_adaptive, file_path,
+                            vserver):
+        old_vserver = self.connection._vserver
+        if old_vserver != vserver:
+            # Change to unresticted access due to rpc
+            self.connection.set_vserver(None)
+        self.file_assign_qos(flex_vol, qos_policy_group_name,
+                             qos_policy_group_is_adaptive, file_path)
+        self.connection.set_vserver(old_vserver)
 
     def mark_qos_policy_group_for_deletion(self, qos_policy_group_info,
                                            is_adaptive=False):
@@ -1787,6 +1807,19 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
             body['overwrite_destination'] = True
 
         self.send_request('/storage/file/clone', 'post', body=body)
+
+    def clone_file_rpc(self, flex_vol, src_path, dest_path, vserver,
+                       dest_exists=False, source_snapshot=None,
+                       is_snapshot=False):
+
+        old_vserver = self.connection._vserver
+        if old_vserver != vserver:
+            # Change to unresticted access due to rpc
+            self.connection.set_vserver(None)
+            self.clone_file(self, flex_vol, src_path, dest_path,
+                            vserver, dest_exists, source_snapshot,
+                            is_snapshot)
+            self.connection.set_vserver(old_vserver)
 
     def clone_lun(self, volume, name, new_name, space_reserved='true',
                   qos_policy_group_name=None, src_block=0, dest_block=0,
