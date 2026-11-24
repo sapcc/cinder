@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Reduce ONTAP requests during NetApp NFS capacity reporting when
+    ``netapp_nfs_report_aggr_free_capacity`` is enabled. Each pool now reads
+    capacity and aggregate membership in one request.

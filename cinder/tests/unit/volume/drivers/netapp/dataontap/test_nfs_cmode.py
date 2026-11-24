@@ -425,8 +425,8 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         client = self.driver.zapi_client
         client.get_flexvol_capacity.return_value = {
             'size-total': 100 * units.Gi, 'size-available': 20 * units.Gi,
+            'aggregate': ['aggr1'],
         }
-        client.get_flexvol.return_value = {'aggregate': ['aggr1']}
         capacities = client.get_aggregate_capacities
         capacities.return_value = {
             'aggr1': {'size-available': 80 * units.Gi, 'percent-used': 20},

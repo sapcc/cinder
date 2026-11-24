@@ -1880,9 +1880,12 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
         self.send_request('/storage/luns/', 'delete', query=query)
 
-    def get_flexvol_capacity(self, flexvol_path=None, flexvol_name=None):
+    def get_flexvol_capacity(self, flexvol_path=None, flexvol_name=None,
+                             include_aggregates=False):
         """Gets total capacity and free capacity, in bytes, of the flexvol."""
         fields = 'name,space.available,space.afs_total'
+        if include_aggregates:
+            fields += ',aggregates.name'
         try:
             volume = self._get_volume_by_args(
                 vol_name=flexvol_name, vol_path=flexvol_path, fields=fields)
@@ -1890,6 +1893,9 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                 'size-total': float(volume['space']['afs_total']),
                 'size-available': float(volume['space']['available']),
             }
+            if include_aggregates:
+                capacity['aggregate'] = [aggregate['name']
+                                         for aggregate in volume['aggregates']]
             return capacity
         except exception.VolumeBackendAPIException:
             msg = _('Volume %s not found.')
