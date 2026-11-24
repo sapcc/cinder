@@ -17,6 +17,7 @@ from datetime import datetime
 from datetime import timedelta
 import math
 from time import time
+import urllib.parse
 
 from oslo_log import log as logging
 from oslo_utils import excutils
@@ -1758,24 +1759,19 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
 
     def file_exists(self, netapp_vol, file_path):
         """Checks if a file exists in the given volume."""
-        file_elements = file_path.split('/')
-        dir_path = '/'.join(file_elements[:-1])
         # Path requires "%2E" to represent "." and "%2F" to represent "/".
-        dir_path = dir_path.replace('.', '%2E').replace('/', '%2F')
-        file_name = file_elements[-1]
-        query = {'type': 'file', 'fields': 'name'}
+        file_path = urllib.parse.quote(file_path, safe='').replace('.', '%2E')
+        query = {'return_metadata': 'true', 'fields': 'type'}
         try:
             file_info = self.send_request(
-                f'/storage/volumes/{netapp_vol["uuid"]}/files/{dir_path}',
+                f'/storage/volumes/{netapp_vol["uuid"]}/files/{file_path}',
                 'get', query=query)
         except netapp_api.NaApiError as e:
             if e.code == netapp_api.REST_NO_SUCH_FILE:
                 return False
             raise
-        for file in file_info.get('records', []):
-            if file['name'] == file_name:
-                return True
-        return False
+        records = file_info.get('records') or []
+        return len(records) == 1 and records[0].get('type') == 'file'
 
     def clone_file(self, flex_vol, src_path, dest_path, vserver,
                    dest_exists=False, source_snapshot=None, is_snapshot=False):
