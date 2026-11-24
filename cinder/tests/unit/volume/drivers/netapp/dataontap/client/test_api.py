@@ -719,7 +719,8 @@ class NetAppRestApiServerTests(test.TestCase):
     @ddt.unpack
     def test_send_http_request(self, resp_content, body, timeout):
         if timeout:
-            self.rest_client._timeout = timeout
+            self.rest_client = netapp_api.RestNaServer('127.0.0.1',
+                                                       timeout=timeout)
         self.mock_object(netapp_api, 'LOG')
         mock_json_dumps = self.mock_object(
             jsonutils, 'dumps', mock.Mock(return_value='fake_dump_body'))
@@ -747,14 +748,27 @@ class NetAppRestApiServerTests(test.TestCase):
         self.assertEqual(bool(resp_content), mock_json_loads.called)
         mock_get_request_method.assert_called_once_with('post', _mock_session)
         expected_data = 'fake_dump_body' if body else {}
-        if timeout:
-            mock_post.assert_called_once_with(
-                zapi_fakes.FAKE_ACTION_ENDPOINT, data=expected_data,
-                headers=zapi_fakes.FAKE_HEADERS, timeout=timeout)
-        else:
-            mock_post.assert_called_once_with(
-                zapi_fakes.FAKE_ACTION_ENDPOINT, data=expected_data,
-                headers=zapi_fakes.FAKE_HEADERS)
+        expected_timeout = timeout or 60
+        mock_post.assert_called_once_with(
+            zapi_fakes.FAKE_ACTION_ENDPOINT, data=expected_data,
+            headers=zapi_fakes.FAKE_HEADERS, timeout=expected_timeout)
+
+    @ddt.data((requests.ConnectTimeout, 'connection'),
+              (requests.ReadTimeout, 'outcome is unknown'))
+    @ddt.unpack
+    def test_http_timeout_has_distinct_error(self, error, message):
+        self.rest_client.set_timeout(73)
+        request = self.mock_object(self.rest_client._session, 'post',
+                                   side_effect=error())
+
+        failure = self.assertRaises(
+            netapp_api.NaApiError, self.rest_client.send_http_request,
+            'post', 'fake_url', None, {})
+
+        self.assertEqual('ETIMEDOUT', failure.code)
+        self.assertIn(message, failure.message)
+        request.assert_called_once_with('fake_url', data={}, headers={},
+                                        timeout=73)
 
     def test_reuses_one_session_for_all_requests(self):
         """One session carries the connection pool.
@@ -777,8 +791,10 @@ class NetAppRestApiServerTests(test.TestCase):
 
         mock_requests_session.assert_called_once_with()
         self.assertEqual(
-            [mock.call('fake_url', data={}, headers=first),
-             mock.call('fake_url', data={}, headers=second)],
+            [mock.call('fake_url', data={}, headers=first,
+                       timeout=client.DEFAULT_TIMEOUT),
+             mock.call('fake_url', data={}, headers=second,
+                       timeout=client.DEFAULT_TIMEOUT)],
             fake_session.get.call_args_list)
 
     def test__deepcopy_of_client_gets_its_own_session(self):

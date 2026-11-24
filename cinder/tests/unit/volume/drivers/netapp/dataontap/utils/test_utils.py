@@ -97,6 +97,7 @@ class NetAppCDOTDataMotionTestCase(test.TestCase):
     @ddt.data(True, False)
     def test_get_client_for_backend(self, use_legacy):
         self.config.netapp_use_legacy_client = use_legacy
+        CONF.set_override('netapp_rest_http_timeout', 73, group=self.backend)
         self.mock_object(utils, 'get_backend_configuration',
                          return_value=self.config)
 
@@ -118,6 +119,7 @@ class NetAppCDOTDataMotionTestCase(test.TestCase):
                 username='fake_user', transport_type='https', port=8866,
                 trace=mock.ANY, vserver=None, api_trace_pattern="fake_regex",
                 ssl_cert_path='fake_ca', async_rest_timeout=60,
+                http_timeout=73,
                 private_key_file='fake_private_key.pem',
                 certificate_file='fake_cert.pem',
                 ca_certificate_file='fake_ca_cert.crt',
@@ -152,7 +154,7 @@ class NetAppCDOTDataMotionTestCase(test.TestCase):
                 username='fake_user', transport_type='https', port=8866,
                 trace=mock.ANY, vserver='fake_vserver',
                 api_trace_pattern="fake_regex", ssl_cert_path='fake_ca',
-                async_rest_timeout = 60,
+                async_rest_timeout = 60, http_timeout=60,
                 private_key_file='fake_private_key.pem',
                 certificate_file='fake_cert.pem',
                 ca_certificate_file='fake_ca_cert.crt',

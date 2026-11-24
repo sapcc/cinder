@@ -668,6 +668,7 @@ class RestNaServer(object):
     TRANSPORT_TYPE_HTTPS = 'https'
     HTTP_PORT = '80'
     HTTPS_PORT = '443'
+    DEFAULT_TIMEOUT = 60
 
     TRANSPORT_PORT = {
         TRANSPORT_TYPE_HTTP: HTTP_PORT,
@@ -678,7 +679,8 @@ class RestNaServer(object):
                  ssl_cert_path=None, username=None, password=None, port=None,
                  api_trace_pattern=None,
                  private_key_file=None, certificate_file=None,
-                 ca_certificate_file=None, certificate_host_validation=None):
+                 ca_certificate_file=None, certificate_host_validation=None,
+                 timeout=DEFAULT_TIMEOUT):
         self._host = host
         self.set_transport_type(transport_type)
         self.set_port(port=port)
@@ -703,7 +705,7 @@ class RestNaServer(object):
         self._api_major_version = None
         self._api_minor_version = None
         self._ontap_version = None
-        self._timeout = None
+        self.set_timeout(timeout)
 
         # One session per client keeps the connection pool warm across REST
         # calls. Request headers are passed per call (not stored on the
@@ -899,6 +901,15 @@ class RestNaServer(object):
                     url, data=data, headers=headers, timeout=self._timeout)
             else:
                 response = request_method(url, data=data, headers=headers)
+        except requests.Timeout as e:
+            detail = (_('The connection was not established.')
+                      if isinstance(e, requests.ConnectTimeout) else
+                      _("The operation's outcome is unknown."))
+            message = _('NetApp REST %(method)s %(path)s timed out '
+                        '(HTTP timeout: %(timeout)ss). %(detail)s') % {
+                'method': method, 'path': urllib.parse.urlsplit(url).path,
+                'timeout': self._timeout, 'detail': detail}
+            raise NaApiError(code='ETIMEDOUT', message=message) from e
         except requests.HTTPError as e:
             raise NaApiError(e.errno, e.strerror)
         except Exception as e:

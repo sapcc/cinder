@@ -71,7 +71,13 @@ netapp_connection_opts = [
                       'utilization capability. DriverFilter and '
                       'GoodnessWeigher functions and volume type extra specs '
                       'must not reference utilization when collection is '
-                      'disabled. Capacity reporting is not affected.')), ]
+                      'disabled. Capacity reporting is not affected.')),
+    cfg.IntOpt('netapp_rest_http_timeout',
+               min=1,
+               default=60,
+               help='Connection and read inactivity timeout in seconds for '
+                    'each REST HTTP attempt. This does not limit the duration '
+                    'of an asynchronous storage job.'), ]
 
 netapp_transport_opts = [
     cfg.StrOpt('netapp_transport_type',
