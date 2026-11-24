@@ -753,10 +753,13 @@ class NetAppCmodeNfsDriver(
         try:
             qos_policy_group_info = na_utils.get_valid_qos_policy_group_info(
                 volume)
-            is_adaptive = na_utils.is_qos_policy_group_spec_adaptive(
+            policy_name = na_utils.get_qos_policy_group_name_from_info(
                 qos_policy_group_info)
-            self.zapi_client.mark_qos_policy_group_for_deletion(
-                qos_policy_group_info, is_adaptive)
+            if policy_name is not None:
+                is_adaptive = na_utils.is_qos_policy_group_spec_adaptive(
+                    qos_policy_group_info)
+                self.zapi_client.mark_qos_policy_group_for_deletion(
+                    qos_policy_group_info, is_adaptive)
         except Exception:
             # Don't blow up here if something went wrong de-provisioning the
             # QoS policy for the volume.
@@ -1066,8 +1069,11 @@ class NetAppCmodeNfsDriver(
         try:
             qos_policy_group_info = na_utils.get_valid_qos_policy_group_info(
                 volume)
-            self.zapi_client.mark_qos_policy_group_for_deletion(
+            policy_name = na_utils.get_qos_policy_group_name_from_info(
                 qos_policy_group_info)
+            if policy_name is not None:
+                self.zapi_client.mark_qos_policy_group_for_deletion(
+                    qos_policy_group_info)
         except Exception:
             # Unmanage even if there was a problem deprovisioning the
             # associated qos policy group.
