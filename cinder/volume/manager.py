@@ -931,7 +931,7 @@ class VolumeManager(manager.CleanableManager,
                 return True
 
         # For Volume creating and downloading and for Snapshot downloading
-        # statuses we have to set status to error
+        # statuses we have to set status to error.
         if vo_resource.status in ('creating', 'downloading'):
             vo_resource.status = 'error'
             vo_resource.save()
@@ -1061,12 +1061,28 @@ class VolumeManager(manager.CleanableManager,
         # decide if allocated_capacity should be incremented.
         rescheduled = False
 
-        try:
+        def _run_flow_locked() -> None:
+            """Run the flow, optionally under a coordination lock."""
             if locked_action is None:
                 _run_flow()
             else:
                 with coordination.COORDINATOR.get_lock(locked_action):
                     _run_flow()
+
+        try:
+            # Run the flow directly in the RPC handler greenthread.
+            # The graceful shutdown three-phase sequence in
+            # cinder/service.py:Service.stop() lets us bypass
+            # rpcserver.stop() entirely. Phase 2 of that sequence calls
+            # pool.waitall() on the rpcserver's GreenPool, which waits
+            # for THIS greenthread to finish before allowing the process
+            # to exit. The greenthread is NOT killed during shutdown.
+            #
+            # Previous attempts used eventlet.tpool.execute() to run in a
+            # native thread, but this failed because rpcserver.stop() (in
+            # the old shutdown path) killed the CALLING greenthread,
+            # orphaning the native thread.
+            _run_flow_locked()
         except exception.VolumeNotFound:
             with excutils.save_and_reraise_exception():
                 utils.clean_volume_file_locks(source_volid, self.driver)
