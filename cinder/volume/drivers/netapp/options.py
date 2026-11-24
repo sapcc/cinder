@@ -241,6 +241,15 @@ netapp_nfs_extra_opts = [
                deprecated_for_removal=True,
                deprecated_reason='The CopyOfflload tool is no longer '
                                  'available for downloading.'),
+    cfg.BoolOpt('netapp_nfs_report_dedupe_used_percent',
+                default=True,
+                help=('Report the shared-block-limit percentage for NFS '
+                      'pools. Set to False to skip its collection and omit '
+                      'netapp_dedupe_used_percent. DriverFilter, '
+                      'GoodnessWeigher and volume type extra specs must not '
+                      'reference this capability when reporting is disabled. '
+                      'Storage deduplication and capacity reporting are '
+                      'unaffected.')),
     cfg.BoolOpt('netapp_nfs_report_aggr_free_capacity',
                 default=True,
                 help=('When enabled, report the free space from the'

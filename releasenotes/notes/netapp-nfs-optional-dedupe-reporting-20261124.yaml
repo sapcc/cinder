@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    Set ``netapp_nfs_report_dedupe_used_percent = False`` to skip collection of
+    the NFS shared-block-limit percentage and omit ``netapp_dedupe_used_percent``.
+    The default remains ``True``. Filters, weighers and volume type extra specs
+    must not depend on this capability when reporting is disabled. Storage
+    deduplication and capacity reporting are unchanged.

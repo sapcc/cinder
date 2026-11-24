@@ -23,6 +23,11 @@
      - (String) Administrative user account name used to access the storage system or proxy server.
    * - ``netapp_lun_ostype`` = ``None``
      - (String) This option defines the type of operating system that will access a LUN exported from Data ONTAP; it is assigned to the LUN at the time it is created.
+   * - ``netapp_nfs_report_dedupe_used_percent`` = ``True``
+     - (Boolean) Report the shared-block-limit percentage. When disabled, omit
+       ``netapp_dedupe_used_percent``; filters, weighers and volume type extra
+       specs must not reference it. Storage deduplication and capacity reporting
+       are unchanged.
    * - ``netapp_password`` = ``None``
      - (String) Password for the administrative user account specified in the netapp_login option.
    * - ``netapp_pool_name_search_pattern`` = ``(.+)``

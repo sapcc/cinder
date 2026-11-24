@@ -451,6 +451,24 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         mock_dedupe.assert_not_called()
         self.assertEqual(0.0, result[0]['netapp_dedupe_used_percent'])
 
+    @ddt.data(0, 10 ** 10)
+    def test_get_pool_stats_dedupe_reporting_disabled(self, expiry):
+        _, mock_dedupe = self._setup_pool_stats_with_cache()
+        self.driver.configuration.netapp_nfs_report_dedupe_used_percent = False
+        self.driver.configuration.netapp_dedupe_cache_expiry_duration = expiry
+        self.driver._stats = {
+            'pools': [{'pool_name': '10.10.10.10:/vola',
+                       'netapp_dedupe_used_percent': 42.0}],
+        }
+
+        pool = self.driver._get_pool_stats()[0]
+
+        mock_dedupe.assert_not_called()
+        self.assertNotIn('netapp_dedupe_used_percent', pool)
+        self.assertEqual(100.0, pool['total_capacity_gb'])
+        self.assertEqual(80.0, pool['free_capacity_gb'])
+        self.assertEqual('true', pool['netapp_dedup'])
+
     def test_get_pool_stats_with_aggregate_id(self):
         """Test that aggregate_id from comment field appears in pool stats."""
         self.driver.using_cluster_credentials = True
