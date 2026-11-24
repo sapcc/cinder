@@ -1053,14 +1053,15 @@ class NetAppNfsDriver(driver.ManageableVD,
                 'A volume ID or share was not specified.')
         return host_ip, export_path
 
-    def _get_share_capacity_info(self, nfs_share):
+    def _get_share_capacity_info(self, nfs_share, aggr_capacities=None):
         """Returns the share capacity metrics needed by the scheduler."""
 
         capacity = dict()
         capacity['reserved_percentage'] = self.reserved_percentage
         capacity['max_over_subscription_ratio'] = (
             self.max_over_subscription_ratio)
-        total_size, total_available = self._get_capacity_info(nfs_share)
+        total_size, total_available = self._get_capacity_info(
+            nfs_share, aggr_capacities=aggr_capacities)
         capacity['total_capacity_gb'] = na_utils.round_down(
             total_size / units.Gi)
         capacity['free_capacity_gb'] = na_utils.round_down(
@@ -1068,7 +1069,7 @@ class NetAppNfsDriver(driver.ManageableVD,
 
         return capacity
 
-    def _get_capacity_info(self, nfs_share):
+    def _get_capacity_info(self, nfs_share, aggr_capacities=None):
         """Get total capacity and free capacity in bytes for an nfs share."""
         export_path = nfs_share.rsplit(':', 1)[1]
         capacity = self.zapi_client.get_flexvol_capacity(
@@ -1078,7 +1079,13 @@ class NetAppNfsDriver(driver.ManageableVD,
             aggr_list = vol['aggregate']
             if isinstance(aggr_list, str):
                 aggr_list = [aggr_list]
-            aggr = self.zapi_client.get_aggregate_capacities(aggr_list)
+            # The pool-stats caller supplies a cache scoped to one refresh.
+            # Live volume membership can include members absent from SSC.
+            aggr = aggr_capacities if aggr_capacities is not None else {}
+            missing = [name for name in dict.fromkeys(aggr_list)
+                       if aggr.get(name, {}).get('size-available') is None]
+            if missing:
+                aggr.update(self.zapi_client.get_aggregate_capacities(missing))
             size_available = 0.0
             for agg_name in aggr_list:
                 size_available += aggr[agg_name]['size-available']

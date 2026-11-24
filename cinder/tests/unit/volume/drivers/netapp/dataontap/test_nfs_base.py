@@ -122,6 +122,51 @@ class NetAppNfsDriverTestCase(test.TestCase):
         get_capacity.assert_has_calls([
             mock.call(flexvol_path=fake.EXPORT_PATH)])
 
+    @ddt.data(0, 80)
+    def test_get_capacity_info_fetches_missing_flexgroup_members(self, free):
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
+        self.zapi_client.get_flexvol_capacity.return_value = {
+            'size-total': 100 * units.Gi, 'size-available': 10 * units.Gi,
+        }
+        self.zapi_client.get_flexvol.return_value = {
+            'aggregate': ['aggr1', 'aggr2'],
+        }
+        capacities = {'aggr1': {'size-available': free * units.Gi}}
+        get_aggregates = self.zapi_client.get_aggregate_capacities
+        get_aggregates.return_value = {
+            'aggr2': {'size-available': 20 * units.Gi},
+        }
+
+        first = self.driver._get_capacity_info(
+            fake.NFS_SHARE, aggr_capacities=capacities)
+        second = self.driver._get_capacity_info(
+            fake.NFS_SHARE, aggr_capacities=capacities)
+
+        self.assertEqual((100 * units.Gi, (free + 20) * units.Gi), first)
+        self.assertEqual(first, second)
+        get_aggregates.assert_called_once_with(['aggr2'])
+
+    def test_get_capacity_info_retries_incomplete_aggregate_capacity(self):
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
+        self.zapi_client.get_flexvol_capacity.return_value = {
+            'size-total': 100 * units.Gi, 'size-available': 10 * units.Gi,
+        }
+        self.zapi_client.get_flexvol.return_value = {'aggregate': ['aggr1']}
+        get_aggregates = self.zapi_client.get_aggregate_capacities
+        get_aggregates.return_value = {
+            'aggr1': {'size-available': 80 * units.Gi},
+        }
+
+        result = self.driver._get_capacity_info(
+            fake.NFS_SHARE, aggr_capacities={'aggr1': {}})
+
+        self.assertEqual((100 * units.Gi, 80 * units.Gi), result)
+        get_aggregates.assert_called_once_with(['aggr1'])
+        get_aggregates.return_value = {'aggr1': {}}
+        self.assertRaises(
+            KeyError, self.driver._get_capacity_info, fake.NFS_SHARE,
+            aggr_capacities={'aggr1': {}})
+
     def test_get_pool(self):
         pool = self.driver.get_pool({'provider_location': 'fake-share'})
 
