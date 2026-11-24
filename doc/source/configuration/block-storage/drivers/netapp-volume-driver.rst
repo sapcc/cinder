@@ -46,6 +46,20 @@ configuration group which provides Compute instances access to
 clustered Data ONTAP storage systems. At present it can be configured in
 Block Storage to work with NVme, iSCSI and NFS storage protocols.
 
+Performance metric collection
+-----------------------------
+
+Set ``netapp_enable_performance_metrics = False`` in the back-end section of
+``cinder.conf`` to disable counter discovery and polling (default: ``True``).
+Disabled pools omit ``utilization``; capacity reporting is unchanged.
+
+.. warning::
+
+   Before disabling collection, ensure ``DriverFilter``, ``GoodnessWeigher`` and
+   volume type extra specs do not depend on utilization. The default NetApp
+   filter and goodness functions reference it. Without the capability,
+   ``DriverFilter`` rejects pools and ``GoodnessWeigher`` assigns a score of ``0``.
+
 NetApp iSCSI configuration for clustered Data ONTAP
 ---------------------------------------------------
 

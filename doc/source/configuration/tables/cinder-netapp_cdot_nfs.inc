@@ -12,6 +12,11 @@
      - (Integer) This option specifies the threshold for last access time for images in the NFS image cache. When a cache cleaning cycle begins, images in the cache that have not been accessed in the last M minutes, where M is the value of this parameter, will be deleted from the cache to create free space on the NFS share.
    * - ``netapp_copyoffload_tool_path`` = ``None``
      - (String) This option specifies the path of the NetApp copy offload tool binary. Ensure that the binary has execute permissions set which allow the effective user of the cinder-volume process to execute the file.
+   * - ``netapp_enable_performance_metrics`` = ``True``
+     - (Boolean) Collect ONTAP controller performance metrics. When disabled,
+       pools omit the utilization capability. DriverFilter and GoodnessWeigher
+       functions and volume type extra specs must not reference utilization
+       in this mode. Capacity reporting is not affected.
    * - ``netapp_host_type`` = ``None``
      - (String) This option defines the type of operating system for all initiators that can access a LUN. This information is used when mapping LUNs to individual hosts or groups of hosts.
    * - ``netapp_login`` = ``None``

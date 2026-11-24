@@ -146,7 +146,8 @@ class NetAppNVMeStorageLibrary(
 
         # Performance monitoring library.
         self.perf_library = perf_cmode.PerformanceCmodeLibrary(
-            self.client)
+            self.client,
+            enabled=self.configuration.netapp_enable_performance_metrics)
 
     def _update_ssc(self):
         """Refresh the storage service catalog with the latest set of pools."""
@@ -575,7 +576,8 @@ class NetAppNVMeStorageLibrary(
             # Add utilization data
             utilization = self.perf_library.get_node_utilization_for_pool(
                 ssc_vol_name)
-            pool['utilization'] = na_utils.round_down(utilization)
+            if utilization is not None:
+                pool['utilization'] = na_utils.round_down(utilization)
             pool['filter_function'] = filter_function
             pool['goodness_function'] = goodness_function
 

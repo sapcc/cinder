@@ -8,6 +8,11 @@
      - Description
    * - **[DEFAULT]**
      -
+   * - ``netapp_enable_performance_metrics`` = ``True``
+     - (Boolean) Collect ONTAP controller performance metrics. When disabled,
+       pools omit the utilization capability. DriverFilter and GoodnessWeigher
+       functions and volume type extra specs must not reference utilization
+       in this mode. Capacity reporting is not affected.
    * - ``netapp_login`` = ``None``
      - (String) Administrative user account name used to access the storage system or proxy server.
    * - ``netapp_lun_ostype`` = ``None``

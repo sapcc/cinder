@@ -1,0 +1,8 @@
+---
+features:
+  - |
+    NetApp ONTAP performance collection can be disabled per back end with
+    ``netapp_enable_performance_metrics = False``; the default remains ``True``.
+    Disabled pools omit ``utilization`` without changing capacity reporting.
+    ``DriverFilter``, ``GoodnessWeigher`` and volume type extra specs must not
+    depend on utilization when collection is disabled.

@@ -401,10 +401,15 @@ class NetAppBlockStorageCmodeLibraryTestCase(test.TestCase):
                'report_provisioned_capacity': False},
               {'replication_backends': ['target_1', 'target_2'],
                'cluster_credentials': True,
-               'report_provisioned_capacity': True})
+               'report_provisioned_capacity': True},
+              {'replication_backends': ['target_1', 'target_2'],
+               'cluster_credentials': True,
+               'report_provisioned_capacity': True,
+               'utilization': None})
     @ddt.unpack
     def test_get_pool_stats(self, replication_backends, cluster_credentials,
-                            report_provisioned_capacity):
+                            report_provisioned_capacity,
+                            utilization=30.0):
         self.library.using_cluster_credentials = cluster_credentials
         conf = self.library.configuration
         conf.netapp_driver_reports_provisioned_capacity = (
@@ -437,7 +442,7 @@ class NetAppBlockStorageCmodeLibraryTestCase(test.TestCase):
         self.library.reserved_percentage = 5
         self.library.max_over_subscription_ratio = 10
         self.library.perf_library.get_node_utilization_for_pool = (
-            mock.Mock(return_value=30.0))
+            mock.Mock(return_value=utilization))
         mock_capacities = {
             'size-total': 10737418240.0,
             'size-available': 2147483648.0,
@@ -485,7 +490,7 @@ class NetAppBlockStorageCmodeLibraryTestCase(test.TestCase):
             'free_capacity_gb': 2.0,
             'netapp_dedupe_used_percent': 55.0,
             'netapp_aggregate_used_percent': 45,
-            'utilization': 30.0,
+            'utilization': utilization,
             'filter_function': 'filter',
             'goodness_function': 'goodness',
             'thick_provisioning_support': True,
@@ -504,6 +509,8 @@ class NetAppBlockStorageCmodeLibraryTestCase(test.TestCase):
         }]
         if report_provisioned_capacity:
             expected[0].update({'provisioned_capacity_gb': 5.0})
+        if utilization is None:
+            expected[0].pop('utilization')
 
         expected[0].update({'QoS_support': cluster_credentials})
         if not cluster_credentials:

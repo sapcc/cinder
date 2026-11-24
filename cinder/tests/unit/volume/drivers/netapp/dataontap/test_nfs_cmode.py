@@ -366,6 +366,37 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
             return_value=55.0)
         return mock_perf_update, mock_dedupe
 
+    @ddt.data(None, False)
+    def test_performance_metrics_configuration(self, enabled):
+        self._setup_pool_stats_with_cache()
+        if enabled is not None:
+            self.driver.configuration.netapp_enable_performance_metrics = (
+                enabled)
+        client = self.driver.zapi_client
+        client.features.SYSTEM_CONSTITUENT_METRICS = True
+        client.get_performance_counter_info.return_value = {
+            'base-counter': 'cpu_elapsed_time',
+        }
+        client.get_node_for_aggregate.return_value = None
+        self.driver.ssc_library.cluster_user_supported.return_value = True
+        self.mock_object(nfs.NfsDriver, 'do_setup')
+        self.mock_object(dot_utils, 'get_client_for_backend',
+                         return_value=client)
+        self.mock_object(capabilities, 'CapabilitiesLibrary',
+                         return_value=self.driver.ssc_library)
+
+        self.driver.do_setup(mock.Mock())
+        pool = self.driver._get_pool_stats()[0]
+
+        self.assertEqual(100.0, pool['total_capacity_gb'])
+        self.assertEqual(80.0, pool['free_capacity_gb'])
+        if enabled is False:
+            self.assertNotIn('utilization', pool)
+            client.get_performance_counter_info.assert_not_called()
+        else:
+            self.assertEqual(50.0, pool['utilization'])
+            self.assertTrue(client.get_performance_counter_info.called)
+
     def test_get_pool_stats_skips_cached_data_within_interval(self):
         mock_perf_update, mock_dedupe = self._setup_pool_stats_with_cache()
 

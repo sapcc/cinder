@@ -27,7 +27,8 @@ LOG = logging.getLogger(__name__)
 
 class PerformanceCmodeLibrary(perf_base.PerformanceLibrary):
 
-    def __init__(self, zapi_client):
+    def __init__(self, zapi_client, enabled=True):
+        self.enabled = enabled
         super(PerformanceCmodeLibrary, self).__init__(zapi_client)
 
         self.performance_counters = {}
@@ -37,6 +38,9 @@ class PerformanceCmodeLibrary(perf_base.PerformanceLibrary):
         """Set a few counter names based on Data ONTAP version."""
 
         super(PerformanceCmodeLibrary, self)._init_counter_info()
+
+        if not self.enabled:
+            return
 
         try:
             if self.zapi_client.features.SYSTEM_CONSTITUENT_METRICS:
@@ -60,6 +64,10 @@ class PerformanceCmodeLibrary(perf_base.PerformanceLibrary):
 
     def update_performance_cache(self, ssc_pools):
         """Called periodically to update per-pool node utilization metrics."""
+
+        if not self.enabled:
+            self.pool_utilization = {}
+            return
 
         # Nothing to do on older systems
         if not (self.zapi_client.features.SYSTEM_METRICS or
@@ -110,7 +118,10 @@ class PerformanceCmodeLibrary(perf_base.PerformanceLibrary):
         self.pool_utilization = pool_utilization
 
     def get_node_utilization_for_pool(self, pool_name):
-        """Get the node utilization for the specified pool, if available."""
+        """Get pool utilization, or None when collection is disabled."""
+
+        if not self.enabled:
+            return None
 
         return self.pool_utilization.get(pool_name,
                                          perf_base.DEFAULT_UTILIZATION)
