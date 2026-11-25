@@ -251,7 +251,17 @@ netapp_nfs_extra_opts = [
                 help=('Comma-separated list of pool names (NFS share paths) '
                       'to force into drain (down) mode on every volume stats '
                       'update, unless a user has manually set the pool up via '
-                      'the set_pool_state API.')), ]
+                      'the set_pool_state API.')),
+    # SAP: drain_pools is only honored by the cDOT NFS driver.
+    cfg.BoolOpt('drain_pools',
+                default=False,
+                help=('When True, all pools of this backend are forced into '
+                      'drain (down) mode on every volume stats update, so the '
+                      'scheduler stops placing new volumes on them while '
+                      'existing volumes keep working. A pool an admin has '
+                      'manually set back up via the set_pool_state API is '
+                      'left up. This is the backend-wide equivalent of '
+                      'pool_drain_list and is applied in addition to it.')), ]
 netapp_san_opts = [
     cfg.StrOpt('netapp_lun_ostype',
                help=('This option defines the type of operating system that'
