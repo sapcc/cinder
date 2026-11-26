@@ -127,8 +127,6 @@ class NetAppNfsDriverTestCase(test.TestCase):
         self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
         self.zapi_client.get_flexvol_capacity.return_value = {
             'size-total': 100 * units.Gi, 'size-available': 10 * units.Gi,
-        }
-        self.zapi_client.get_flexvol.return_value = {
             'aggregate': ['aggr1', 'aggr2'],
         }
         capacities = {'aggr1': {'size-available': free * units.Gi}}
@@ -150,8 +148,8 @@ class NetAppNfsDriverTestCase(test.TestCase):
         self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
         self.zapi_client.get_flexvol_capacity.return_value = {
             'size-total': 100 * units.Gi, 'size-available': 10 * units.Gi,
+            'aggregate': ['aggr1'],
         }
-        self.zapi_client.get_flexvol.return_value = {'aggregate': ['aggr1']}
         get_aggregates = self.zapi_client.get_aggregate_capacities
         get_aggregates.return_value = {
             'aggr1': {'size-available': 80 * units.Gi},
@@ -166,6 +164,32 @@ class NetAppNfsDriverTestCase(test.TestCase):
         self.assertRaises(
             KeyError, self.driver._get_capacity_info, fake.NFS_SHARE,
             aggr_capacities={'aggr1': {}})
+
+    def test_get_capacity_info_uses_combined_flexgroup_read(self):
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
+        get_capacity = self.zapi_client.get_flexvol_capacity
+        get_capacity.return_value = {
+            'size-total': 100, 'size-available': 10,
+            'aggregate': ['aggr1', 'aggr2'],
+        }
+        self.zapi_client.get_aggregate_capacities.return_value = {
+            'aggr1': {'size-available': 50},
+            'aggr2': {'size-available': 20},
+        }
+
+        result = self.driver._get_capacity_info(fake.NFS_SHARE)
+
+        self.assertEqual((100, 70), result)
+        get_capacity.assert_called_once_with(
+            flexvol_path=fake.EXPORT_PATH, include_aggregates=True)
+        self.zapi_client.get_flexvol.assert_not_called()
+
+    def test_get_capacity_info_rejects_missing_aggregate_membership(self):
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
+        self.zapi_client.get_flexvol_capacity.return_value = {'aggregate': []}
+
+        self.assertRaises(exception.VolumeBackendAPIException,
+                          self.driver._get_capacity_info, fake.NFS_SHARE)
 
     def test_get_pool(self):
         pool = self.driver.get_pool({'provider_location': 'fake-share'})

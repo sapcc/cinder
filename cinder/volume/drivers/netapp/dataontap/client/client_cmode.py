@@ -1304,7 +1304,8 @@ class Client(client_base.Client, metaclass=volume_utils.TraceWrapperMetaclass):
         return [lif_info.get_child_content('address') for lif_info in
                 lif_info_list.get_children()]
 
-    def get_flexvol_capacity(self, flexvol_path=None, flexvol_name=None):
+    def get_flexvol_capacity(self, flexvol_path=None, flexvol_name=None,
+                             include_aggregates=False):
         """Gets total capacity and free capacity, in bytes, of the flexvol."""
 
         volume_id_attributes = {}
@@ -1332,6 +1333,20 @@ class Client(client_base.Client, metaclass=volume_utils.TraceWrapperMetaclass):
             },
         }
 
+        if include_aggregates:
+            volume_id_attributes.update({'type': 'rw', 'style': 'flex'})
+            api_args['query']['volume-attributes'][
+                'volume-state-attributes'] = {
+                'is-vserver-root': 'false',
+                'is-inconsistent': 'false',
+                'is-invalid': 'false',
+                'state': 'online',
+            }
+            api_args['desired-attributes']['volume-attributes'][
+                'volume-id-attributes'].update({
+                    'containing-aggregate-name': None,
+                    'aggr-list': {'aggr-name': None},
+                })
         result = self.send_iter_request('volume-get-iter', api_args)
         if self._get_record_count(result) < 1:
             msg = _('Volume %s not found.')
@@ -1347,10 +1362,23 @@ class Client(client_base.Client, metaclass=volume_utils.TraceWrapperMetaclass):
         size_total = float(
             volume_space_attributes.get_child_content('size-total'))
 
-        return {
+        capacity = {
             'size-total': size_total,
             'size-available': size_available,
         }
+        if include_aggregates:
+            attributes = volume_attributes.get_child_by_name(
+                'volume-id-attributes')
+            name = attributes.get_child_content('containing-aggregate-name')
+            if name:
+                capacity['aggregate'] = [name]
+            else:
+                aggregates = attributes.get_child_by_name(
+                    'aggr-list') or netapp_api.NaElement('none')
+                capacity['aggregate'] = [aggregate.get_content()
+                                         for aggregate in
+                                         aggregates.get_children()]
+        return capacity
 
     def get_unique_volume(self, get_volume_result):
         """Get the unique FlexVol or FleGroup volume from a get volume list"""

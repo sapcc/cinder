@@ -2637,6 +2637,23 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
                           self.client.get_flexvol_capacity,
                           flexvol_path='fake_path')
 
+    def test_get_flexvol_capacity_includes_aggregates(self):
+        volume = {
+            'space': {'afs_total': 100, 'available': 10, 'size': 999},
+            'aggregates': [{'name': 'aggr1'}, {'name': 'aggr2'}],
+        }
+        lookup = self.mock_object(self.client, '_get_volume_by_args',
+                                  return_value=volume)
+
+        result = self.client.get_flexvol_capacity(
+            flexvol_path=fake.VOLUME_PATH, include_aggregates=True)
+
+        self.assertEqual({'size-total': 100, 'size-available': 10,
+                          'aggregate': ['aggr1', 'aggr2']}, result)
+        lookup.assert_called_once_with(
+            vol_name=None, vol_path=fake.VOLUME_PATH,
+            fields='name,space.available,space.afs_total,aggregates.name')
+
     def test_check_api_permissions(self):
 
         mock_log = self.mock_object(client_cmode_rest.LOG, 'warning')

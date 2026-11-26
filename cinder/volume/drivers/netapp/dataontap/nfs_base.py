@@ -1072,11 +1072,16 @@ class NetAppNfsDriver(driver.ManageableVD,
     def _get_capacity_info(self, nfs_share, aggr_capacities=None):
         """Get total capacity and free capacity in bytes for an nfs share."""
         export_path = nfs_share.rsplit(':', 1)[1]
-        capacity = self.zapi_client.get_flexvol_capacity(
-            flexvol_path=export_path)
-        if self.configuration.netapp_nfs_report_aggr_free_capacity:
-            vol = self.zapi_client.get_flexvol(flexvol_path=export_path)
-            aggr_list = vol['aggregate']
+        report_aggr = self.configuration.netapp_nfs_report_aggr_free_capacity
+        capacity_args = {'flexvol_path': export_path}
+        if report_aggr:
+            capacity_args['include_aggregates'] = True
+        capacity = self.zapi_client.get_flexvol_capacity(**capacity_args)
+        if report_aggr:
+            aggr_list = capacity.get('aggregate')
+            if not aggr_list:
+                msg = _('No aggregate membership returned for NFS share %s.')
+                raise exception.VolumeBackendAPIException(data=msg % nfs_share)
             if isinstance(aggr_list, str):
                 aggr_list = [aggr_list]
             # The pool-stats caller supplies a cache scoped to one refresh.

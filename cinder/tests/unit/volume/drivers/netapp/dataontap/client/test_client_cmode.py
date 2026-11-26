@@ -1860,6 +1860,37 @@ class NetAppCmodeClientTestCase(test.TestCase):
                           self.client.get_flexvol_capacity,
                           flexvol_path='fake_path')
 
+    @ddt.data(
+        ({'containing-aggregate-name': 'aggr1'}, ['aggr1']),
+        ({'aggr-list': [{'aggr-name': 'aggr1'}, {'aggr-name': 'aggr2'}]},
+         ['aggr1', 'aggr2']))
+    @ddt.unpack
+    def test_get_flexvol_capacity_includes_aggregates(self, attributes, names):
+        response = netapp_api.NaElement(
+            copy.deepcopy(fake_client.VOLUME_GET_ITER_CAPACITY_RESPONSE))
+        volumes = response.get_child_by_name('attributes-list').get_children()
+        volumes[0].get_child_by_name('volume-id-attributes').translate_struct(
+            attributes)
+        request = self.mock_object(self.client, 'send_iter_request',
+                                   return_value=response)
+
+        result = self.client.get_flexvol_capacity(
+            flexvol_name='fake_volume', include_aggregates=True)
+
+        self.assertEqual(names, result['aggregate'])
+        self.assertEqual(1, request.call_count)
+        requested = request.call_args[0][1]['desired-attributes'][
+            'volume-attributes']['volume-id-attributes']
+        self.assertIn('aggr-list', requested)
+        self.assertIn('containing-aggregate-name', requested)
+        query = request.call_args[0][1]['query']['volume-attributes']
+        self.assertEqual('rw', query['volume-id-attributes']['type'])
+        self.assertEqual('flex', query['volume-id-attributes']['style'])
+        self.assertEqual({
+            'is-vserver-root': 'false', 'is-inconsistent': 'false',
+            'is-invalid': 'false', 'state': 'online',
+        }, query['volume-state-attributes'])
+
     def test_list_flexvols(self):
 
         api_response = netapp_api.NaElement(
