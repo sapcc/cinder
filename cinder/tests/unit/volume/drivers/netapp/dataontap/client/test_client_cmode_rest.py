@@ -2515,20 +2515,26 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
 
         self.assertEqual([None, self.vserver, None], request_scopes)
 
-    def test_file_exists_encodes_dir_path(self):
-        # Multi-segment path: raw '.' and '/' must not reach the URL.
-        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
-        self.mock_object(self.client, 'send_request',
-                         return_value={'records': [{'name': 'x-flat.vmdk'}]})
-        self.client.file_exists(fake_volume, 'vol/dir.d/x-flat.vmdk')
-        url = self.client.send_request.call_args[0][0]
-        self.assertNotIn('/', url.split('/files/')[1])
-        self.assertNotIn('.', url.split('/files/')[1])
-        self.assertIn('%2F', url)
-        self.assertIn('%2E', url)
+    @ddt.data(
+        ('x-flat.vmdk', 'x-flat%2Evmdk'),
+        ('qtree/dir.d/x-flat.vmdk', 'qtree%2Fdir%2Ed%2Fx-flat%2Evmdk'),
+        ('qtree/a%?# x.vmdk', 'qtree%2Fa%25%3F%23%20x%2Evmdk'))
+    @ddt.unpack
+    def test_file_exists_reads_only_target_metadata(self, path, encoded_path):
+        volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        request = self.mock_object(
+            self.client, 'send_request',
+            return_value={'records': [{'name': '', 'type': 'file'}]})
 
-    def test_file_exists_passes_type_filter_as_query(self):
-        # GET must carry the type filter in query=, not body= (which
+        result = self.client.file_exists(volume, path)
+
+        request.assert_called_once_with(
+            f'/storage/volumes/{volume["uuid"]}/files/{encoded_path}',
+            'get', query={'return_metadata': 'true', 'fields': 'type'})
+        self.assertTrue(result)
+
+    def test_file_exists_passes_metadata_flag_as_query(self):
+        # GET must carry the metadata flag in query=, not body= (which
         # send_request's GET path silently drops).
         fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
         self.mock_object(self.client, 'send_request',
@@ -2536,7 +2542,7 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.client.file_exists(fake_volume, 'vol/x-flat.vmdk')
         kwargs = self.client.send_request.call_args[1]
         self.assertEqual(kwargs.get('query'),
-                         {'type': 'file', 'fields': 'name'})
+                         {'return_metadata': 'true', 'fields': 'type'})
         self.assertNotIn('body', kwargs)
 
     def test_file_exists_empty_response_returns_false(self):
@@ -2567,25 +2573,25 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
                           fake_volume, 'vol/x.vmdk')
 
     def test_file_exists_single_segment(self):
-        # File at flexvol root: dir_path is '', URL ends with /files/.
+        # A root-level file still uses its full path, not a root listing.
         fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
         self.mock_object(self.client, 'send_request',
                          return_value={'records': []})
         result = self.client.file_exists(fake_volume, 'x-flat.vmdk')
         url = self.client.send_request.call_args[0][0]
-        self.assertTrue(url.endswith('/files/'))
+        self.assertTrue(url.endswith('/files/x-flat%2Evmdk'))
         self.assertFalse(result)
 
-    def test_file_exists_matches_file_name(self):
-        # Only the final segment is the file name to look up.
-        fake_volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
-        self.mock_object(self.client, 'send_request',
-                         return_value={'records': [{'name': 'other.vmdk'},
-                                                   {'name': 'want.vmdk'}]})
-        self.assertTrue(
-            self.client.file_exists(fake_volume, 'vol.d/want.vmdk'))
-        self.assertFalse(
-            self.client.file_exists(fake_volume, 'vol.d/absent.vmdk'))
+    @ddt.data(('file', True), ('directory', False), ('symlink', False))
+    @ddt.unpack
+    def test_file_exists_checks_metadata_type(self, file_type, exists):
+        self.mock_object(self.client, 'send_request', return_value={
+            'records': [{'name': '', 'type': file_type}]})
+
+        result = self.client.file_exists(
+            fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST, 'x-flat.vmdk')
+
+        self.assertEqual(exists, result)
 
     def test_clone_file_overwrite_set_when_dest_exists(self):
         # file_exists True -> overwrite_destination sent.
