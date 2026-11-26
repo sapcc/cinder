@@ -551,8 +551,11 @@ class NetAppCmodeNfsDriver(
                 pool['provisioned_capacity_gb'] = na_utils.round_down(
                     float(provisioned_cap) / units.Gi)
 
+            report_dedupe = (
+                self.configuration.netapp_nfs_report_dedupe_used_percent)
             dedupe_used = 0.0
-            if self.using_cluster_credentials and not is_flexgroup:
+            if (report_dedupe and self.using_cluster_credentials and
+                    not is_flexgroup):
                 dedupe_expiry = (
                     self.configuration.netapp_dedupe_cache_expiry_duration)
                 now = timeutils.utcnow().timestamp()
@@ -569,8 +572,9 @@ class NetAppCmodeNfsDriver(
                             dedupe_used = current_pool.get(
                                 'netapp_dedupe_used_percent') or 0.0
                             break
-            pool['netapp_dedupe_used_percent'] = na_utils.round_down(
-                dedupe_used)
+            if report_dedupe:
+                pool['netapp_dedupe_used_percent'] = na_utils.round_down(
+                    dedupe_used)
 
             aggregate_name = ssc_vol_info.get('netapp_aggregate')
             aggr_used = 0
