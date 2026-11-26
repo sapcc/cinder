@@ -2399,6 +2399,31 @@ class VolumeOpsTestCase(test.TestCase):
             profile=[exp_profile_spec])
         self.session.wait_for_task(task)
 
+    @mock.patch.object(volumeops.VMwareVolumeOps, 'get_vmdk_path_for_fcd')
+    @mock.patch.object(volumeops.VMwareVolumeOps, '_get_mount_path')
+    def test_migrate_unattached_qtree(self, get_mount_path,
+                                      get_vmdk_path_for_fcd):
+        fcd_loc = mock.Mock()
+        get_mount_path.return_value = '10.0.0.1:/vol1/qtree_src'
+        get_vmdk_path_for_fcd.return_value = '[qtree_src] vol-uuid/src.vmdk'
+        tgt_ds_mpath = '/vol1/qtree_tgt'
+        new_disk_path = '[qtree_tgt] vol-uuid/tgt.vmdk'
+        netapp_api = mock.Mock()
+        netapp_api.get_vserver_for_ip.return_value = mock.sentinel.vserver
+        ctxt = mock.sentinel.context
+        netapp_host = 'host@backend'
+
+        self.vops.migrate_unattached_qtree(
+            fcd_loc, tgt_ds_mpath, new_disk_path, netapp_api,
+            netapp_host, ctxt)
+
+        netapp_api.swap_files.assert_called_once_with(
+            ctxt, host=netapp_host, vol_name='vol1',
+            original_file='qtree_tgt/vol-uuid/tgt-flat.vmdk',
+            new_file='qtree_src/vol-uuid/src-flat.vmdk',
+            vserver=mock.sentinel.vserver)
+        netapp_api.get_file_sizes_by_dir.assert_not_called()
+
 
 class VirtualDiskPathTest(test.TestCase):
     """Unit tests for VirtualDiskPath."""

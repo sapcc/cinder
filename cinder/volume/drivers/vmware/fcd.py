@@ -23,6 +23,8 @@ import time
 
 from oslo_config import cfg
 from oslo_log import log as logging
+import oslo_messaging as messaging
+from oslo_utils import excutils
 from oslo_utils import units
 from oslo_utils import versionutils
 from oslo_vmware import exceptions as vexc
@@ -1397,16 +1399,28 @@ class VMwareVStorageObjectDriver(vmdk.VMwareVcVmdkDriver):
                 netapp_fqdn = self.volumeops.get_netapp_for_ds(
                     fcd_loc.ds_ref())
                 netapp_host = self.get_netapp_cinder_host(netapp_fqdn)
-                self.volumeops.migrate_unattached_qtree(fcd_loc,
-                                                        tgt_ds_mpath,
-                                                        new_disk_path,
-                                                        netapp_api,
-                                                        netapp_host,
-                                                        context)
-                # delete the source fcd after migration complete
-                self.volumeops.delete_fcd(fcd_loc)
+                try:
+                    self.volumeops.migrate_unattached_qtree(fcd_loc,
+                                                            tgt_ds_mpath,
+                                                            new_disk_path,
+                                                            netapp_api,
+                                                            netapp_host,
+                                                            context)
+                except messaging.MessagingTimeout:
+                    raise
+                except Exception:
+                    with excutils.save_and_reraise_exception():
+                        try:
+                            self._remote_api.delete_fcd(
+                                context, dest_host, prov_loc)
+                        except Exception:
+                            LOG.warning("Failed to delete target FCD %s "
+                                        "after failed qtree migration of "
+                                        "volume %s.", prov_loc, volume.id)
                 volume.update({'provider_location': prov_loc})
                 volume.save()
+                # delete the source fcd after migration complete
+                self.volumeops.delete_fcd(fcd_loc)
                 return (True, None)
             else:
                 self.volumeops.relocate_fcd(fcd_loc, ds_ref, volume.name,
