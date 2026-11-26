@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Skip QoS cleanup in ``delete_volume`` and ``unmanage`` when the volume has
+    no QoS policy.
+    Preserve backing-file deletion and periodic QoS cleanup.

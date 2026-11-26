@@ -1020,6 +1020,18 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         (self.driver.zapi_client.mark_qos_policy_group_for_deletion.
          assert_called_once_with(fake.QOS_POLICY_GROUP_INFO, False))
 
+    def test_delete_volume_without_qos(self):
+        delete_backing = self.mock_object(
+            self.driver, '_delete_backing_file_for_volume')
+        self.mock_object(na_utils, 'get_valid_qos_policy_group_info',
+                         return_value={'legacy': None, 'spec': None})
+
+        self.driver.delete_volume(fake.NFS_VOLUME)
+
+        delete_backing.assert_called_once_with(fake.NFS_VOLUME)
+        (self.driver.zapi_client.mark_qos_policy_group_for_deletion.
+         assert_not_called())
+
     def test_delete_backing_file_for_volume(self):
         mock_filer_delete = self.mock_object(self.driver, '_delete_file')
         mock_super_delete = self.mock_object(nfs_base.NetAppNfsDriver,
@@ -1531,6 +1543,17 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
 
         mock_get_info.assert_has_calls([mock.call(fake.NFS_VOLUME)])
         super_unmanage.assert_has_calls([mock.call(fake.NFS_VOLUME)])
+
+    def test_unmanage_without_qos(self):
+        self.mock_object(na_utils, 'get_valid_qos_policy_group_info',
+                         return_value={'legacy': None, 'spec': None})
+        super_unmanage = self.mock_object(nfs_base.NetAppNfsDriver, 'unmanage')
+
+        self.driver.unmanage(fake.NFS_VOLUME)
+
+        super_unmanage.assert_called_once_with(fake.NFS_VOLUME)
+        (self.driver.zapi_client.mark_qos_policy_group_for_deletion.
+         assert_not_called())
 
     def test_add_looping_tasks(self):
         mock_update_ssc = self.mock_object(self.driver, '_update_ssc')
