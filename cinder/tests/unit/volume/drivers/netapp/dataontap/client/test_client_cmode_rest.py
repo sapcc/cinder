@@ -109,6 +109,12 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
     def _mock_api_error(self, code='fake'):
         return mock.Mock(side_effect=netapp_api.NaApiError(code=code))
 
+    def _setup_rpc_connection(self):
+        """Use real SVM scope state without sending HTTP requests."""
+        self.client.connection = netapp_api.RestNaServer('localhost')
+        self.client.connection.set_vserver(self.vserver)
+        self.addCleanup(self.client.connection._session.close)
+
     def test_send_request(self):
         expected = 'fake_response'
         mock_get_records = self.mock_object(
@@ -2455,6 +2461,59 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.client.send_request.assert_has_calls([
             mock.call('/storage/file/clone', 'post', body=expected_body),
         ])
+
+    @ddt.data((CONNECTION_INFO['vserver'], 0), ('renamed_vserver', 2))
+    @ddt.unpack
+    def test_clone_file_rpc_clones_on_requested_vserver(self, vserver, copies):
+        self._setup_rpc_connection()
+        volume = fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST
+        self.mock_object(self.client, '_get_volume_by_args',
+                         return_value=volume)
+        self.mock_object(self.client, 'file_exists', return_value=True)
+        request = self.mock_object(self.client, 'send_request')
+
+        with mock.patch.object(client_cmode_rest, 'copy', wraps=copy) as spy:
+            self.client.clone_file_rpc(
+                volume['name'], 'source', 'destination', vserver,
+                dest_exists=True, is_snapshot=True)
+            self.assertEqual(copies, spy.copy.call_count)
+
+        request.assert_called_once_with('/storage/file/clone', 'post', body={
+            'volume': {'uuid': volume['uuid'], 'name': volume['name']},
+            'source_path': 'source', 'destination_path': 'destination',
+            'is_backup': True, 'overwrite_destination': True,
+        })
+
+    def test_clone_file_rpc_keeps_shared_scope_on_error(self):
+        self._setup_rpc_connection()
+        self.mock_object(self.client, 'clone_file',
+                         side_effect=netapp_api.NaApiError())
+
+        self.assertRaises(netapp_api.NaApiError,
+                          self.client.clone_file_rpc,
+                          'vol', 'source', 'destination', 'renamed_vserver')
+
+        self.assertEqual(self.vserver, self.client.connection.get_vserver())
+
+    def test_clone_file_rpc_keeps_backend_request_scope(self):
+        self._setup_rpc_connection()
+        volume = dict(fake_client.VOLUME_ITEM_SIMPLE_RESPONSE_REST,
+                      space={'afs_total': 100, 'available': 10})
+        request_scopes = []
+
+        def send(method, url, body, headers):
+            request_scopes.append(headers.get('X-Dot-SVM-Name'))
+            if len(request_scopes) == 1:
+                # Interleave a backend request before the RPC lookup completes.
+                self.client.get_flexvol_capacity(flexvol_name=volume['name'])
+            return 200, {'records': [volume]}
+
+        self.mock_object(self.client.connection, 'send_http_request',
+                         side_effect=send)
+        self.client.clone_file_rpc(volume['name'], 'source', 'destination',
+                                   'renamed_vserver')
+
+        self.assertEqual([None, self.vserver, None], request_scopes)
 
     def test_file_exists_encodes_dir_path(self):
         # Multi-segment path: raw '.' and '/' must not reach the URL.

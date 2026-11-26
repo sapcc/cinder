@@ -1812,14 +1812,16 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                        dest_exists=False, source_snapshot=None,
                        is_snapshot=False):
 
-        old_vserver = self.connection._vserver
-        if old_vserver != vserver:
-            # Change to unresticted access due to rpc
-            self.connection.set_vserver(None)
-            self.clone_file(self, flex_vol, src_path, dest_path,
-                            vserver, dest_exists, source_snapshot,
-                            is_snapshot)
-            self.connection.set_vserver(old_vserver)
+        rpc_client = self
+        if self.vserver != vserver:
+            rpc_client = copy.copy(self)
+            # Keep SVM scope private without creating another HTTP session.
+            rpc_client.connection = copy.copy(self.connection)
+            rpc_client.connection.set_vserver(None)
+        rpc_client.clone_file(flex_vol, src_path, dest_path, vserver,
+                              dest_exists=dest_exists,
+                              source_snapshot=source_snapshot,
+                              is_snapshot=is_snapshot)
 
     def clone_lun(self, volume, name, new_name, space_reserved='true',
                   qos_policy_group_name=None, src_block=0, dest_block=0,
