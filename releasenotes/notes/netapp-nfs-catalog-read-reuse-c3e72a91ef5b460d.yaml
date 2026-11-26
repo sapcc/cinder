@@ -1,0 +1,6 @@
+---
+fixes:
+  - |
+    Reduce ONTAP requests during NetApp NFS storage-catalog refreshes.
+    Reuse successful FlexVol lookups from pool mapping and complete aggregate
+    metadata within one refresh. Later refreshes still read current data.

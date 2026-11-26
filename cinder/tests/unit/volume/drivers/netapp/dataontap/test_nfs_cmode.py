@@ -32,6 +32,8 @@ from cinder.objects import fields
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import test
 from cinder.tests.unit import utils as test_utils
+from cinder.tests.unit.volume.drivers.netapp.dataontap.client import (
+    fakes as fake_client)
 from cinder.tests.unit.volume.drivers.netapp.dataontap import fakes as fake
 from cinder.tests.unit.volume.drivers.netapp.dataontap.utils import fakes as \
     fake_ssc
@@ -808,8 +810,8 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
 
         self.assertIsNone(result)
         mock_ensure_shares_mounted.assert_called_once_with()
-        mock_get_pool_map.assert_called_once_with()
-        mock_update_ssc.assert_called_once_with('fake_map')
+        mock_get_pool_map.assert_called_once_with(flexvols={})
+        mock_update_ssc.assert_called_once_with('fake_map', flexvols={})
 
     def test_get_pool_map(self):
 
@@ -837,6 +839,56 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         mock_get_operational_lif_addresses.assert_called_once_with()
         mock_resolve_hostname.assert_called_once_with(fake.SHARE_IP)
         mock_get_flexvol.assert_called_once_with(flexvol_path=fake.EXPORT_PATH)
+
+    def _setup_ssc_refresh(self):
+        client = self.driver.zapi_client
+        client.get_operational_lif_addresses.return_value = [fake.SHARE_IP]
+        client.get_flexvol_zapi.return_value = dict(
+            fake_client.VOLUME_INFO_SSC, name=fake.NETAPP_VOLUME)
+        client.get_flexvol_dedupe_info.return_value = (
+            fake_client.VOLUME_DEDUPE_INFO_SSC)
+        client.get_aggregate.return_value = fake_client.AGGR_INFO_SSC
+        client.get_aggregate_disk_types.return_value = ['SSD']
+        self.driver.ssc_library = capabilities.CapabilitiesLibrary(
+            'nfs', self.driver.vserver, client, self.driver.configuration)
+        self.mock_object(self.driver, '_ensure_shares_mounted')
+        self.mock_object(volume_utils, 'resolve_hostname',
+                         return_value=fake.SHARE_IP)
+        return client
+
+    def test_update_ssc_reuses_pool_lookup_for_one_refresh(self):
+        client = self._setup_ssc_refresh()
+        self.driver._update_ssc()
+        client.get_flexvol_zapi.assert_called_once_with(
+            flexvol_path=fake.EXPORT_PATH)
+
+        client.get_flexvol_zapi.return_value = dict(
+            client.get_flexvol_zapi.return_value, aggregate=['changed_aggr'])
+        self.driver._update_ssc()
+
+        ssc = self.driver.ssc_library.ssc[fake.NETAPP_VOLUME]
+        self.assertEqual(2, client.get_flexvol_zapi.call_count)
+        self.assertEqual('changed_aggr', ssc['netapp_aggregate'])
+        self.assertEqual(fake.NFS_SHARE, ssc['pool_name'])
+        self.assertNotIn('space-guarantee', ssc)
+
+    def test_update_ssc_retries_failed_pool_lookup_by_name(self):
+        client = self._setup_ssc_refresh()
+        self.driver.ssc_library.ssc = {
+            fake.NETAPP_VOLUME: {'pool_name': fake.NFS_SHARE},
+        }
+        client.get_flexvol_zapi.side_effect = [
+            exception.VolumeBackendAPIException(data='test'),
+            client.get_flexvol_zapi.return_value,
+        ]
+
+        self.driver._update_ssc()
+
+        self.assertEqual([mock.call(flexvol_path=fake.EXPORT_PATH),
+                          mock.call(flexvol_name=fake.NETAPP_VOLUME)],
+                         client.get_flexvol_zapi.call_args_list)
+        ssc = self.driver.ssc_library.ssc[fake.NETAPP_VOLUME]
+        self.assertEqual(fake.NFS_SHARE, ssc['pool_name'])
 
     def test_get_pool_map_address_not_found(self):
 

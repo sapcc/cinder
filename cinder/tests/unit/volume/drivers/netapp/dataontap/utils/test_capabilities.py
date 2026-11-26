@@ -218,14 +218,15 @@ class CapabilitiesLibraryTestCase(test.TestCase):
         self.assertIsNone(result)
         self.assertEqual(fake.SSC, self.ssc_library.ssc)
         mock_get_ssc_flexvol_info.assert_has_calls([
-            mock.call('volume1'), mock.call('volume2')])
+            mock.call('volume1', volume_info=None),
+            mock.call('volume2', volume_info=None)])
         mock_get_ssc_dedupe_info.assert_has_calls([
             mock.call('volume1'), mock.call('volume2')])
         mock_get_ssc_mirror_info.assert_has_calls([
             mock.call('volume1'), mock.call('volume2')])
         mock_get_ssc_aggregate_info.assert_has_calls([
-            mock.call('aggr1', is_flexgroup=False),
-            mock.call('aggr2', is_flexgroup=False)])
+            mock.call('aggr1', is_flexgroup=False, aggregate_cache=None),
+            mock.call('aggr2', is_flexgroup=False, aggregate_cache=None)])
         mock_get_ssc_encryption_info.assert_has_calls([
             mock.call('volume1'), mock.call('volume2')])
         mock_get_ssc_qos_min_info.assert_has_calls([
@@ -240,6 +241,36 @@ class CapabilitiesLibraryTestCase(test.TestCase):
 
         self.assertEqual(mock_client, self.ssc_library.zapi_client)
         self.ssc_library.update_ssc.assert_called_once_with(flexvol_map)
+
+    @ddt.data(('nfs', 1), ('iscsi', 2))
+    @ddt.unpack
+    def test_update_ssc_refreshes_aggregate_cache(self, protocol, reads):
+        client = self.zapi_client
+        self.ssc_library.protocol = protocol
+        client.get_flexvol_zapi.return_value = fake_client.VOLUME_INFO_SSC
+        client.get_flexvol_dedupe_info.return_value = (
+            fake_client.VOLUME_DEDUPE_INFO_SSC)
+        client.get_lun_sizes_by_volume.return_value = []
+        client.get_aggregate.return_value = fake_client.AGGR_INFO_SSC
+        client.get_aggregate_disk_types.return_value = ['SSD']
+        client.is_qos_min_supported.side_effect = (
+            lambda is_nfs, node: node == fake_client.NODE_NAME)
+
+        self.ssc_library.update_ssc(self.SSC_VOLUME_MAP)
+
+        self.assertEqual(reads, client.get_aggregate.call_count)
+        self.assertEqual(reads, client.get_aggregate_disk_types.call_count)
+        client.get_aggregate.return_value = dict(fake_client.AGGR_INFO_SSC)
+        client.get_aggregate.return_value['node-name'] = 'changed_node'
+        client.get_aggregate_disk_types.return_value = ['SAS']
+
+        self.ssc_library.update_ssc(self.SSC_VOLUME_MAP)
+
+        self.assertEqual(2 * reads, client.get_aggregate.call_count)
+        self.assertEqual(2 * reads, client.get_aggregate_disk_types.call_count)
+        for info in self.ssc_library.ssc.values():
+            self.assertEqual(['SAS'], info['netapp_disk_type'])
+            self.assertEqual('false', info['netapp_qos_min_support'])
 
     @ddt.data({'lun_space_guarantee': True},
               {'lun_space_guarantee': False})
@@ -490,6 +521,70 @@ class CapabilitiesLibraryTestCase(test.TestCase):
             'netapp_node_name': None,
         }
         self.assertEqual(expected, result)
+
+    @ddt.data(({}, ['SSD']), (fake_client.AGGR_INFO_SSC, None))
+    @ddt.unpack
+    def test_aggregate_cache_retries_incomplete_reads(
+            self, aggregate, disks):
+        client = self.zapi_client
+        client.get_aggregate.side_effect = [
+            aggregate, fake_client.AGGR_INFO_SSC]
+        client.get_aggregate_disk_types.side_effect = [disks, ['SSD']]
+        cache = {}
+
+        self.ssc_library._get_ssc_aggregate_info(
+            'aggr1', aggregate_cache=cache)
+        self.assertEqual({}, cache)
+        second = self.ssc_library._get_ssc_aggregate_info(
+            'aggr1', aggregate_cache=cache)
+
+        self.assertEqual(fake_client.NODE_NAME, second['netapp_node_name'])
+        self.assertEqual(['SSD'], second['netapp_disk_type'])
+        self.assertEqual(2, client.get_aggregate.call_count)
+        self.assertEqual(2, client.get_aggregate_disk_types.call_count)
+
+    def test_aggregate_cache_returns_independent_metadata(self):
+        client = self.zapi_client
+        client.get_aggregate.return_value = fake_client.AGGR_INFO_SSC
+        client.get_aggregate_disk_types.return_value = ['SSD']
+        cache = {}
+
+        # Exercise both a fresh read and a cache hit.
+        for _ in range(2):
+            info = self.ssc_library._get_ssc_aggregate_info(
+                'aggr1', aggregate_cache=cache)
+            info.pop('netapp_node_name')
+            info['netapp_disk_type'].clear()
+        result = self.ssc_library._get_ssc_aggregate_info(
+            'aggr1', aggregate_cache=cache)
+
+        self.assertEqual(fake_client.NODE_NAME, result['netapp_node_name'])
+        self.assertEqual(['SSD'], result['netapp_disk_type'])
+        client.get_aggregate.assert_called_once_with('aggr1')
+        client.get_aggregate_disk_types.assert_called_once_with('aggr1')
+
+    def test_aggregate_cache_preserves_overlapping_flexgroups(self):
+        client = self.zapi_client
+        client.get_aggregate.side_effect = lambda name: {
+            'node-name': 'node' + name[-1], 'raid-type': 'raid_dp',
+            'is-hybrid': False,
+        }
+        disk_types = {'aggr1': ['SSD'], 'aggr2': ['SAS'], 'aggr3': ['FCAL']}
+        client.get_aggregate_disk_types.side_effect = disk_types.get
+        cache = {}
+
+        first = self.ssc_library._get_ssc_aggregate_info(
+            ['aggr1', 'aggr2'], is_flexgroup=True, aggregate_cache=cache)
+        second = self.ssc_library._get_ssc_aggregate_info(
+            ['aggr2', 'aggr3'], is_flexgroup=True, aggregate_cache=cache)
+
+        self.assertCountEqual(['node1', 'node2'], first['netapp_node_name'])
+        self.assertCountEqual(['node2', 'node3'], second['netapp_node_name'])
+        self.assertCountEqual(['SSD', 'SAS'], first['netapp_disk_type'])
+        self.assertCountEqual(['SAS', 'FCAL'], second['netapp_disk_type'])
+        calls = [mock.call(name) for name in ('aggr1', 'aggr2', 'aggr3')]
+        self.assertEqual(calls, client.get_aggregate.call_args_list)
+        self.assertEqual(calls, client.get_aggregate_disk_types.call_args_list)
 
     def test_get_matching_flexvols_for_extra_specs(self):
 

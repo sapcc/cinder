@@ -658,13 +658,16 @@ class NetAppCmodeNfsDriver(
         """Refresh the storage service catalog with the latest set of pools."""
 
         self._ensure_shares_mounted()
-        self.ssc_library.update_ssc(self._get_flexvol_to_pool_map())
+        flexvols = {}
+        flexvol_map = self._get_flexvol_to_pool_map(flexvols=flexvols)
+        self.ssc_library.update_ssc(flexvol_map, flexvols=flexvols)
 
-    def _get_flexvol_to_pool_map(self):
+    def _get_flexvol_to_pool_map(self, flexvols=None):
         """Get the flexvols that back all mounted shares.
 
         The map is of the format suitable for seeding the storage service
         catalog: {<flexvol_name> : {'pool_name': <share_path>}}
+        If supplied, flexvols receives successful lookups for this refresh.
         """
 
         pools = {}
@@ -683,6 +686,8 @@ class NetAppCmodeNfsDriver(
                 flexvol = self.zapi_client.get_flexvol_zapi(
                     flexvol_path=junction_path)
                 pools[flexvol['name']] = {'pool_name': share}
+                if flexvols is not None:
+                    flexvols[flexvol['name']] = flexvol
             except exception.VolumeBackendAPIException:
                 LOG.exception('Flexvol not found for NFS share %s.', share)
                 # Get flexvol name from ssc in case of failure

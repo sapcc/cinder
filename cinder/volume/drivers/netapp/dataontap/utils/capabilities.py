@@ -81,16 +81,19 @@ class CapabilitiesLibrary(object):
 
         return False
 
-    def update_ssc(self, flexvol_map):
+    def update_ssc(self, flexvol_map, flexvols=None):
         """Periodically runs to update Storage Service Catalog data.
 
         The self.ssc attribute is updated with the following format.
         {<flexvol_name> : {<ssc_key>: <ssc_value>}}
+        flexvols contains successful pool lookups from this refresh only.
         """
         LOG.info("Updating storage service catalog information for "
                  "backend '%s'", self.backend_name)
 
         ssc = {}
+        flexvols = flexvols or {}
+        aggregate_cache = {} if self.protocol == 'nfs' else None
 
         for flexvol_name, flexvol_info in flexvol_map.items():
 
@@ -100,7 +103,8 @@ class CapabilitiesLibrary(object):
             ssc_volume.update(flexvol_info)
 
             # Get volume info
-            ssc_volume.update(self._get_ssc_flexvol_info(flexvol_name))
+            ssc_volume.update(self._get_ssc_flexvol_info(
+                flexvol_name, volume_info=flexvols.get(flexvol_name)))
             ssc_volume.update(self._get_ssc_dedupe_info(flexvol_name))
             ssc_volume.update(self._get_ssc_mirror_info(flexvol_name))
             ssc_volume.update(self._get_ssc_encryption_info(flexvol_name))
@@ -109,7 +113,8 @@ class CapabilitiesLibrary(object):
             aggregate_name = ssc_volume.get('netapp_aggregate')
             is_flexgroup = isinstance(aggregate_name, list)
             aggr_info = self._get_ssc_aggregate_info(
-                aggregate_name, is_flexgroup=is_flexgroup)
+                aggregate_name, is_flexgroup=is_flexgroup,
+                aggregate_cache=aggregate_cache)
             node_name = aggr_info.pop('netapp_node_name')
             ssc_volume.update(aggr_info)
 
@@ -127,11 +132,12 @@ class CapabilitiesLibrary(object):
         self.zapi_client = zapi_client
         self.update_ssc(flexvol_map)
 
-    def _get_ssc_flexvol_info(self, flexvol_name):
+    def _get_ssc_flexvol_info(self, flexvol_name, volume_info=None):
         """Gather flexvol info and recast into SSC-style volume stats."""
 
-        volume_info = self.zapi_client.get_flexvol_zapi(
-            flexvol_name=flexvol_name)
+        if volume_info is None:
+            volume_info = self.zapi_client.get_flexvol_zapi(
+                flexvol_name=flexvol_name)
 
         netapp_thick = (volume_info.get('space-guarantee-enabled') and
                         (volume_info.get('space-guarantee') == 'file' or
@@ -214,12 +220,14 @@ class CapabilitiesLibrary(object):
 
         return {'netapp_mirrored': str(mirrored).lower()}
 
-    def _get_ssc_aggregate_info(self, aggregate_name, is_flexgroup=False):
+    def _get_ssc_aggregate_info(self, aggregate_name, is_flexgroup=False,
+                                aggregate_cache=None):
         """Gather aggregate info and recast into SSC-style volume stats.
 
         :param aggregate_name: a list of aggregate names for FlexGroup or
         a single aggregate name for FlexVol
         :param is_flexgroup: bool informing the type of aggregate_name param
+        :param aggregate_cache: optional aggregate data from this refresh
         """
 
         if 'netapp_raid_type' in self.invalid_extra_specs:
@@ -233,18 +241,21 @@ class CapabilitiesLibrary(object):
             disk_types = set()
             node_name = set()
             for aggr in aggregate_name:
-                aggregate = self.zapi_client.get_aggregate(aggr)
-                node_name.add(aggregate.get('node-name'))
-                raid_type.add(aggregate.get('raid-type'))
-                hybrid.add(str(aggregate.get('is-hybrid')).lower()
-                           if 'is-hybrid' in aggregate else None)
-                disks = set(self.zapi_client.get_aggregate_disk_types(aggr))
+                aggregate = self._get_ssc_aggregate_info(
+                    aggr, aggregate_cache=aggregate_cache)
+                node_name.add(aggregate['netapp_node_name'])
+                raid_type.add(aggregate['netapp_raid_type'])
+                hybrid.add(aggregate['netapp_hybrid_aggregate'])
+                disks = set(aggregate['netapp_disk_type'])
                 disk_types = disk_types.union(disks)
             node_name = list(node_name)
             raid_type = list(raid_type)
             hybrid = list(hybrid)
             disk_types = list(disk_types)
         else:
+            if (aggregate_cache is not None and
+                    aggregate_name in aggregate_cache):
+                return copy.deepcopy(aggregate_cache[aggregate_name])
             aggregate = self.zapi_client.get_aggregate(aggregate_name)
             node_name = aggregate.get('node-name')
             raid_type = aggregate.get('raid-type')
@@ -253,12 +264,17 @@ class CapabilitiesLibrary(object):
             disk_types = self.zapi_client.get_aggregate_disk_types(
                 aggregate_name)
 
-        return {
+        aggregate_info = {
             'netapp_raid_type': raid_type,
             'netapp_hybrid_aggregate': hybrid,
             'netapp_disk_type': disk_types,
             'netapp_node_name': node_name,
         }
+        # Client errors can return empty metadata instead of raising.
+        if (not is_flexgroup and aggregate_cache is not None and
+                all(aggregate_info.values())):
+            aggregate_cache[aggregate_name] = copy.deepcopy(aggregate_info)
+        return aggregate_info
 
     def _get_ssc_volume_count_info(self, flexvol_name):
         """Gather volume count info and recast into SSC-style volume stats."""
