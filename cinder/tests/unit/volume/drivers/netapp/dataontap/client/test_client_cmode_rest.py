@@ -115,6 +115,21 @@ class NetAppRestCmodeClientTestCase(test.TestCase):
         self.client.connection.set_vserver(self.vserver)
         self.addCleanup(self.client.connection._session.close)
 
+    @ddt.data({}, {'ca_certificate_file': None},
+              {'private_key_file': None, 'certificate_file': None,
+               'ca_certificate_file': None})
+    def test_http_timeout_reaches_each_auth_transport(self, auth):
+        client = client_cmode_rest.RestClient(
+            **dict(CONNECTION_INFO, http_timeout=73, **auth))
+        self.addCleanup(client.connection._session.close)
+        request = self.mock_object(
+            client.connection._session, 'get',
+            return_value=mock.Mock(status_code=200, content=b'{}'))
+
+        client.connection.send_http_request('get', 'fake_url', None, {})
+
+        self.assertEqual(73, request.call_args.kwargs['timeout'])
+
     def test_send_request(self):
         expected = 'fake_response'
         mock_get_records = self.mock_object(

@@ -76,6 +76,8 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
         certificate_file = kwargs['certificate_file']
         ca_certificate_file = kwargs['ca_certificate_file']
         certificate_host_validation = kwargs['certificate_host_validation']
+        http_timeout = kwargs.pop('http_timeout',
+                                  netapp_api.RestNaServer.DEFAULT_TIMEOUT)
         if private_key_file and certificate_file and ca_certificate_file:
             self.connection = netapp_api.RestNaServer(
                 host=host,
@@ -85,7 +87,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                 certificate_file=certificate_file,
                 ca_certificate_file=ca_certificate_file,
                 certificate_host_validation=certificate_host_validation,
-                api_trace_pattern=api_trace_pattern)
+                api_trace_pattern=api_trace_pattern, timeout=http_timeout)
         elif private_key_file and certificate_file:
             self.connection = netapp_api.RestNaServer(
                 host=host,
@@ -94,7 +96,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                 private_key_file=private_key_file,
                 certificate_file=certificate_file,
                 certificate_host_validation=certificate_host_validation,
-                api_trace_pattern=api_trace_pattern)
+                api_trace_pattern=api_trace_pattern, timeout=http_timeout)
         else:
             self.connection = netapp_api.RestNaServer(
                 host=host,
@@ -103,7 +105,7 @@ class RestClient(object, metaclass=volume_utils.TraceWrapperMetaclass):
                 port=kwargs['port'],
                 username=username,
                 password=password,
-                api_trace_pattern=api_trace_pattern)
+                api_trace_pattern=api_trace_pattern, timeout=http_timeout)
 
         self.async_rest_timeout = kwargs.get('async_rest_timeout', 60)
 
