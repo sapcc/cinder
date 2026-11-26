@@ -67,6 +67,17 @@ class PerformanceCmodeLibraryTestCase(test.TestCase):
             'aggr3': 'node2',
         }
 
+    def test_metrics_disabled_skips_discovery_polling_and_failover(self):
+        library = perf_cmode.PerformanceCmodeLibrary(
+            self.zapi_client, enabled=False)
+        library.update_performance_cache(self.fake_volumes)
+        failover_client = mock.Mock()
+        library._update_for_failover(failover_client, self.fake_volumes)
+
+        self.assertEqual([], self.zapi_client.mock_calls)
+        self.assertEqual([], failover_client.mock_calls)
+        self.assertIsNone(library.get_node_utilization_for_pool('pool1'))
+
     def test_init_counter_info_not_supported(self):
 
         self.zapi_client.features.SYSTEM_METRICS = False

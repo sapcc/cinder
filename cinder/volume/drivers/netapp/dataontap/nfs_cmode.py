@@ -129,7 +129,8 @@ class NetAppCmodeNfsDriver(
 
         # Performance monitoring library
         self.perf_library = perf_cmode.PerformanceCmodeLibrary(
-            self.zapi_client)
+            self.zapi_client,
+            enabled=self.configuration.netapp_enable_performance_metrics)
 
     def _update_zapi_client(self, backend_name):
         """Set cDOT API client for the specified config backend stanza name."""
@@ -594,7 +595,8 @@ class NetAppCmodeNfsDriver(
             # Add utilization data
             utilization = self.perf_library.get_node_utilization_for_pool(
                 ssc_vol_name)
-            pool['utilization'] = na_utils.round_down(utilization)
+            if utilization is not None:
+                pool['utilization'] = na_utils.round_down(utilization)
             pool['filter_function'] = filter_function
             pool['goodness_function'] = goodness_function
             netapp_server_fqdn = self.configuration.netapp_server_hostname

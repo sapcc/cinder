@@ -62,7 +62,16 @@ netapp_connection_opts = [
                min=60,
                default=60,  # One minute
                help='The maximum time in seconds to wait for completing a '
-                    'REST asynchronous operation.'), ]
+                    'REST asynchronous operation.'),
+    cfg.BoolOpt('netapp_enable_performance_metrics',
+                default=True,
+                help=('Collect ONTAP performance counters to report '
+                      'controller utilization for each pool. Set to False to '
+                      'disable counter discovery and polling and omit the '
+                      'utilization capability. DriverFilter and '
+                      'GoodnessWeigher functions and volume type extra specs '
+                      'must not reference utilization when collection is '
+                      'disabled. Capacity reporting is not affected.')), ]
 
 netapp_transport_opts = [
     cfg.StrOpt('netapp_transport_type',
