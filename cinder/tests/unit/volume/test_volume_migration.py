@@ -875,6 +875,7 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
         volume.save()
         if snap:
             snapshot = create_snapshot(volume.id, size=volume.size,
+                                       metadata={'key': 'value'},
                                        user_id=self.user_context.user_id,
                                        project_id=self.user_context.project_id,
                                        volume_type_id=volume.volume_type_id,
@@ -889,6 +890,8 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
         old_reservations = quota_utils.get_volume_type_reservation(
             self.context, volume, old_vol_type['id'], reserve_vol_type_only,
             negative=True)
+        volume = objects.Volume.obj_from_primitive(
+            volume.obj_to_primitive(), context=self.context)
 
         old_usage = db.quota_usage_get_all_by_project(elevated, project_id)
 
@@ -1027,6 +1030,40 @@ class VolumeMigrationTestCase(base.BaseVolumeTestCase):
 
     def test_retype_volume_migration_with_snaps(self):
         self._retype_volume_exec(False, snap=True, exc=exception.InvalidVolume)
+
+    def test_retype_error_rolls_back_status_with_dirty_snapshots(self):
+        elevated = context.get_admin_context()
+        db.volume_type_create(elevated, {'name': 'old', 'extra_specs': {}})
+        old_vol_type = db.volume_type_get_by_name(elevated, 'old')
+        db.volume_type_create(
+            elevated,
+            {'name': 'new', 'extra_specs': {'quality_type': 'premium'}})
+        new_vol_type = db.volume_type_get_by_name(elevated, 'new')
+
+        volume = tests_utils.create_volume(self.context, size=1,
+                                           host=CONF.host, status='retyping',
+                                           previous_status='available',
+                                           volume_type_id=old_vol_type['id'])
+        create_snapshot(volume.id, size=volume.size,
+                        metadata={'key': 'value'},
+                        user_id=self.user_context.user_id,
+                        project_id=self.user_context.project_id,
+                        volume_type_id=volume.volume_type_id,
+                        ctxt=self.user_context)
+        # Load snapshots and dirty a child Snapshot as happens when an
+        # unpatched RPC hop serializes Snapshot metadata as changed.
+        volume.snapshots[0].metadata['key'] = 'dirty'
+        self.assertIn('snapshots', volume.obj_what_changed())
+
+        host_obj = {'host': 'newhost', 'capabilities': {}}
+        self.assertRaises(exception.InvalidVolume,
+                          self.volume.retype,
+                          self.context, volume,
+                          new_vol_type['id'], host_obj,
+                          migration_policy='on-demand')
+
+        volume = objects.Volume.get_by_id(elevated, volume.id)
+        self.assertEqual('available', volume.status)
 
     def test_retype_volume_migration_failed(self):
         self._retype_volume_exec(False, migrate_exc=True, exc=KeyError)

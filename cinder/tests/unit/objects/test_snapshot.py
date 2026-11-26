@@ -71,6 +71,18 @@ class TestSnapshot(test_objects.BaseObjectsTestCase):
         snapshot.obj_reset_changes(['metadata'])
         self.assertEqual({'key1': 'value1'}, snapshot._orig_metadata)
 
+    def test_obj_from_primitive_resets_metadata_tracking(self):
+        snapshot = objects.Snapshot(context=self.context, id=fake.SNAPSHOT_ID,
+                                    metadata={'key1': 'value1'})
+        snapshot.obj_reset_changes()
+        primitive = snapshot.obj_to_primitive()
+
+        deserialized = objects.Snapshot.obj_from_primitive(
+            primitive, context=self.context)
+
+        self.assertEqual({'key1': 'value1'}, deserialized.metadata)
+        self.assertEqual(set(), deserialized.obj_what_changed())
+
     @mock.patch('cinder.db.snapshot_create', return_value=fake_db_snapshot)
     def test_create(self, snapshot_create):
         snapshot = objects.Snapshot(context=self.context)
