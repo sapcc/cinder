@@ -410,6 +410,45 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         mock_dedupe.assert_called_once_with('vola')
         self.assertEqual(first, second)
 
+    @ddt.data(True, False)
+    def test_get_pool_stats_reuses_aggregate_capacity_within_refresh(
+            self, cluster_credentials):
+        self._setup_pool_stats_with_cache()
+        self.driver.using_cluster_credentials = cluster_credentials
+        ssc = self.driver.ssc_library.get_ssc.return_value
+        ssc['volb'] = dict(ssc['vola'], pool_name='10.10.10.10:/volb')
+        self.driver.configuration.netapp_nfs_report_aggr_free_capacity = True
+        self.mock_object(
+            self.driver, '_get_share_capacity_info',
+            nfs_base.NetAppNfsDriver._get_share_capacity_info.__get__(
+                self.driver))
+        client = self.driver.zapi_client
+        client.get_flexvol_capacity.return_value = {
+            'size-total': 100 * units.Gi, 'size-available': 20 * units.Gi,
+        }
+        client.get_flexvol.return_value = {'aggregate': ['aggr1']}
+        capacities = client.get_aggregate_capacities
+        capacities.return_value = {
+            'aggr1': {'size-available': 80 * units.Gi, 'percent-used': 20},
+        }
+
+        first = self.driver._get_pool_stats()
+
+        self.assertEqual([80.0, 80.0],
+                         [pool['free_capacity_gb'] for pool in first])
+        self.assertEqual(1, capacities.call_count)
+        self.assertEqual(
+            [20 if cluster_credentials else 0] * 2,
+            [pool['netapp_aggregate_used_percent'] for pool in first])
+        capacities.return_value = {
+            'aggr1': {'size-available': 60 * units.Gi, 'percent-used': 40},
+        }
+        second = self.driver._get_pool_stats()
+
+        self.assertEqual([60.0, 60.0],
+                         [pool['free_capacity_gb'] for pool in second])
+        self.assertEqual(2, capacities.call_count)
+
     def test_get_pool_stats_refreshes_cached_data_after_interval(self):
         mock_perf_update, mock_dedupe = self._setup_pool_stats_with_cache()
         conf = self.driver.configuration

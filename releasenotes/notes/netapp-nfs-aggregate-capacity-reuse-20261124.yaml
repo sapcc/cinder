@@ -1,0 +1,8 @@
+---
+fixes:
+  - |
+    Reuse aggregate capacity data for pools that share an aggregate during a
+    statistics update. This avoids separate capacity queries for each pool.
+    Each update uses fresh capacity data. Aggregate free-space calculations
+    include all members of a FlexGroup volume. Query any missing capacity
+    data. Capacity reporting settings remain unchanged.

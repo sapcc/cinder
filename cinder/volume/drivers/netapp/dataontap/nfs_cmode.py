@@ -518,6 +518,8 @@ class NetAppCmodeNfsDriver(
         else:
             aggr_capacities = {}
 
+        # Supplementary capacity reads must not change the usage report.
+        capacity_cache = aggr_capacities.copy()
         for ssc_vol_name, ssc_vol_info in ssc.items():
 
             pool = dict()
@@ -540,7 +542,8 @@ class NetAppCmodeNfsDriver(
 
             # Add up-to-date capacity info
             nfs_share = ssc_vol_info['pool_name']
-            capacity = self._get_share_capacity_info(nfs_share)
+            capacity = self._get_share_capacity_info(
+                nfs_share, aggr_capacities=capacity_cache)
             pool.update(capacity)
             if self.configuration.netapp_driver_reports_provisioned_capacity:
                 files = self.zapi_client.get_file_sizes_by_dir(ssc_vol_name)
