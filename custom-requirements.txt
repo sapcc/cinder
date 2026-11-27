@@ -3,6 +3,8 @@
 # needed for osprofiler
 redis
 jaeger-client
+# needed for tooz coordination
+etcd3gw
 
 -e git+https://github.com/sapcc/python-agentliveness.git#egg=agentliveness
 -e git+https://github.com/sapcc/raven-python.git@ccloud#egg=raven
